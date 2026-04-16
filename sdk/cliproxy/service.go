@@ -2171,6 +2171,7 @@ func matchWildcard(pattern, value string) bool {
 type modelEntry interface {
 	GetName() string
 	GetAlias() string
+	GetContextWindow() int
 }
 
 func buildOpenAICompatibilityConfigModels(compat *config.OpenAICompatibility) []*ModelInfo {
@@ -2237,13 +2238,14 @@ func buildConfigModels[T modelEntry](models []T, ownedBy, modelType string) []*M
 			display = alias
 		}
 		info := &ModelInfo{
-			ID:          alias,
-			Object:      "model",
-			Created:     now,
-			OwnedBy:     ownedBy,
-			Type:        modelType,
-			DisplayName: display,
-			UserDefined: true,
+			ID:            alias,
+			Object:        "model",
+			Created:       now,
+			OwnedBy:       ownedBy,
+			Type:          modelType,
+			DisplayName:   display,
+			UserDefined:   true,
+			ContextLength: model.GetContextWindow(),
 		}
 		if name != "" {
 			if upstream := registry.LookupStaticModelInfo(name); upstream != nil && upstream.Thinking != nil {

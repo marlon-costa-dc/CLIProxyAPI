@@ -58,36 +58,90 @@ func newTestServerWithOptions(t *testing.T, opts ...ServerOption) *Server {
 func TestHealthz(t *testing.T) {
 	server := newTestServer(t)
 
-	t.Run("GET", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rr := httptest.NewRecorder()
+	server.engine.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("unexpected status code: got %d want %d; body=%s", rr.Code, http.StatusOK, rr.Body.String())
+	}
+
+	var resp struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to parse response JSON: %v; body=%s", err, rr.Body.String())
+	}
+	if resp.Status != "ok" {
+		t.Fatalf("unexpected response status: got %q want %q", resp.Status, "ok")
+	}
+}
+
+func TestUnifiedModelsExposeClientSpecificMetadata(t *testing.T) {
+	server := newTestServer(t)
+	reg := registry.GetGlobalRegistry()
+
+	reg.RegisterClient("claude-client", "claude", []*registry.ModelInfo{{
+		ID:                  "claude-sonnet",
+		OwnedBy:             "anthropic",
+		ContextLength:       200000,
+		MaxCompletionTokens: 8192,
+	}})
+	defer reg.UnregisterClient("claude-client")
+
+	reg.RegisterClient("openai-client", "openai", []*registry.ModelInfo{{
+		ID:                  "gpt-5-codex",
+		OwnedBy:             "openai",
+		ContextLength:       400000,
+		MaxCompletionTokens: 32000,
+	}})
+	defer reg.UnregisterClient("openai-client")
+
+	reg.RegisterClient("codex-config-client", "openai", []*registry.ModelInfo{{
+		ID:            "codex-custom",
+		OwnedBy:       "openai",
+		ContextLength: 262144,
+	}})
+	defer reg.UnregisterClient("codex-config-client")
+
+	t.Run("claude user agent", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+		req.Header.Set("Authorization", "Bearer test-key")
+		req.Header.Set("User-Agent", "claude-cli/1.0")
 		rr := httptest.NewRecorder()
 		server.engine.ServeHTTP(rr, req)
 
 		if rr.Code != http.StatusOK {
 			t.Fatalf("unexpected status code: got %d want %d; body=%s", rr.Code, http.StatusOK, rr.Body.String())
 		}
-
-		var resp struct {
-			Status string `json:"status"`
+		body := rr.Body.String()
+		if !strings.Contains(body, `"max_input_tokens":200000`) {
+			t.Fatalf("expected Claude response to include max_input_tokens, body=%s", body)
 		}
-		if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
-			t.Fatalf("failed to parse response JSON: %v; body=%s", err, rr.Body.String())
-		}
-		if resp.Status != "ok" {
-			t.Fatalf("unexpected response status: got %q want %q", resp.Status, "ok")
+		if !strings.Contains(body, `"max_tokens":8192`) {
+			t.Fatalf("expected Claude response to include max_tokens, body=%s", body)
 		}
 	})
 
-	t.Run("HEAD", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodHead, "/healthz", nil)
+	t.Run("openai user agent", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+		req.Header.Set("Authorization", "Bearer test-key")
+		req.Header.Set("User-Agent", "codex-cli/1.0")
 		rr := httptest.NewRecorder()
 		server.engine.ServeHTTP(rr, req)
 
 		if rr.Code != http.StatusOK {
 			t.Fatalf("unexpected status code: got %d want %d; body=%s", rr.Code, http.StatusOK, rr.Body.String())
 		}
-		if rr.Body.Len() != 0 {
-			t.Fatalf("expected empty body for HEAD request, got %q", rr.Body.String())
+		body := rr.Body.String()
+		if !strings.Contains(body, `"context_window":400000`) {
+			t.Fatalf("expected OpenAI response to include context_window, body=%s", body)
+		}
+		if !strings.Contains(body, `"auto_compact_token_limit":32000`) {
+			t.Fatalf("expected OpenAI response to include auto_compact_token_limit, body=%s", body)
+		}
+		if !strings.Contains(body, `"id":"codex-custom"`) || !strings.Contains(body, `"context_window":262144`) {
+			t.Fatalf("expected configured OpenAI model to expose overridden context_window, body=%s", body)
 		}
 	})
 }
@@ -226,6 +280,14 @@ func TestHomeEnabledHidesManagementEndpointsAndControlPanel(t *testing.T) {
 		server.engine.ServeHTTP(rr, req)
 		if rr.Code != http.StatusNotFound {
 			t.Fatalf("status = %d, want %d body=%s", rr.Code, http.StatusNotFound, rr.Body.String())
+		}
+	})
+}
+		if !strings.Contains(body, `"auto_compact_token_limit":32000`) {
+			t.Fatalf("expected OpenAI response to include auto_compact_token_limit, body=%s", body)
+		}
+		if !strings.Contains(body, `"id":"codex-custom"`) || !strings.Contains(body, `"context_window":262144`) {
+			t.Fatalf("expected configured OpenAI model to expose overridden context_window, body=%s", body)
 		}
 	})
 }
