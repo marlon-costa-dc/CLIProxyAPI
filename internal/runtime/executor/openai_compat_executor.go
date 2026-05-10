@@ -101,6 +101,13 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("openai")
 	endpoint := "/chat/completions"
+	requestPath := helps.PayloadRequestPath(opts)
+	if strings.HasSuffix(strings.TrimSpace(requestPath), "/rerank") {
+		endpoint = "/rerank"
+	}
+	if strings.HasSuffix(strings.TrimSpace(requestPath), "/embeddings") {
+		endpoint = "/embeddings"
+	}
 	if opts.Alt == "responses/compact" {
 		to = sdktranslator.FromString("openai-response")
 		endpoint = "/responses/compact"
@@ -110,12 +117,11 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 		originalPayloadSource = opts.OriginalRequest
 	}
 	originalPayload := originalPayloadSource
-	originalTranslated := sdktranslator.TranslateRequest(from, to, baseModel, originalPayload, opts.Stream)
-	translated := sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, opts.Stream)
-
-	translated, err = thinking.ApplyThinking(translated, req.Model, from.String(), to.String(), e.Identifier())
-	if err != nil {
-		return resp, err
+	originalTranslated := originalPayload
+	translated := req.Payload
+	if endpoint != "/rerank" && endpoint != "/embeddings" {
+		originalTranslated = sdktranslator.TranslateRequest(from, to, baseModel, originalPayload, opts.Stream)
+		translated = sdktranslator.TranslateRequest(from, to, baseModel, req.Payload, opts.Stream)
 	}
 
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
@@ -124,6 +130,8 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 	if opts.Alt == "responses/compact" {
 		if updated, errDelete := sjson.DeleteBytes(translated, "stream"); errDelete == nil {
 			translated = updated
+		}
+	}
 		}
 		translated = sanitizeOpenAIResponsesReasoningEncryptedContent(ctx, "openai compat executor", translated)
 	}
