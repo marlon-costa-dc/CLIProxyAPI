@@ -20,6 +20,7 @@ import (
 // from the raw JSON request and returns them in the format expected by the OpenAI API.
 func ConvertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream bool) []byte {
 	rawJSON := inputRawJSON
+	isDeepSeekModel := strings.Contains(strings.ToLower(strings.TrimSpace(modelName)), "deepseek")
 	// Base OpenAI Chat Completions API template
 	out := []byte(`{"model":"","messages":[]}`)
 
@@ -235,8 +236,10 @@ func ConvertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 							msgJSON, _ = sjson.SetBytes(msgJSON, "content", "")
 						}
 
-						// Add reasoning_content if present
-						if hasReasoning {
+						// Add reasoning_content if present.
+						// DeepSeek follow-up tool chains expect reasoning_content to exist
+						// even when the converted thinking text is empty.
+						if hasReasoning || isDeepSeekModel {
 							msgJSON, _ = sjson.SetBytes(msgJSON, "reasoning_content", reasoningContent)
 						}
 
