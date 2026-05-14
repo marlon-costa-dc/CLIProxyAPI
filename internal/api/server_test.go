@@ -1,4 +1,4 @@
-﻿package api
+package api
 
 import (
 	"encoding/json"
@@ -79,6 +79,9 @@ func TestHealthz(t *testing.T) {
 
 func TestUnifiedModelsExposeClientSpecificMetadata(t *testing.T) {
 	server := newTestServer(t)
+	server.handlers.Cfg.ModelAliasContextWindow = map[string]int{
+		"deepseek-v4-flash": 5120000,
+	}
 	reg := registry.GetGlobalRegistry()
 
 	reg.RegisterClient("claude-client", "claude", []*registry.ModelInfo{{
@@ -103,6 +106,12 @@ func TestUnifiedModelsExposeClientSpecificMetadata(t *testing.T) {
 		ContextLength: 262144,
 	}})
 	defer reg.UnregisterClient("codex-config-client")
+
+	reg.RegisterClient("deepseek-sparse", "openai", []*registry.ModelInfo{{
+		ID:      "deepseek-v4-flash",
+		OwnedBy: "zenmux",
+	}})
+	defer reg.UnregisterClient("deepseek-sparse")
 
 	t.Run("claude user agent", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
@@ -141,6 +150,9 @@ func TestUnifiedModelsExposeClientSpecificMetadata(t *testing.T) {
 		if strings.Contains(body, `"context_window":400000`) {
 			t.Fatalf("expected Anthropic-compatible response to avoid OpenAI-only context_window field, body=%s", body)
 		}
+		if !strings.Contains(body, `"id":"deepseek-v4-flash"`) || !strings.Contains(body, `"max_input_tokens":5120000`) {
+			t.Fatalf("expected Anthropic-compatible response to include overridden max_input_tokens for deepseek-v4-flash, body=%s", body)
+		}
 	})
 
 	t.Run("openai user agent", func(t *testing.T) {
@@ -162,6 +174,9 @@ func TestUnifiedModelsExposeClientSpecificMetadata(t *testing.T) {
 		}
 		if !strings.Contains(body, `"id":"codex-custom"`) || !strings.Contains(body, `"context_window":262144`) {
 			t.Fatalf("expected configured OpenAI model to expose overridden context_window, body=%s", body)
+		}
+		if !strings.Contains(body, `"id":"deepseek-v4-flash"`) || !strings.Contains(body, `"context_window":5120000`) {
+			t.Fatalf("expected OpenAI response to include overridden context_window for deepseek-v4-flash, body=%s", body)
 		}
 	})
 }
