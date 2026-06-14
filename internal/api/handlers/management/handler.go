@@ -16,6 +16,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/buildinfo"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/quota"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"golang.org/x/crypto/bcrypt"
@@ -49,8 +50,8 @@ type Handler struct {
 	postAuthHook        coreauth.PostAuthHook
 	postAuthPersistHook coreauth.PostAuthHook
 	pluginHost          *pluginhost.Host
+	quotaManager        *quota.Manager
 }
-
 // NewHandler creates a new management handler instance.
 func NewHandler(cfg *config.Config, configFilePath string, manager *coreauth.Manager) *Handler {
 	envSecret, _ := os.LookupEnv("MANAGEMENT_PASSWORD")
@@ -132,6 +133,13 @@ func (h *Handler) SetPluginHost(host *pluginhost.Host) {
 	h.mu.Lock()
 	h.pluginHost = host
 	h.mu.Unlock()
+}
+
+// SetQuotaManager sets the quota manager used by pause/resume endpoints.
+func (h *Handler) SetQuotaManager(qm *quota.Manager) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.quotaManager = qm
 }
 
 // SetLocalPassword configures the runtime-local password accepted for localhost requests.

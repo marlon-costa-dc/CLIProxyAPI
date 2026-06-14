@@ -34,6 +34,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/managementasset"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/quota"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
@@ -217,6 +218,9 @@ type Server struct {
 
 	localPassword string
 
+	// quotaManager manages API Key pause/resume states.
+	quotaManager *quota.Manager
+
 	keepAliveEnabled   bool
 	keepAliveTimeout   time.Duration
 	keepAliveOnTimeout func()
@@ -326,6 +330,23 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	}
 	s.localPassword = optionState.localPassword
 
+	// Initialize quota manager if enabled.
+	if cfg.Quota.Enabled {
+		qm, err := quota.NewManager(cfg.Quota)
+		if err != nil {
+			log.Errorf("failed to initialize quota manager: %v", err)
+		} else {
+			s.quotaManager = qm
+			if err := qm.Start(); err != nil {
+				log.Errorf("failed to start quota manager: %v", err)
+				s.quotaManager = nil
+			}
+		}
+	}
+	if s.quotaManager != nil {
+		s.mgmt.SetQuotaManager(s.quotaManager)
+	}
+
 	// Home heartbeat gate: when home is enabled, block all endpoints with 503 until the
 	// subscribe-config heartbeat connection is healthy.
 	engine.Use(s.homeHeartbeatMiddleware())
@@ -420,26 +441,32 @@ func (s *Server) setupRoutes() {
 	// OpenAI compatible API routes
 	v1 := s.engine.Group("/v1")
 	v1.Use(AuthMiddleware(s.accessManager))
-	{
-		v1.GET("/models", s.unifiedModelsHandler(openaiHandlers, claudeCodeHandlers))
-		v1.POST("/chat/completions", openaiHandlers.ChatCompletions)
-		v1.POST("/completions", openaiHandlers.Completions)
-		v1.POST("/embeddings", openaiHandlers.Embeddings)
-		v1.POST("/rerank", openaiHandlers.Rerank)
-		v1.POST("/images/generations", openaiHandlers.ImagesGenerations)
-		v1.POST("/images/edits", openaiHandlers.ImagesEdits)
-		v1.POST("/videos", openaiHandlers.VideosCreate)
-		v1.POST("/videos/generations", openaiHandlers.XAIVideosGenerations)
-		v1.POST("/videos/edits", openaiHandlers.XAIVideosEdits)
-		v1.POST("/videos/extensions", openaiHandlers.XAIVideosExtensions)
-		v1.GET("/videos/:request_id", openaiHandlers.XAIVideosRetrieve)
-		v1.POST("/messages", claudeCodeHandlers.ClaudeMessages)
-		v1.POST("/messages/count_tokens", claudeCodeHandlers.ClaudeCountTokens)
-		v1.GET("/responses", openaiResponsesHandlers.ResponsesWebsocket)
-		v1.POST("/responses", openaiResponsesHandlers.Responses)
-		v1.POST("/responses/compact", openaiResponsesHandlers.Compact)
+	if s.quotaManager != nil {
+		v1.Use(s.quotaManager.EnforcerMiddleware())
 	}
+	v1.GET("/models", s.unifiedModelsHandler(openaiHandlers, claudeCodeHandlers))
+	v1.POST("/chat/completions", openaiHandlers.ChatCompletions)
+	v1.POST("/completions", openaiHandlers.Completions)
+	v1.POST("/embeddings", openaiHandlers.Embeddings)
+	v1.POST("/rerank", openaiHandlers.Rerank)
+	v1.POST("/images/generations", openaiHandlers.ImagesGenerations)
+	v1.POST("/images/edits", openaiHandlers.ImagesEdits)
+	v1.POST("/videos", openaiHandlers.VideosCreate)
+	v1.POST("/videos/generations", openaiHandlers.XAIVideosGenerations)
+	v1.POST("/videos/edits", openaiHandlers.XAIVideosEdits)
+	v1.POST("/videos/extensions", openaiHandlers.XAIVideosExtensions)
+	v1.GET("/videos/:request_id", openaiHandlers.XAIVideosRetrieve)
+	v1.POST("/messages", claudeCodeHandlers.ClaudeMessages)
+	v1.POST("/messages/count_tokens", claudeCodeHandlers.ClaudeCountTokens)
+	v1.GET("/responses", openaiResponsesHandlers.ResponsesWebsocket)
+	v1.POST("/responses", openaiResponsesHandlers.Responses)
+	v1.POST("/responses/compact", openaiResponsesHandlers.Compact)
 
+	// Self-service usage endpoint (authed via API key, not management key)
+	if s.quotaManager != nil {
+		selfUsage := newSelfUsageHandler(s.quotaManager)
+		v1.GET("/usage/self", selfUsage.handleSelfUsage)
+	}
 	// Codex CLI direct route aliases (chatgpt_base_url compatible)
 	codexDirect := s.engine.Group("/backend-api/codex")
 	codexDirect.Use(AuthMiddleware(s.accessManager))
@@ -753,6 +780,14 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/xai-auth-url", s.mgmt.RequestXAIToken)
 		mgmt.POST("/oauth-callback", s.mgmt.PostOAuthCallback)
 		mgmt.GET("/get-auth-status", s.mgmt.GetAuthStatus)
+
+		// Quota management routes (always registered; handler checks nil internally)
+		mgmt.POST("/quota/pause", s.mgmt.PostPauseKey)
+		mgmt.POST("/quota/resume", s.mgmt.PostResumeKey)
+		mgmt.GET("/quota/paused", s.mgmt.GetPausedKeys)
+		mgmt.GET("/quota/config", s.mgmt.GetQuotaConfig)
+		mgmt.PUT("/quota/config", s.mgmt.PutQuotaConfig)
+
 	}
 }
 
@@ -1416,6 +1451,10 @@ func (s *Server) Stop(ctx context.Context) error {
 		return fmt.Errorf("failed to shutdown HTTP server: %v", err)
 	}
 
+	// Stop the quota manager background goroutine.
+	if s.quotaManager != nil {
+		s.quotaManager.Stop()
+	}
 	log.Debug("API server stopped")
 	return nil
 }
@@ -1553,6 +1592,40 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 	}
 	redisqueue.SetEnabled(s.managementRoutesEnabled.Load() || (cfg != nil && cfg.Home.Enabled))
 
+	// Handle quota enabled/disabled transitions on hot-reload
+	oldQuotaEnabled := oldCfg != nil && oldCfg.Quota.Enabled
+	newQuotaEnabled := cfg.Quota.Enabled
+	switch {
+	case oldQuotaEnabled && !newQuotaEnabled:
+		// Quota was enabled, now disabled: stop and remove the manager
+		if s.quotaManager != nil {
+			s.quotaManager.Stop()
+			s.quotaManager = nil
+			s.mgmt.SetQuotaManager(nil)
+		}
+	case !oldQuotaEnabled && newQuotaEnabled:
+		// Quota was disabled, now enabled: create and start a new manager
+		if s.quotaManager == nil {
+			qm, err := quota.NewManager(cfg.Quota)
+			if err != nil {
+				log.Errorf("quota hot-reload: failed to create manager: %v", err)
+			} else {
+				s.quotaManager = qm
+				if err := qm.Start(); err != nil {
+					log.Errorf("quota hot-reload: failed to start manager: %v", err)
+					s.quotaManager = nil
+				}
+			}
+			if s.quotaManager != nil && s.mgmt != nil {
+				s.mgmt.SetQuotaManager(s.quotaManager)
+			}
+		}
+	default:
+		// Quota still enabled: update config
+		if s.quotaManager != nil {
+			s.quotaManager.UpdateConfig(cfg.Quota)
+		}
+	}
 	s.applyAccessConfig(oldCfg, cfg)
 	s.cfg = cfg
 	s.wsAuthEnabled.Store(cfg.WebsocketAuth)

@@ -318,14 +318,6 @@ func TestHomeEnabledHidesManagementEndpointsAndControlPanel(t *testing.T) {
 		}
 	})
 }
-		if !strings.Contains(body, `"auto_compact_token_limit":32000`) {
-			t.Fatalf("expected OpenAI response to include auto_compact_token_limit, body=%s", body)
-		}
-		if !strings.Contains(body, `"id":"codex-custom"`) || !strings.Contains(body, `"context_window":262144`) {
-			t.Fatalf("expected configured OpenAI model to expose overridden context_window, body=%s", body)
-		}
-	})
-}
 
 func TestAmpProviderModelRoutes(t *testing.T) {
 	testCases := []struct {
