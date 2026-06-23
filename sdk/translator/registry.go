@@ -57,35 +57,31 @@ func (r *Registry) SetPluginHooks(hooks PluginHooks) {
 // client-side prefixes (e.g. "copilot/gpt-5-mini") are not leaked upstream.
 func (r *Registry) TranslateRequest(from, to Format, model string, rawJSON []byte, stream bool) []byte {
 	r.mu.RLock()
-	var fn RequestTransform
+	defer r.mu.RUnlock()
+
 	if byTarget, ok := r.requests[from]; ok {
-		fn = byTarget[to]
-	}
-	hooks := r.hooks
-	r.mu.RUnlock()
-
-	body := rawJSON
-	if fn != nil {
-		body = fn(model, body, stream)
-	} else {
-		if model != "" && gjson.GetBytes(body, "model").String() != model {
-			if updated, err := sjson.SetBytes(body, "model", model); err != nil {
-				log.Warnf("translator: failed to normalize model in request fallback: %v", err)
-			} else {
-				body = updated
+		if fn, isOk := byTarget[to]; isOk && fn != nil {
+			body := fn(model, rawJSON, stream)
+			if r.hooks != nil {
+				body = r.hooks.NormalizeRequest(context.Background(), from, to, model, body, stream)
 			}
+			return body
 		}
 	}
-
-	if hooks != nil {
-		body = hooks.NormalizeRequest(context.Background(), from, to, model, body, stream)
-		if fn == nil {
-			if translated, ok := hooks.TranslateRequest(context.Background(), from, to, model, body, stream); ok {
-				body = translated
-			}
+	if r.hooks != nil {
+		if translated, ok := r.hooks.TranslateRequest(context.Background(), from, to, model, rawJSON, stream); ok {
+			return translated
+		}
+		return r.hooks.NormalizeRequest(context.Background(), from, to, model, rawJSON, stream)
+	}
+	if model != "" && gjson.GetBytes(rawJSON, "model").String() != model {
+		if updated, err := sjson.SetBytes(rawJSON, "model", model); err != nil {
+			log.Warnf("translator: failed to normalize model in request fallback: %v", err)
+		} else {
+			return updated
 		}
 	}
-	return body
+	return rawJSON
 }
 
 // HasRequestTransformer indicates whether a request translator exists.
@@ -117,62 +113,51 @@ func (r *Registry) HasResponseTransformer(from, to Format) bool {
 // TranslateStream applies the registered streaming response translator.
 func (r *Registry) TranslateStream(ctx context.Context, from, to Format, model string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, param *any) [][]byte {
 	r.mu.RLock()
-	var fn ResponseTransform
+	defer r.mu.RUnlock()
+
 	if byTarget, ok := r.responses[to]; ok {
-		fn = byTarget[from]
-	}
-	hooks := r.hooks
-	r.mu.RUnlock()
-
-	body := rawJSON
-	if hooks != nil {
-		body = hooks.NormalizeResponseBefore(ctx, from, to, model, originalRequestRawJSON, requestRawJSON, body, true)
-	}
-
-	var outputs [][]byte
-	if fn.Stream != nil {
-		outputs = fn.Stream(ctx, model, originalRequestRawJSON, requestRawJSON, body, param)
-	} else if hooks != nil {
-		if translated, ok := hooks.TranslateResponse(ctx, from, to, model, originalRequestRawJSON, requestRawJSON, body, true); ok {
-			outputs = [][]byte{translated}
+		if fn, isOk := byTarget[from]; isOk && fn.Stream != nil {
+			outputs := fn.Stream(ctx, model, originalRequestRawJSON, requestRawJSON, rawJSON, param)
+			if r.hooks != nil {
+				for i, output := range outputs {
+					outputs[i] = r.hooks.NormalizeResponseAfter(ctx, from, to, model, originalRequestRawJSON, requestRawJSON, output, true)
+				}
+			}
+			return outputs
 		}
 	}
-	if outputs == nil {
-		outputs = [][]byte{body}
-	}
-	if hooks != nil {
-		for i, output := range outputs {
-			outputs[i] = hooks.NormalizeResponseAfter(ctx, from, to, model, originalRequestRawJSON, requestRawJSON, output, true)
+	if r.hooks != nil {
+		body := r.hooks.NormalizeResponseBefore(ctx, from, to, model, originalRequestRawJSON, requestRawJSON, rawJSON, true)
+		if translated, ok := r.hooks.TranslateResponse(ctx, from, to, model, originalRequestRawJSON, requestRawJSON, body, true); ok {
+			return [][]byte{translated}
 		}
+		return [][]byte{r.hooks.NormalizeResponseAfter(ctx, from, to, model, originalRequestRawJSON, requestRawJSON, body, true)}
 	}
-	return outputs
+	return [][]byte{rawJSON}
 }
 
 // TranslateNonStream applies the registered non-stream response translator.
 func (r *Registry) TranslateNonStream(ctx context.Context, from, to Format, model string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, param *any) []byte {
 	r.mu.RLock()
-	var fn ResponseTransform
-	if byTarget, ok := r.responses[to]; ok {
-		fn = byTarget[from]
-	}
-	hooks := r.hooks
-	r.mu.RUnlock()
+	defer r.mu.RUnlock()
 
-	body := rawJSON
-	if hooks != nil {
-		body = hooks.NormalizeResponseBefore(ctx, from, to, model, originalRequestRawJSON, requestRawJSON, body, false)
-	}
-	if fn.NonStream != nil {
-		body = fn.NonStream(ctx, model, originalRequestRawJSON, requestRawJSON, body, param)
-	} else if hooks != nil {
-		if translated, ok := hooks.TranslateResponse(ctx, from, to, model, originalRequestRawJSON, requestRawJSON, body, false); ok {
-			body = translated
+	if byTarget, ok := r.responses[to]; ok {
+		if fn, isOk := byTarget[from]; isOk && fn.NonStream != nil {
+			body := fn.NonStream(ctx, model, originalRequestRawJSON, requestRawJSON, rawJSON, param)
+			if r.hooks != nil {
+				body = r.hooks.NormalizeResponseAfter(ctx, from, to, model, originalRequestRawJSON, requestRawJSON, body, false)
+			}
+			return body
 		}
 	}
-	if hooks != nil {
-		body = hooks.NormalizeResponseAfter(ctx, from, to, model, originalRequestRawJSON, requestRawJSON, body, false)
+	if r.hooks != nil {
+		body := r.hooks.NormalizeResponseBefore(ctx, from, to, model, originalRequestRawJSON, requestRawJSON, rawJSON, false)
+		if translated, ok := r.hooks.TranslateResponse(ctx, from, to, model, originalRequestRawJSON, requestRawJSON, body, false); ok {
+			return translated
+		}
+		return r.hooks.NormalizeResponseAfter(ctx, from, to, model, originalRequestRawJSON, requestRawJSON, body, false)
 	}
-	return body
+	return rawJSON
 }
 
 // TranslateTokenCount applies the registered token count response translator.
