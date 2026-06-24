@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env bash
+#!/usr/bin/env bash
 set -euo pipefail
 
 VERSION=""
@@ -113,7 +113,11 @@ cp "$MANAGEMENT_HTML" "$PKG_DIR/static/management.html"
 
 mkdir -p "$OUTPUT_DIR"
 if [[ "$TARGET_OS" == "windows" ]]; then
-  (cd "$OUTPUT_DIR" && zip -r "${PKG_NAME}.zip" "$PKG_NAME" >/dev/null)
+  if command -v zip &>/dev/null; then
+    (cd "$OUTPUT_DIR" && zip -r "${PKG_NAME}.zip" "$PKG_NAME" >/dev/null)
+  else
+    powershell -NoProfile -Command "Compress-Archive -Path '$PKG_DIR' -DestinationPath '${OUTPUT_DIR}/${PKG_NAME}.zip' -Force"
+  fi
   echo "${OUTPUT_DIR}/${PKG_NAME}.zip"
 else
   tar -C "$OUTPUT_DIR" -czf "${OUTPUT_DIR}/${PKG_NAME}.tar.gz" "$PKG_NAME"
