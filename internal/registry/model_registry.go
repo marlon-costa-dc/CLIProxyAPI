@@ -1285,8 +1285,18 @@ func (r *ModelRegistry) convertModelToMap(model *ModelInfo, handlerType string) 
 		if model.MaxCompletionTokens > 0 {
 			result["max_tokens"] = model.MaxCompletionTokens
 		}
-		return result
 
+		maxInput := model.ContextLength
+		if maxInput <= 0 {
+			maxInput = DefaultClaudeMaxInputTokens
+		}
+		maxOutput := model.MaxCompletionTokens
+		if maxOutput <= 0 {
+			maxOutput = DefaultClaudeMaxOutputTokens
+		}
+		result["max_input_tokens"] = maxInput
+		result["max_tokens"] = maxOutput
+		return result
 	case "gemini":
 		result := map[string]any{}
 		if model.Name != "" {

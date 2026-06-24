@@ -147,7 +147,7 @@ func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_ReasoningContentFa
 func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_TopLevelReasoningItem(t *testing.T) {
 	raw := []byte(`{
 		"input": [
-			{"type":"reasoning","text":"top-level chain of thought"}
+			{"type":"reasoning","summary":[{"type":"summary_text","text":"top-level chain of thought"}]}
 		]
 	}`)
 	out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("deepseek-chat", raw, false)
@@ -161,7 +161,7 @@ func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_TopLevelReasoningI
 func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_TopLevelReasoningPlaceholder(t *testing.T) {
 	raw := []byte(`{
 		"input": [
-			{"type":"reasoning","text":""}
+			{"type":"reasoning","summary":[]}
 		]
 	}`)
 	out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("deepseek-chat", raw, false)
@@ -191,19 +191,22 @@ func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_DeepSeekAssistantF
 func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_DeepSeekFunctionCallAssistantHasReasoningContent(t *testing.T) {
 	raw := []byte(`{
 		"input": [
+			{"type":"reasoning","summary":[{"type":"summary_text","text":"thinking"}]},
 			{"type":"function_call","call_id":"call_1","name":"exec_command","arguments":"{\"cmd\":\"ls\"}"},
 			{"type":"function_call_output","call_id":"call_1","output":"ok"}
 		]
 	}`)
+
 	out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("deepseek-v4-flash", raw, true)
+
 	if got := gjson.GetBytes(out, "messages.0.role").String(); got != "assistant" {
 		t.Fatalf("messages.0.role = %q, want %q", got, "assistant")
 	}
-	if !gjson.GetBytes(out, "messages.0.reasoning_content").Exists() {
-		t.Fatalf("messages.0.reasoning_content should exist for deepseek function_call assistant message")
+	if got := gjson.GetBytes(out, "messages.0.reasoning_content").String(); got != "thinking" {
+		t.Fatalf("messages.0.reasoning_content = %q, want %q", got, "thinking")
 	}
-	if got := gjson.GetBytes(out, "messages.0.reasoning_content").String(); got != "" {
-		t.Fatalf("messages.0.reasoning_content = %q, want empty string", got)
+	if got := len(gjson.GetBytes(out, "messages.0.tool_calls").Array()); got != 1 {
+		t.Fatalf("messages.0.tool_calls length = %d, want 1", got)
 	}
 }
 
