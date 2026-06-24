@@ -147,8 +147,11 @@ jobs:
             ~/go/pkg/mod
           key: go-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}-${{ hashFiles('go.sum') }}
           restore-keys: |
-            go-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}-
+                          go-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}-
             go-${{ runner.os }}-${{ runner.arch }}-
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
       - name: Generate Build Metadata
         shell: bash
         run: |
