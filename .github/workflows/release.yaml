@@ -197,8 +197,8 @@ jobs:
             -ldflags="-s -w -X main.Version=${RELEASE_VERSION} -X main.Commit=${COMMIT} -X main.BuildDate=${BUILD_DATE}" \
             -o "$archive_dir/$binary_name" ./cmd/server/
 
-          chmod +x release/package-unified.sh
-          release/package-unified.sh \
+          : "${us_ext:=}"
+          bash release/package-unified.sh \
             --version "${GITHUB_REF_NAME}" \
             --os "$GOOS" \
             --arch "$ASSET_ARCH" \
@@ -320,8 +320,8 @@ jobs:
               fi
             '
 
-          chmod +x release/package-unified.sh
-          release/package-unified.sh \
+          : "${us_ext:=}"
+          bash release/package-unified.sh \
             --version "${GITHUB_REF_NAME}" \
             --os "linux" \
             --arch "$ASSET_ARCH" \
@@ -426,8 +426,8 @@ jobs:
             exit 1
           fi
 
-          chmod +x release/package-unified.sh
-          release/package-unified.sh \
+          : "${us_ext:=}"
+          bash release/package-unified.sh \
             --version "${GITHUB_REF_NAME}" \
             --os "linux" \
             --arch "${ASSET_ARCH}_no-plugin" \
@@ -507,8 +507,8 @@ jobs:
           go build -ldflags "-s -w -X main.Version=${GITHUB_REF_NAME} -X main.Commit=$(git rev-parse --short HEAD) -X main.BuildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o "dist/bin/cli-proxy-api" ./cmd/server
       - name: Package unified artifact
         run: |
-          chmod +x release/package-unified.sh
-          release/package-unified.sh \
+          : "${us_ext:=}"
+          bash release/package-unified.sh \
             --version "${GITHUB_REF_NAME}" \
             --os freebsd \
             --arch ${{ matrix.asset_arch }}${{ matrix.asset_suffix }} \
