@@ -219,3 +219,67 @@ func TestResetQuota_DoesNotAcceptAuthIDOrFileName(t *testing.T) {
 		})
 	}
 }
+
+func TestNormalizeKeyHash_RawKeyBecomesHash(t *testing.T) {
+	rawKey := "sk-test-api-key-12345"
+	expected := quota.KeyHash(rawKey)
+
+	got := normalizeKeyHash(rawKey)
+	if got != expected {
+		t.Fatalf("normalizeKeyHash(%q) = %q, want %q", rawKey, got, expected)
+	}
+}
+
+func TestNormalizeKeyHash_HashPassesThrough(t *testing.T) {
+	hash := quota.KeyHash("sk-any-key")
+	if len(hash) != 8 {
+		t.Fatalf("expected 8-char hash, got %q", hash)
+	}
+
+	got := normalizeKeyHash(hash)
+	if got != hash {
+		t.Fatalf("normalizeKeyHash(%q) = %q, want %q", hash, got, hash)
+	}
+}
+
+func TestNormalizeKeyHash_InvalidInput(t *testing.T) {
+	if got := normalizeKeyHash(""); got != "" {
+		t.Fatalf("expected empty for empty input, got %q", got)
+	}
+	if got := normalizeKeyHash("not-hex!"); got == "" || len(got) != 8 {
+		t.Fatalf("expected hash for not-hex input, got %q", got)
+	}
+}
+
+func TestPutQuotaConfig_UpdateConfigNotifiesManager(t *testing.T) {
+	qm, err := quota.NewManager(quota.QuotaConfig{Enabled: false})
+	if err != nil {
+		t.Fatalf("NewManager failed: %v", err)
+	}
+	defer qm.Stop()
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{Quota: quota.QuotaConfig{Enabled: false}}, nil)
+	h.SetQuotaManager(qm)
+
+	// Simulate PutQuotaConfig
+	h.mu.Lock()
+	h.cfg.Quota.Enabled = true
+	h.cfg.Quota.Default.DailyCents = 500
+	h.cfg.Quota.Default.WeeklyCents = 2000
+	if h.quotaManager != nil {
+		h.quotaManager.UpdateConfig(h.cfg.Quota)
+	}
+	h.mu.Unlock()
+
+	// Verify through the manager
+	cfg := qm.Config()
+	if !cfg.Enabled {
+		t.Fatal("expected enabled=true after UpdateConfig")
+	}
+	if cfg.Default.DailyCents != 500 {
+		t.Fatalf("expected daily_cents=500, got %d", cfg.Default.DailyCents)
+	}
+	if cfg.Default.WeeklyCents != 2000 {
+		t.Fatalf("expected weekly_cents=2000, got %d", cfg.Default.WeeklyCents)
+	}
+}

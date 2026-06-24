@@ -152,6 +152,37 @@ func TestStore_ListPausedOnlyNonExpired(t *testing.T) {
 	}
 }
 
+// TestStore_ExpiredKeyIsNotPaused verifies auto-resume: a key with
+// an expired pause entry is treated as not paused (simulating the
+// next-day/week recovery flow in spend limiting).
+func TestStore_ExpiredKeyIsNotPaused(t *testing.T) {
+	s := newTestStore(t)
+	defer s.Close()
+
+	hash := "auto-resume-test"
+	if err := s.PauseKey(PauseEntry{
+		KeyHash:   hash,
+		Reason:    "spend_limit_exceeded",
+		PausedAt:  time.Now().Add(-2 * time.Hour),
+		ExpiresAt: time.Now().Add(-1 * time.Hour), // expired 1 hour ago
+		CreatedAt: time.Now().Add(-2 * time.Hour),
+	}); err != nil {
+		t.Fatalf("PauseKey failed: %v", err)
+	}
+
+	// IsPaused should report false for expired entries
+	paused, entry, err := s.IsPaused(hash)
+	if err != nil {
+		t.Fatalf("IsPaused failed: %v", err)
+	}
+	if paused {
+		t.Fatal("expected paused=false for expired entry (auto-resume)")
+	}
+	if entry != nil {
+		t.Fatal("expected nil entry for expired entry")
+	}
+}
+
 func TestStore_ConcurrentSafe(t *testing.T) {
 	s := newTestStore(t)
 	defer s.Close()

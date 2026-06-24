@@ -6,9 +6,9 @@ import (
 	"strings"
 	"time"
 
-		"github.com/gin-gonic/gin"
-		"github.com/router-for-me/CLIProxyAPI/v7/internal/quota"
-	)
+	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/quota"
+)
 
 // Quota exceeded toggles
 func (h *Handler) GetSwitchProject(c *gin.Context) {
@@ -25,8 +25,35 @@ func (h *Handler) PutSwitchPreviewModel(c *gin.Context) {
 	h.updateBoolField(c, func(v bool) { h.cfg.QuotaExceeded.SwitchPreviewModel = v })
 }
 
+// normalizeKeyHash accepts either an 8-char hex key_hash or a raw API key (sk-xxx)
+// and returns the canonical 8-char hex hash.
+func normalizeKeyHash(input string) string {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return ""
+	}
+	// If it looks like an 8-char hex hash, use as-is.
+	if len(input) == 8 && isHexString(input) {
+		return input
+	}
+	// Otherwise treat as raw API key and hash it.
+	return quota.KeyHash(input)
+}
+
+func isHexString(s string) bool {
+	if len(s) == 0 {
+		return false
+	}
+	for _, c := range s {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
+}
+
 // PostPauseKey pauses an API key.
-// Body: {"key_hash": "...", "reason": "...", "expires_in_seconds": 3600}
+// Body: {"key_hash": "..."} where key_hash can be the 8-char hash or the raw sk-xxx key.
 func (h *Handler) PostPauseKey(c *gin.Context) {
 	h.mu.Lock()
 	qm := h.quotaManager
@@ -46,7 +73,9 @@ func (h *Handler) PostPauseKey(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 		return
 	}
-	if body.KeyHash == "" {
+
+	keyHash := normalizeKeyHash(body.KeyHash)
+	if keyHash == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "key_hash is required"})
 		return
 	}
@@ -56,7 +85,7 @@ func (h *Handler) PostPauseKey(c *gin.Context) {
 		expiresAt = time.Now().Add(time.Duration(body.ExpiresInSeconds) * time.Second)
 	}
 
-	if err := qm.PauseKey(body.KeyHash, body.Reason, expiresAt); err != nil {
+	if err := qm.PauseKey(keyHash, body.Reason, expiresAt); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -64,7 +93,7 @@ func (h *Handler) PostPauseKey(c *gin.Context) {
 }
 
 // PostResumeKey resumes a paused API key.
-// Body: {"key_hash": "..."}
+// Body: {"key_hash": "..."} where key_hash can be the 8-char hash or the raw sk-xxx key.
 func (h *Handler) PostResumeKey(c *gin.Context) {
 	h.mu.Lock()
 	qm := h.quotaManager
@@ -82,12 +111,14 @@ func (h *Handler) PostResumeKey(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 		return
 	}
-	if body.KeyHash == "" {
+
+	keyHash := normalizeKeyHash(body.KeyHash)
+	if keyHash == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "key_hash is required"})
 		return
 	}
 
-	if err := qm.ResumeKey(body.KeyHash); err != nil {
+	if err := qm.ResumeKey(keyHash); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -186,6 +217,11 @@ func (h *Handler) PutQuotaConfig(c *gin.Context) {
 	}
 
 	h.persistLocked(c)
+
+	// Notify the quota manager about config changes for hot-reload.
+	if h.quotaManager != nil {
+		h.quotaManager.UpdateConfig(h.cfg.Quota)
+	}
 }
 
 type spendLimitBody struct {
@@ -199,6 +235,7 @@ type spendLimitEntryBody struct {
 	DailyCents  int64  `json:"daily_cents"`
 	WeeklyCents int64  `json:"weekly_cents"`
 }
+
 // ResetQuota clears quota/cooldown routing state for one auth index.
 func (h *Handler) ResetQuota(c *gin.Context) {
 	if h.authManager == nil {
