@@ -277,6 +277,14 @@ jobs:
           npm ci
           VERSION=${GITHUB_REF_NAME} npm run build
           test -f dist/index.html
+      - name: Build usage-service
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd /tmp/mc/usage-service
+          mkdir -p /tmp/mc/dist/bin
+          CGO_ENABLED=0 GOOS=linux GOARCH=${{ matrix.goarch }} go build -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" -o "/tmp/mc/dist/bin/usage-service" ./cmd/cpa-manager
+          test -f "/tmp/mc/dist/bin/usage-service"
       - name: Generate Build Metadata
         shell: bash
         run: |
@@ -465,11 +473,13 @@ jobs:
         include:
           - target: freebsd-amd64
             goarch: amd64
+            goos: freebsd
             asset_arch: amd64
             asset_suffix: ''
             cgo_enabled: true
           - target: freebsd-arm64-no-plugin
             goarch: arm64
+            goos: freebsd
             asset_arch: aarch64
             asset_suffix: _no-plugin
             cgo_enabled: false
@@ -477,93 +487,88 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
-
       - name: Refresh models catalog
         run: |
           git fetch --depth 1 https://github.com/router-for-me/models.git main
           git show FETCH_HEAD:models.json > internal/registry/models/models.json
-
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26.x'
-
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
-
-      - name: Build management center
+      - name: Build management center frontend
         run: |
           git clone --depth 1 https://github.com/13210541230/Cli-Proxy-API-Management-Center.git /tmp/mc
           cd /tmp/mc
           npm ci
           VERSION=${GITHUB_REF_NAME} npm run build
           test -f dist/index.html
-
-      - name: Build usage-service from management center
+      - name: Build usage-service
         env:
-          GOOS: freebsd
+          GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: 0
         run: |
           cd /tmp/mc/usage-service
           mkdir -p /tmp/mc/dist/bin
-          ext=""
-          if false; then ext=".exe"; fi
-          go build -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" -o "/tmp/mc/dist/bin/usage-service${ext}" ./cmd/cpa-manager
-          test -f "/tmp/mc/dist/bin/usage-service${ext}"
-
+          go build -ldflags "-s -w -X main.version=${GITHUB_REF_NAME}" -o "/tmp/mc/dist/bin/usage-service" ./cmd/cpa-manager
+          test -f "/tmp/mc/dist/bin/usage-service"
       - name: Build cli-proxy-api
         env:
-          GOOS: freebsd
+          GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: 0
         run: |
           mkdir -p dist/bin
-          ext=""
-          if false; then ext=".exe"; fi
-          go build -ldflags "-s -w -X main.Version=${GITHUB_REF_NAME} -X main.Commit=$(git rev-parse --short HEAD) -X main.BuildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o "dist/bin/cli-proxy-api${ext}" ./cmd/server
-
+          go build -ldflags "-s -w -X main.Version=${GITHUB_REF_NAME} -X main.Commit=$(git rev-parse --short HEAD) -X main.BuildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o "dist/bin/cli-proxy-api" ./cmd/server
       - name: Package unified artifact
         run: |
           chmod +x release/package-unified.sh
-          ext=""
-          if false; then ext=".exe"; fi
           release/package-unified.sh \
             --version "${GITHUB_REF_NAME}" \
             --os freebsd \
-            --arch ${{ matrix.goarch }} \
-            --server-bin "dist/bin/cli-proxy-api${ext}" \
-            --usage-bin "/tmp/mc/dist/bin/usage-service${ext}" \
+            --arch ${{ matrix.asset_arch }}${{ matrix.asset_suffix }} \
+            --server-bin "dist/bin/cli-proxy-api" \
+            --usage-bin "/tmp/mc/dist/bin/usage-service" \
             --management-html "/tmp/mc/dist/index.html" \
             --output-dir "dist/release"
-
-      - name: Upload package artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: package-freebsd-${{ matrix.goarch }}
-          path: |
-            dist/release/*.zip
-            dist/release/*.tar.gz
+          name: unified-${{ matrix.target }}
+          path: dist/release/CLIProxyAPI_*
+          if-no-files-found: error
 
   publish-checksums:
     runs-on: ubuntu-latest
-    needs: prepare-release
+    needs:
+      - prepare-release
+      - build-hosted
+      - build-linux-glibc
+      - build-linux-no-plugin
+      - build-freebsd
 
     steps:
       - uses: actions/download-artifact@v4
         with:
           path: dist/all-assets
+          pattern: unified-*
+          merge-multiple: true
 
       - name: Generate checksums
         run: |
           find dist/all-assets -type f \( -name "*.zip" -o -name "*.tar.gz" \) -print0 | sort -z | xargs -0 sha256sum > checksums.txt
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.ref_name }}
-          generate_release_notes: true
-          files: |
-            dist/all-assets/**/*.zip
-            dist/all-assets/**/*.tar.gz
-            checksums.txt
+      - name: Upload release assets
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          assets=(dist/all-assets/CLIProxyAPI_*.tar.gz dist/all-assets/CLIProxyAPI_*.zip)
+          if [[ ${#assets[@]} -eq 0 ]]; then
+            printf 'no release assets found\n' >&2
+            exit 1
+          fi
+          gh release upload "$GITHUB_REF_NAME" "${assets[@]}" checksums.txt --clobber
