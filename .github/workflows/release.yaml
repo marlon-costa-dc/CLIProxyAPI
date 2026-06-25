@@ -203,6 +203,29 @@ jobs:
           CGO_ENABLED="${CGO_ENABLED:-1}" GOOS="$GOOS" GOARCH="$GOARCH" go build \
             -ldflags="-s -w -X main.Version=${RELEASE_VERSION} -X main.Commit=${COMMIT} -X main.BuildDate=${BUILD_DATE}" \
             -o "$archive_dir/$binary_name" ./cmd/server/
+
+          pkg_name="CLIProxyAPI_${RELEASE_VERSION}_${GOOS}_${ASSET_ARCH}"
+          if [[ "$GOOS" == "windows" ]]; then
+            pkg_dir="dist/release/${pkg_name}"
+            rm -rf "$pkg_dir"
+            mkdir -p "$pkg_dir/static"
+            cp "$archive_dir/$binary_name" "$pkg_dir/"
+            cp "/tmp/mc/dist/bin/usage-service${us_ext:-}" "$pkg_dir/" || true
+            cp LICENSE README.md README_CN.md config.example.yaml "$pkg_dir/"
+            cp /tmp/mc/dist/index.html "$pkg_dir/static/management.html"
+            { echo '@echo off'; echo 'setlocal'; echo 'cd /d %~dp0'; echo 'if exist usage-service.exe start "" usage-service.exe'; echo 'cli-proxy-api.exe --config config.example.yaml'; } > "$pkg_dir/start.bat"
+            powershell -NoProfile -Command "Compress-Archive -Path '${pkg_dir}\\*' -DestinationPath 'dist\\release\\${pkg_name}.zip' -Force"
+            rm -rf "$pkg_dir"
+          else
+            bash release/package-unified.sh \
+              --version "${GITHUB_REF_NAME}" \
+              --os "$GOOS" \
+              --arch "$ASSET_ARCH" \
+              --server-bin "$archive_dir/$binary_name" \
+              --usage-bin "/tmp/mc/dist/bin/usage-service${us_ext:-}" \
+              --management-html "/tmp/mc/dist/index.html" \
+              --output-dir "dist/release"
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: unified-${{ matrix.target }}
