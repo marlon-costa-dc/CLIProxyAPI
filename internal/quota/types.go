@@ -10,7 +10,7 @@ type PauseEntry struct {
 	KeyHash   string    `json:"key_hash"`
 	Reason    string    `json:"reason"`
 	PausedAt  time.Time `json:"paused_at"`
-	ExpiresAt time.Time `json:"expires_at"`   // zero = permanent pause
+	ExpiresAt time.Time `json:"expires_at"` // zero = permanent pause
 	CreatedAt time.Time `json:"created_at"`
 }
 
@@ -38,7 +38,7 @@ type SpendLimit struct {
 
 // SpendLimitEntry associates a SpendLimit with a scope (global or api-key).
 type SpendLimitEntry struct {
-	ApplyTo     string `yaml:"apply-to" json:"apply_to"`     // "global" | "api-key"
+	ApplyTo     string `yaml:"apply-to" json:"apply_to"` // "global" | "api-key"
 	ApplyValue  string `yaml:"apply-value" json:"apply_value"`
 	DailyCents  int64  `yaml:"daily-cents" json:"daily_cents"`
 	WeeklyCents int64  `yaml:"weekly-cents" json:"weekly_cents"`

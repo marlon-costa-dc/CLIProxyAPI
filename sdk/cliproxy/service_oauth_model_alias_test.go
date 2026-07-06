@@ -1,4 +1,4 @@
-﻿package cliproxy
+package cliproxy
 
 import (
 	"testing"

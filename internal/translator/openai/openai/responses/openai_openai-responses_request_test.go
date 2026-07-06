@@ -1,10 +1,12 @@
 package responses
+
 import (
 	"bytes"
 	"encoding/json"
-	"testing"
 	"github.com/tidwall/gjson"
+	"testing"
 )
+
 func prettyJSONForTest(raw []byte) string {
 	if !gjson.ValidBytes(raw) {
 		return string(raw)

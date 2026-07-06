@@ -30,7 +30,7 @@ func TestGetPausedKeysReturnsEmptyListWhenQuotaDisabled(t *testing.T) {
 	}
 
 	var body struct {
-		Enabled bool              `json:"enabled"`
+		Enabled bool               `json:"enabled"`
 		Entries []quota.PauseEntry `json:"entries"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
@@ -71,17 +71,17 @@ func TestGetQuotaConfigReturnsCurrentConfig(t *testing.T) {
 	}
 
 	var body struct {
-		Enabled   bool `json:"enabled"`
-		DBPath    string `json:"db_path"`
-		Default   struct {
+		Enabled bool   `json:"enabled"`
+		DBPath  string `json:"db_path"`
+		Default struct {
 			DailyCents  int64 `json:"daily_cents"`
 			WeeklyCents int64 `json:"weekly_cents"`
 		} `json:"default"`
 		Overrides []struct {
 			ApplyTo     string `json:"apply_to"`
 			ApplyValue  string `json:"apply_value"`
-			DailyCents  int64 `json:"daily_cents"`
-			WeeklyCents int64 `json:"weekly_cents"`
+			DailyCents  int64  `json:"daily_cents"`
+			WeeklyCents int64  `json:"weekly_cents"`
 		} `json:"overrides"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {

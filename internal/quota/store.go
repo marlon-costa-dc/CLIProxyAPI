@@ -8,14 +8,14 @@ import (
 	"sync"
 	"time"
 
-	_ "modernc.org/sqlite"
 	log "github.com/sirupsen/logrus"
+	_ "modernc.org/sqlite"
 )
 
 // Store persists pause entries to SQLite.
 type Store struct {
-	db  *sql.DB
-	mu  sync.Mutex
+	db *sql.DB
+	mu sync.Mutex
 }
 
 // NewStore opens or creates the SQLite database at dbPath.

@@ -1,4 +1,4 @@
-﻿package helps
+package helps
 
 import (
 	"bytes"
@@ -824,4 +824,3 @@ func jsonPayload(line []byte) []byte {
 	}
 	return trimmed
 }
-

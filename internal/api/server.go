@@ -485,17 +485,17 @@ func (s *Server) setupRoutes() {
 		}
 	}
 
-		// OpenAI video API direct routes
-		openaiV1 := s.engine.Group("/openai/v1")
-		openaiV1.Use(AuthMiddleware(s.accessManager))
-		{
-			openaiV1.POST("/videos", openaiHandlers.VideosCreate)
-			openaiV1.GET("/videos/:video_id/content", openaiHandlers.VideosContent)
-			openaiV1.GET("/videos/:video_id", openaiHandlers.VideosRetrieve)
-		}
+	// OpenAI video API direct routes
+	openaiV1 := s.engine.Group("/openai/v1")
+	openaiV1.Use(AuthMiddleware(s.accessManager))
+	{
+		openaiV1.POST("/videos", openaiHandlers.VideosCreate)
+		openaiV1.GET("/videos/:video_id/content", openaiHandlers.VideosContent)
+		openaiV1.GET("/videos/:video_id", openaiHandlers.VideosRetrieve)
+	}
 
-		// Codex CLI direct route aliases (chatgpt_base_url compatible)
-		codexDirect := s.engine.Group("/backend-api/codex")
+	// Codex CLI direct route aliases (chatgpt_base_url compatible)
+	codexDirect := s.engine.Group("/backend-api/codex")
 	codexDirect.Use(AuthMiddleware(s.accessManager))
 	{
 		codexDirect.GET("/responses", openaiResponsesHandlers.ResponsesWebsocket)

@@ -23,9 +23,9 @@ type selfUsageResponse struct {
 }
 
 type selfQuotaStatus struct {
-	Paused        bool   `json:"paused"`
-	PausedReason  string `json:"paused_reason"`
-	ResumesAt     string `json:"resumes_at"`
+	Paused       bool   `json:"paused"`
+	PausedReason string `json:"paused_reason"`
+	ResumesAt    string `json:"resumes_at"`
 }
 
 type selfUsageData struct {
@@ -57,8 +57,8 @@ type selfModelUsage struct {
 
 // selfUsageHandler handles GET /v1/usage/self.
 type selfUsageHandler struct {
-	quotaManager    *quota.Manager
-	managementKey   string // plaintext MANAGEMENT_PASSWORD for usage-service auth
+	quotaManager  *quota.Manager
+	managementKey string // plaintext MANAGEMENT_PASSWORD for usage-service auth
 }
 
 // newSelfUsageHandler creates a new self-usage handler.
