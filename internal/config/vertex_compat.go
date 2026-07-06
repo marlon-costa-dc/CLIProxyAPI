@@ -53,11 +53,15 @@ type VertexCompatModel struct {
 
 	// ContextWindow overrides the advertised context window for this model.
 	ContextWindow int `yaml:"context-window,omitempty" json:"context-window,omitempty"`
+
+	// ForceMapping rewrites upstream response model fields back to Alias.
+	ForceMapping bool `yaml:"force-mapping,omitempty" json:"force-mapping,omitempty"`
 }
 
 func (m VertexCompatModel) GetName() string         { return m.Name }
 func (m VertexCompatModel) GetAlias() string        { return m.Alias }
 func (m VertexCompatModel) GetContextWindow() int   { return m.ContextWindow }
+func (m VertexCompatModel) GetForceMapping() bool   { return m.ForceMapping }
 
 // SanitizeVertexCompatKeys deduplicates and normalizes Vertex-compatible API key credentials.
 func (cfg *Config) SanitizeVertexCompatKeys() {
