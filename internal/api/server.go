@@ -353,17 +353,19 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	}
 	s.localPassword = optionState.localPassword
 
-	// Initialize quota manager if enabled.
-	if cfg.Quota.Enabled {
-		qm, err := quota.NewManager(cfg.Quota)
-		if err != nil {
-			log.Errorf("failed to initialize quota manager: %v", err)
-		} else {
-			s.quotaManager = qm
-			if err := qm.Start(); err != nil {
-				log.Errorf("failed to start quota manager: %v", err)
-				s.quotaManager = nil
-			}
+	// Initialize quota manager unconditionally so manual pause/resume always works
+	// even when cfg.Quota.Enabled is false. The Enabled flag only controls whether
+	// the enforcer middleware blocks paused keys on /v1 routes — it does NOT gate
+	// the management pause/resume API. This means: an admin can always pause a key
+	// manually; quota enforcement (auto-pause on limit exceeded) runs only when Enabled.
+	qm, err := quota.NewManager(cfg.Quota)
+	if err != nil {
+		log.Errorf("failed to initialize quota manager: %v", err)
+	} else {
+		s.quotaManager = qm
+		if err := qm.Start(); err != nil {
+			log.Errorf("failed to start quota manager: %v", err)
+			s.quotaManager = nil
 		}
 	}
 	if s.quotaManager != nil {
@@ -451,6 +453,9 @@ func (s *Server) setupRoutes() {
 	// OpenAI compatible API routes
 	v1 := s.engine.Group("/v1")
 	v1.Use(AuthMiddleware(s.accessManager))
+	// Enforcer always loaded when qm is available — manual pauses must block /v1 traffic
+	// regardless of cfg.Quota.Enabled. The Enabled flag gates only the spend-limit collector
+	// (auto-pause on limit exceeded), not manual pause enforcement.
 	if s.quotaManager != nil {
 		v1.Use(s.quotaManager.EnforcerMiddleware())
 	}
@@ -1725,39 +1730,10 @@ func (s *Server) UpdateClients(cfg *config.Config) {
 	}
 	redisqueue.SetEnabled(s.managementRoutesEnabled.Load() || (cfg != nil && cfg.Home.Enabled))
 
-	// Handle quota enabled/disabled transitions on hot-reload
-	oldQuotaEnabled := oldCfg != nil && oldCfg.Quota.Enabled
-	newQuotaEnabled := cfg.Quota.Enabled
-	switch {
-	case oldQuotaEnabled && !newQuotaEnabled:
-		// Quota was enabled, now disabled: stop and remove the manager
-		if s.quotaManager != nil {
-			s.quotaManager.Stop()
-			s.quotaManager = nil
-			s.mgmt.SetQuotaManager(nil)
-		}
-	case !oldQuotaEnabled && newQuotaEnabled:
-		// Quota was disabled, now enabled: create and start a new manager
-		if s.quotaManager == nil {
-			qm, err := quota.NewManager(cfg.Quota)
-			if err != nil {
-				log.Errorf("quota hot-reload: failed to create manager: %v", err)
-			} else {
-				s.quotaManager = qm
-				if err := qm.Start(); err != nil {
-					log.Errorf("quota hot-reload: failed to start manager: %v", err)
-					s.quotaManager = nil
-				}
-			}
-			if s.quotaManager != nil && s.mgmt != nil {
-				s.mgmt.SetQuotaManager(s.quotaManager)
-			}
-		}
-	default:
-		// Quota still enabled: update config
-		if s.quotaManager != nil {
-			s.quotaManager.UpdateConfig(cfg.Quota)
-		}
+	// Quota manager is always initialized at startup. Hot-reload only pushes new config
+	// (Enabled flag gates the spend-limit collector, not manual pause/resume which always work).
+	if s.quotaManager != nil {
+		s.quotaManager.UpdateConfig(cfg.Quota)
 	}
 	s.applyAccessConfig(oldCfg, cfg)
 	s.cfg = cfg

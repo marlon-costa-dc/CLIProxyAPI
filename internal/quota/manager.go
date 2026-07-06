@@ -96,7 +96,8 @@ func (m *Manager) Start() error {
 	m.wg.Add(1)
 	go func() {
 		defer m.wg.Done()
-		ticker := time.NewTicker(5 * time.Minute)
+		// ponytail: 1min tick — 到期停用最多 1 分钟内自动恢复；之前 5 分钟太慢。
+		ticker := time.NewTicker(1 * time.Minute)
 		defer ticker.Stop()
 
 		for {
