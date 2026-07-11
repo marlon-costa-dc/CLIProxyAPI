@@ -657,20 +657,6 @@ func (s *Server) setupRoutes() {
 		c.String(http.StatusOK, oauthCallbackSuccessHTML)
 	})
 
-	s.engine.GET("/xai/callback", func(c *gin.Context) {
-		code := c.Query("code")
-		state := c.Query("state")
-		errStr := c.Query("error")
-		if errStr == "" {
-			errStr = c.Query("error_description")
-		}
-		if state != "" {
-			_, _ = managementHandlers.WriteOAuthCallbackFileForPendingSession(s.cfg.AuthDir, "xai", state, code, errStr)
-		}
-		c.Header("Content-Type", "text/html; charset=utf-8")
-		c.String(http.StatusOK, oauthCallbackSuccessHTML)
-	})
-
 	// Management routes are registered lazily by registerManagementRoutes when a secret is configured.
 }
 
@@ -866,6 +852,7 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/kimi-auth-url", s.mgmt.RequestKimiToken)
 		mgmt.GET("/xai-auth-url", s.mgmt.RequestXAIToken)
 		mgmt.GET("/get-auth-status", s.mgmt.GetAuthStatus)
+		mgmt.DELETE("/oauth-session", s.mgmt.CancelAuthSession)
 
 		// Quota management routes (always registered; handler checks nil internally)
 		mgmt.POST("/quota/pause", s.mgmt.PostPauseKey)
@@ -873,7 +860,6 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.GET("/quota/paused", s.mgmt.GetPausedKeys)
 		mgmt.GET("/quota/config", s.mgmt.GetQuotaConfig)
 		mgmt.PUT("/quota/config", s.mgmt.PutQuotaConfig)
-
 	}
 }
 
