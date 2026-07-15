@@ -225,7 +225,7 @@ func TestUnifiedModelsExposeClientSpecificMetadata(t *testing.T) {
 		if strings.Contains(body, `"context_window":400000`) {
 			t.Fatalf("expected Anthropic-compatible response to avoid OpenAI-only context_window field, body=%s", body)
 		}
-		if !strings.Contains(body, `"max_input_tokens":5120000`) {
+		if !strings.Contains(body, `"display_name":"deepseek-v4-flash"`) || !strings.Contains(body, `"max_input_tokens":5120000`) {
 			t.Fatalf("expected Anthropic-compatible response to include overridden max_input_tokens for deepseek-v4-flash, body=%s", body)
 		}
 	})
