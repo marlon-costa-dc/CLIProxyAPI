@@ -75,6 +75,11 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PUT("/quota-exceeded/switch-preview-model", s.mgmt.PutSwitchPreviewModel)
 		mgmt.PATCH("/quota-exceeded/switch-preview-model", s.mgmt.PutSwitchPreviewModel)
 		mgmt.POST("/reset-quota", s.mgmt.ResetQuota)
+		mgmt.POST("/quota/pause", s.mgmt.PostPauseKey)
+		mgmt.POST("/quota/resume", s.mgmt.PostResumeKey)
+		mgmt.GET("/quota/paused", s.mgmt.GetPausedKeys)
+		mgmt.GET("/quota/config", s.mgmt.GetQuotaConfig)
+		mgmt.PUT("/quota/config", s.mgmt.PutQuotaConfig)
 
 		mgmt.GET("/api-keys", s.mgmt.GetAPIKeys)
 		mgmt.PUT("/api-keys", s.mgmt.PutAPIKeys)

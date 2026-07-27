@@ -223,9 +223,10 @@ type RoutingConfig struct {
 // When Fork is true, the alias is added as an additional model in listings while
 // keeping the original model ID available.
 type OAuthModelAlias struct {
-	Name  string `yaml:"name" json:"name"`
-	Alias string `yaml:"alias" json:"alias"`
-	Fork  bool   `yaml:"fork,omitempty" json:"fork,omitempty"`
+	Name          string `yaml:"name" json:"name"`
+	Alias         string `yaml:"alias" json:"alias"`
+	Fork          bool   `yaml:"fork,omitempty" json:"fork,omitempty"`
+	ContextWindow int    `yaml:"context-window,omitempty" json:"context-window,omitempty"`
 
 	// DisplayName is the optional human-readable name shown in model catalogs.
 	DisplayName string `yaml:"display-name,omitempty" json:"display-name,omitempty"`
@@ -366,6 +367,9 @@ type ClaudeModel struct {
 	// DisplayName is the optional human-readable name shown in model catalogs.
 	DisplayName string `yaml:"display-name,omitempty" json:"display-name,omitempty"`
 
+	// ContextWindow overrides the advertised context window for this model.
+	ContextWindow int `yaml:"context-window,omitempty" json:"context-window,omitempty"`
+
 	// ForceMapping rewrites upstream response model fields back to Alias.
 	ForceMapping bool `yaml:"force-mapping,omitempty" json:"force-mapping,omitempty"`
 }
@@ -375,6 +379,8 @@ func (m ClaudeModel) GetName() string { return m.Name }
 func (m ClaudeModel) GetAlias() string { return m.Alias }
 
 func (m ClaudeModel) GetDisplayName() string { return m.DisplayName }
+
+func (m ClaudeModel) GetContextWindow() int { return m.ContextWindow }
 
 func (m ClaudeModel) GetForceMapping() bool { return m.ForceMapping }
 
@@ -429,6 +435,9 @@ type CodexModel struct {
 	// DisplayName is the optional human-readable name shown in model catalogs.
 	DisplayName string `yaml:"display-name,omitempty" json:"display-name,omitempty"`
 
+	// ContextWindow overrides the advertised context window for this model.
+	ContextWindow int `yaml:"context-window,omitempty" json:"context-window,omitempty"`
+
 	// ForceMapping rewrites upstream response model fields back to Alias.
 	ForceMapping bool `yaml:"force-mapping,omitempty" json:"force-mapping,omitempty"`
 }
@@ -438,6 +447,8 @@ func (m CodexModel) GetName() string { return m.Name }
 func (m CodexModel) GetAlias() string { return m.Alias }
 
 func (m CodexModel) GetDisplayName() string { return m.DisplayName }
+
+func (m CodexModel) GetContextWindow() int { return m.ContextWindow }
 
 func (m CodexModel) GetForceMapping() bool { return m.ForceMapping }
 
@@ -494,6 +505,9 @@ type GeminiModel struct {
 	// DisplayName is the optional human-readable name shown in model catalogs.
 	DisplayName string `yaml:"display-name,omitempty" json:"display-name,omitempty"`
 
+	// ContextWindow overrides the advertised context window for this model.
+	ContextWindow int `yaml:"context-window,omitempty" json:"context-window,omitempty"`
+
 	// ForceMapping rewrites upstream response model fields back to Alias.
 	ForceMapping bool `yaml:"force-mapping,omitempty" json:"force-mapping,omitempty"`
 }
@@ -503,6 +517,8 @@ func (m GeminiModel) GetName() string { return m.Name }
 func (m GeminiModel) GetAlias() string { return m.Alias }
 
 func (m GeminiModel) GetDisplayName() string { return m.DisplayName }
+
+func (m GeminiModel) GetContextWindow() int { return m.ContextWindow }
 
 func (m GeminiModel) GetForceMapping() bool { return m.ForceMapping }
 
@@ -559,6 +575,9 @@ type OpenAICompatibilityModel struct {
 	// DisplayName is the optional human-readable name shown in model catalogs.
 	DisplayName string `yaml:"display-name,omitempty" json:"display-name,omitempty"`
 
+	// ContextWindow overrides the advertised context window for this model.
+	ContextWindow int `yaml:"context-window,omitempty" json:"context-window,omitempty"`
+
 	// ForceMapping rewrites upstream response model fields back to Alias.
 	ForceMapping bool `yaml:"force-mapping,omitempty" json:"force-mapping,omitempty"`
 
@@ -582,5 +601,7 @@ func (m OpenAICompatibilityModel) GetName() string { return m.Name }
 func (m OpenAICompatibilityModel) GetAlias() string { return m.Alias }
 
 func (m OpenAICompatibilityModel) GetDisplayName() string { return m.DisplayName }
+
+func (m OpenAICompatibilityModel) GetContextWindow() int { return m.ContextWindow }
 
 func (m OpenAICompatibilityModel) GetForceMapping() bool { return m.ForceMapping }

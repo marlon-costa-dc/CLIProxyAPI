@@ -1227,13 +1227,11 @@ func TestVideosRoutesKeepXAINativeAndExposeOpenAIPrefix(t *testing.T) {
 	nativeReq.Header.Set("Content-Type", "application/json")
 	nativeRR := httptest.NewRecorder()
 	server.engine.ServeHTTP(nativeRR, nativeReq)
-	// ponytail: grok-imagine-video is now a known model (added by upstream), so routing succeeds
-	// but fails at provider level (no xAI backend in tests) → 502.
-	if nativeRR.Code != http.StatusBadGateway {
-		t.Fatalf("native status = %d, want %d body=%s", nativeRR.Code, http.StatusBadGateway, nativeRR.Body.String())
+	if nativeRR.Code != http.StatusBadRequest {
+		t.Fatalf("native status = %d, want %d body=%s", nativeRR.Code, http.StatusBadRequest, nativeRR.Body.String())
 	}
-	if !strings.Contains(nativeRR.Body.String(), "unknown provider") {
-		t.Fatalf("expected /v1/videos to route grok-imagine-video to unknown provider, body=%s", nativeRR.Body.String())
+	if !strings.Contains(nativeRR.Body.String(), "not supported") {
+		t.Fatalf("expected /v1/videos to reject unsupported model, body=%s", nativeRR.Body.String())
 	}
 
 	openAIReq := httptest.NewRequest(http.MethodPost, "/openai/v1/videos", strings.NewReader(`{"model":`))

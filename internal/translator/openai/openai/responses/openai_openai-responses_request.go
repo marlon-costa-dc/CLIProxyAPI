@@ -29,6 +29,7 @@ import (
 //   - []byte: The transformed request data in OpenAI chat completions format
 func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inputRawJSON []byte, stream bool) []byte {
 	rawJSON := inputRawJSON
+	isDeepSeekModel := strings.Contains(strings.ToLower(strings.TrimSpace(modelName)), "deepseek")
 	// Base OpenAI chat completions template with default values
 	out := []byte(`{"model":"","messages":[],"stream":false}`)
 
@@ -92,6 +93,8 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 			assistantMessage, _ = sjson.SetBytes(assistantMessage, "tool_calls", pendingToolCalls)
 			if reasoningContent := takePendingReasoningContent(); reasoningContent != "" {
 				assistantMessage, _ = sjson.SetBytes(assistantMessage, "reasoning_content", reasoningContent)
+			} else if isDeepSeekModel {
+				assistantMessage, _ = sjson.SetBytes(assistantMessage, "reasoning_content", "")
 			}
 			appendMessage(assistantMessage)
 			for _, id := range pendingToolCallIDs {
@@ -197,6 +200,8 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 					}
 					if reasoningContent != "" {
 						message, _ = sjson.SetBytes(message, "reasoning_content", reasoningContent)
+					} else if isDeepSeekModel {
+						message, _ = sjson.SetBytes(message, "reasoning_content", "")
 					}
 				}
 
