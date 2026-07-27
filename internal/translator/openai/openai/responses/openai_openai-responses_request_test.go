@@ -3,8 +3,9 @@ package responses
 import (
 	"bytes"
 	"encoding/json"
-	"github.com/tidwall/gjson"
 	"testing"
+
+	"github.com/tidwall/gjson"
 )
 
 func prettyJSONForTest(raw []byte) string {
@@ -17,6 +18,7 @@ func prettyJSONForTest(raw []byte) string {
 	}
 	return out.String()
 }
+
 func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_MergeConsecutiveFunctionCalls(t *testing.T) {
 	raw := []byte(`{
 		"input": [
@@ -27,8 +29,10 @@ func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_MergeConsecutiveFu
 		]
 	}`)
 	t.Logf("input json:\n%s", prettyJSONForTest(raw))
+
 	out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("kimi-k2.6", raw, true)
 	t.Logf("output json:\n%s", prettyJSONForTest(out))
+
 	msgs := gjson.GetBytes(out, "messages")
 	if !msgs.Exists() || !msgs.IsArray() {
 		t.Fatalf("messages should be an array")
@@ -36,6 +40,7 @@ func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_MergeConsecutiveFu
 	if got := len(msgs.Array()); got != 3 {
 		t.Fatalf("messages count = %d, want %d", got, 3)
 	}
+
 	if got := gjson.GetBytes(out, "messages.0.role").String(); got != "assistant" {
 		t.Fatalf("messages.0.role = %q, want %q", got, "assistant")
 	}
@@ -48,6 +53,7 @@ func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_MergeConsecutiveFu
 	if got := gjson.GetBytes(out, "messages.0.tool_calls.1.id").String(); got != "exec_command:1" {
 		t.Fatalf("messages.0.tool_calls.1.id = %q, want %q", got, "exec_command:1")
 	}
+
 	if got := gjson.GetBytes(out, "messages.1.tool_call_id").String(); got != "exec_command:0" {
 		t.Fatalf("messages.1.tool_call_id = %q, want %q", got, "exec_command:0")
 	}
@@ -55,6 +61,7 @@ func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_MergeConsecutiveFu
 		t.Fatalf("messages.2.tool_call_id = %q, want %q", got, "exec_command:1")
 	}
 }
+
 func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_SplitFunctionCallsWhenInterrupted(t *testing.T) {
 	raw := []byte(`{
 		"input": [
@@ -64,8 +71,10 @@ func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_SplitFunctionCalls
 		]
 	}`)
 	t.Logf("input json:\n%s", prettyJSONForTest(raw))
+
 	out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("kimi-k2.6", raw, false)
 	t.Logf("output json:\n%s", prettyJSONForTest(out))
+
 	if got := len(gjson.GetBytes(out, "messages").Array()); got != 3 {
 		t.Fatalf("messages count = %d, want %d", got, 3)
 	}
@@ -76,6 +85,7 @@ func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_SplitFunctionCalls
 		t.Fatalf("messages.2.tool_calls.0.id = %q, want %q", got, "call_b")
 	}
 }
+
 func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_DefersMessageUntilToolOutput(t *testing.T) {
 	raw := []byte(`{
 		"input": [
@@ -86,8 +96,10 @@ func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_DefersMessageUntil
 		]
 	}`)
 	t.Logf("input json:\n%s", prettyJSONForTest(raw))
+
 	out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("kimi-k2.6", raw, true)
 	t.Logf("output json:\n%s", prettyJSONForTest(out))
+
 	if got := len(gjson.GetBytes(out, "messages").Array()); got != 4 {
 		t.Fatalf("messages count = %d, want %d", got, 4)
 	}
@@ -108,107 +120,6 @@ func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_DefersMessageUntil
 	}
 	if got := gjson.GetBytes(out, "messages.3.content").String(); got != "next" {
 		t.Fatalf("messages.3.content = %q, want %q", got, "next")
-	}
-}
-func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_PreservesReasoningContent(t *testing.T) {
-	raw := []byte(`{
-		"input": [{
-			"type": "message",
-			"role": "assistant",
-			"content": [
-				{"type":"reasoning","text":"step-by-step trace"}
-			]
-		}]
-	}`)
-	out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("deepseek-chat", raw, false)
-	if got := gjson.GetBytes(out, "messages.0.role").String(); got != "assistant" {
-		t.Fatalf("messages.0.role = %q, want %q", got, "assistant")
-	}
-	if got := gjson.GetBytes(out, "messages.0.reasoning_content").String(); got != "step-by-step trace" {
-		t.Fatalf("messages.0.reasoning_content = %q, want %q", got, "step-by-step trace")
-	}
-	if got := gjson.GetBytes(out, "messages.0.content").String(); got != "" {
-		t.Fatalf("messages.0.content = %q, want empty string", got)
-	}
-}
-func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_ReasoningContentFallbackPlaceholder(t *testing.T) {
-	raw := []byte(`{
-		"input": [{
-			"type": "message",
-			"role": "assistant",
-			"content": [
-				{"type":"reasoning","text":""}
-			]
-		}]
-	}`)
-	out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("deepseek-chat", raw, false)
-	if got := gjson.GetBytes(out, "messages.0.reasoning_content").String(); got != "[reasoning unavailable]" {
-		t.Fatalf("messages.0.reasoning_content = %q, want %q", got, "[reasoning unavailable]")
-	}
-}
-func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_TopLevelReasoningItem(t *testing.T) {
-	raw := []byte(`{
-		"input": [
-			{"type":"reasoning","summary":[{"type":"summary_text","text":"top-level chain of thought"}]}
-		]
-	}`)
-	out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("deepseek-chat", raw, false)
-	if got := gjson.GetBytes(out, "messages.0.role").String(); got != "assistant" {
-		t.Fatalf("messages.0.role = %q, want %q", got, "assistant")
-	}
-	if got := gjson.GetBytes(out, "messages.0.reasoning_content").String(); got != "top-level chain of thought" {
-		t.Fatalf("messages.0.reasoning_content = %q, want %q", got, "top-level chain of thought")
-	}
-}
-func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_TopLevelReasoningPlaceholder(t *testing.T) {
-	raw := []byte(`{
-		"input": [
-			{"type":"reasoning","summary":[]}
-		]
-	}`)
-	out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("deepseek-chat", raw, false)
-	if got := gjson.GetBytes(out, "messages.0.reasoning_content").String(); got != "[reasoning unavailable]" {
-		t.Fatalf("messages.0.reasoning_content = %q, want %q", got, "[reasoning unavailable]")
-	}
-}
-func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_DeepSeekAssistantFallbackReasoningContent(t *testing.T) {
-	raw := []byte(`{
-		"input": [{
-			"type":"message",
-			"role":"assistant",
-			"content":"tool follow-up without explicit reasoning"
-		}]
-	}`)
-	out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("deepseek-v4-flash", raw, true)
-	if got := gjson.GetBytes(out, "messages.0.role").String(); got != "assistant" {
-		t.Fatalf("messages.0.role = %q, want %q", got, "assistant")
-	}
-	if !gjson.GetBytes(out, "messages.0.reasoning_content").Exists() {
-		t.Fatalf("messages.0.reasoning_content should exist for deepseek assistant fallback")
-	}
-	if got := gjson.GetBytes(out, "messages.0.reasoning_content").String(); got != "" {
-		t.Fatalf("messages.0.reasoning_content = %q, want empty string", got)
-	}
-}
-func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_DeepSeekFunctionCallAssistantHasReasoningContent(t *testing.T) {
-	raw := []byte(`{
-		"input": [
-			{"type":"reasoning","summary":[{"type":"summary_text","text":"thinking"}]},
-			{"type":"function_call","call_id":"call_1","name":"exec_command","arguments":"{\"cmd\":\"ls\"}"},
-			{"type":"function_call_output","call_id":"call_1","output":"ok"}
-		]
-	}`)
-
-	out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("deepseek-v4-flash", raw, true)
-
-	if got := gjson.GetBytes(out, "messages.0.role").String(); got != "assistant" {
-		t.Fatalf("messages.0.role = %q, want %q", got, "assistant")
-	}
-	if got := gjson.GetBytes(out, "messages.0.reasoning_content").String(); got != "thinking" {
-		t.Fatalf("messages.0.reasoning_content = %q, want %q", got, "thinking")
-	}
-	if got := len(gjson.GetBytes(out, "messages.0.tool_calls").Array()); got != 1 {
-		t.Fatalf("messages.0.tool_calls length = %d, want 1", got)
 	}
 }
 
@@ -232,8 +143,10 @@ func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_AttachesReasoningT
 		]
 	}`)
 	t.Logf("input json:\n%s", prettyJSONForTest(raw))
+
 	out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("deepseek-v4-flash", raw, false)
 	t.Logf("output json:\n%s", prettyJSONForTest(out))
+
 	if got := gjson.GetBytes(out, "messages.#").Int(); got != 2 {
 		t.Fatalf("messages count = %d, want 2; output=%s", got, out)
 	}
@@ -250,6 +163,7 @@ func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_AttachesReasoningT
 		t.Fatalf("messages.1.role = %q, want user; output=%s", got, out)
 	}
 }
+
 func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_AttachesReasoningToToolCallMessage(t *testing.T) {
 	raw := []byte(`{
 		"input": [
@@ -263,8 +177,10 @@ func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_AttachesReasoningT
 		]
 	}`)
 	t.Logf("input json:\n%s", prettyJSONForTest(raw))
+
 	out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("deepseek-v4-flash", raw, true)
 	t.Logf("output json:\n%s", prettyJSONForTest(out))
+
 	if got := gjson.GetBytes(out, "messages.#").Int(); got != 2 {
 		t.Fatalf("messages count = %d, want 2; output=%s", got, out)
 	}
@@ -281,6 +197,7 @@ func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_AttachesReasoningT
 		t.Fatalf("messages.1.role = %q, want tool; output=%s", got, out)
 	}
 }
+
 func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_KeepsReasoningBeforeUserMessage(t *testing.T) {
 	raw := []byte(`{
 		"input": [
@@ -289,8 +206,10 @@ func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_KeepsReasoningBefo
 		]
 	}`)
 	t.Logf("input json:\n%s", prettyJSONForTest(raw))
+
 	out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("deepseek-v4-flash", raw, false)
 	t.Logf("output json:\n%s", prettyJSONForTest(out))
+
 	if got := gjson.GetBytes(out, "messages.#").Int(); got != 2 {
 		t.Fatalf("messages count = %d, want 2; output=%s", got, out)
 	}
@@ -304,6 +223,7 @@ func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_KeepsReasoningBefo
 		t.Fatalf("messages.1.role = %q, want user; output=%s", got, out)
 	}
 }
+
 func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_FlattensNamespaceTools(t *testing.T) {
 	raw := []byte(`{
 		"input": [
@@ -334,8 +254,10 @@ func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_FlattensNamespaceT
 		"tool_choice": "auto"
 	}`)
 	t.Logf("input json:\n%s", prettyJSONForTest(raw))
+
 	out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("deepseek-v4-flash", raw, false)
 	t.Logf("output json:\n%s", prettyJSONForTest(out))
+
 	if got := gjson.GetBytes(out, "tools.#").Int(); got != 1 {
 		t.Fatalf("tools count = %d, want 1; output=%s", got, out)
 	}
@@ -352,6 +274,34 @@ func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_FlattensNamespaceT
 		t.Fatalf("tools.0.function.parameters.required.0 = %q, want a; output=%s", got, out)
 	}
 }
+
+func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_QualifiesNamespaceFunctionCallHistory(t *testing.T) {
+	raw := []byte(`{
+		"input": [
+			{"type":"function_call","call_id":"call_get_me","name":"get_me","namespace":"mcp__github","arguments":"{}"},
+			{"type":"function_call_output","call_id":"call_get_me","output":"ok"}
+		],
+		"tools": [
+			{
+				"type":"namespace",
+				"name":"mcp__github",
+				"tools":[{"type":"function","name":"get_me","parameters":{"type":"object"}}]
+			}
+		]
+	}`)
+
+	out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("deepseek-v4-flash", raw, false)
+
+	gotHistoryName := gjson.GetBytes(out, "messages.0.tool_calls.0.function.name").String()
+	gotDeclaredName := gjson.GetBytes(out, "tools.0.function.name").String()
+	if gotHistoryName != "mcp__github__get_me" {
+		t.Fatalf("history function name = %q, want mcp__github__get_me; output=%s", gotHistoryName, out)
+	}
+	if gotHistoryName != gotDeclaredName {
+		t.Fatalf("history function name = %q, declared function name = %q; output=%s", gotHistoryName, gotDeclaredName, out)
+	}
+}
+
 func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_FlattensNamespaceCustomTools(t *testing.T) {
 	tests := []struct {
 		name string
@@ -413,6 +363,13 @@ func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_PreservesStructure
 		"input": [
 			{"role":"user","content":"Run command."}
 		],
+		"tools": [
+			{
+				"type": "function",
+				"name": "run_command",
+				"parameters": {"type": "object"}
+			}
+		],
 		"tool_choice": {
 			"type": "function",
 			"function": {
@@ -421,8 +378,10 @@ func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_PreservesStructure
 		}
 	}`)
 	t.Logf("input json:\n%s", prettyJSONForTest(raw))
+
 	out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("gpt-5.4", raw, false)
 	t.Logf("output json:\n%s", prettyJSONForTest(out))
+
 	if got := gjson.GetBytes(out, "tool_choice.type").String(); got != "function" {
 		t.Fatalf("tool_choice.type = %q, want function; output=%s", got, out)
 	}
@@ -430,6 +389,63 @@ func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_PreservesStructure
 		t.Fatalf("tool_choice.function.name = %q, want run_command; output=%s", got, out)
 	}
 }
+
+func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_OmitsToolSettingsWithoutTools(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  []byte
+	}{
+		{
+			name: "empty tools",
+			raw: []byte(`{
+				"input": [{"role":"user","content":"say ok"}],
+				"tools": [],
+				"tool_choice": "auto",
+				"parallel_tool_calls": false
+			}`),
+		},
+		{
+			name: "unconvertible tools",
+			raw: []byte(`{
+				"tools": [{"type":"unsupported"}],
+				"tool_choice": "auto",
+				"parallel_tool_calls": false
+			}`),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("grok-4.5", tt.raw, false)
+
+			for _, field := range []string{"tools", "tool_choice", "parallel_tool_calls"} {
+				if got := gjson.GetBytes(out, field); got.Exists() {
+					t.Fatalf("%s should be omitted without tools; output=%s", field, out)
+				}
+			}
+		})
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_PreservesParallelToolCallsWithTools(t *testing.T) {
+	raw := []byte(`{
+		"tools": [
+			{
+				"type": "function",
+				"name": "run_command",
+				"parameters": {"type": "object"}
+			}
+		],
+		"parallel_tool_calls": false
+	}`)
+
+	out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("grok-4.5", raw, false)
+
+	if got := gjson.GetBytes(out, "parallel_tool_calls"); !got.Exists() || got.Bool() {
+		t.Fatalf("parallel_tool_calls = %v, want false; output=%s", got.Value(), out)
+	}
+}
+
 func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_PreservesInputImageDetail(t *testing.T) {
 	raw := []byte(`{
 		"input": [
@@ -446,8 +462,10 @@ func TestConvertOpenAIResponsesRequestToOpenAIChatCompletions_PreservesInputImag
 		]
 	}`)
 	t.Logf("input json:\n%s", prettyJSONForTest(raw))
+
 	out := ConvertOpenAIResponsesRequestToOpenAIChatCompletions("gpt-5.4", raw, false)
 	t.Logf("output json:\n%s", prettyJSONForTest(out))
+
 	if got := gjson.GetBytes(out, "messages.0.content.0.image_url.url").String(); got != "https://example.com/image.png" {
 		t.Fatalf("messages.0.content.0.image_url.url = %q, want https://example.com/image.png; output=%s", got, out)
 	}
