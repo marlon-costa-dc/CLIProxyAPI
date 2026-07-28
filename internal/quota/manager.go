@@ -9,6 +9,8 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+const automaticPauseReason = "spend_limit_exceeded"
+
 // Manager coordinates pause state management, middleware, and background cleanup.
 type Manager struct {
 	store  *Store
@@ -40,6 +42,12 @@ func NewManager(cfg QuotaConfig) (*Manager, error) {
 	if err := m.refreshPausedSnapshot(); err != nil {
 		_ = store.Close()
 		return nil, err
+	}
+	if !cfg.Enabled {
+		if err := m.clearAutomaticPauses(); err != nil {
+			_ = store.Close()
+			return nil, err
+		}
 	}
 	return m, nil
 }
@@ -133,8 +141,33 @@ func (m *Manager) Stop() {
 // UpdateConfig hot-reloads the quota configuration.
 func (m *Manager) UpdateConfig(cfg QuotaConfig) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.config.Store(cfg)
+	m.mu.Unlock()
+	if !cfg.Enabled {
+		if err := m.clearAutomaticPauses(); err != nil {
+			log.Errorf("quota: clear automatic pauses: %v", err)
+		}
+	}
+}
+
+func (m *Manager) clearAutomaticPauses() error {
+	entries, err := m.store.ListPaused()
+	if err != nil {
+		return err
+	}
+
+	kept := entries[:0]
+	for _, entry := range entries {
+		if entry.Reason == automaticPauseReason {
+			if err := m.store.ResumeKey(entry.KeyHash); err != nil {
+				return err
+			}
+			continue
+		}
+		kept = append(kept, entry)
+	}
+	m.storePausedSnapshot(kept)
+	return nil
 }
 
 // EnforcerMiddleware returns the Gin middleware that blocks paused keys.
@@ -144,6 +177,14 @@ func (m *Manager) EnforcerMiddleware() gin.HandlerFunc {
 
 // PauseKey creates a pause entry.
 func (m *Manager) PauseKey(keyHash, reason string, expiresAt time.Time) error {
+	if reason == automaticPauseReason {
+		if !m.Config().Enabled {
+			return nil
+		}
+		if entry, ok := m.pausedSnapshot()[keyHash]; ok && !entry.IsExpired() && entry.Reason != automaticPauseReason {
+			return nil
+		}
+	}
 	now := time.Now()
 	entry := PauseEntry{
 		KeyHash:   keyHash,

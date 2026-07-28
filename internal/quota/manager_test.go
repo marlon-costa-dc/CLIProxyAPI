@@ -194,6 +194,57 @@ func TestManager_UpdateConfig(t *testing.T) {
 	}
 }
 
+func TestManager_DisableClearsAutomaticPausesOnly(t *testing.T) {
+	m, err := NewManager(QuotaConfig{Enabled: true})
+	if err != nil {
+		t.Fatalf("NewManager failed: %v", err)
+	}
+	defer m.Stop()
+
+	if err := m.PauseKey("automatic", automaticPauseReason, time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("PauseKey automatic failed: %v", err)
+	}
+	if err := m.PauseKey("manual", "manual pause", time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("PauseKey manual failed: %v", err)
+	}
+
+	m.UpdateConfig(QuotaConfig{Enabled: false})
+
+	if paused, _, err := m.IsPaused("automatic"); err != nil {
+		t.Fatalf("IsPaused automatic failed: %v", err)
+	} else if paused {
+		t.Fatal("automatic pause should be cleared when quota is disabled")
+	}
+	if paused, entry, err := m.IsPaused("manual"); err != nil {
+		t.Fatalf("IsPaused manual failed: %v", err)
+	} else if !paused || entry == nil || entry.Reason != "manual pause" {
+		t.Fatalf("manual pause should remain, paused=%v entry=%v", paused, entry)
+	}
+}
+
+func TestManager_AutomaticPauseDoesNotOverrideManualPause(t *testing.T) {
+	m, err := NewManager(QuotaConfig{Enabled: true})
+	if err != nil {
+		t.Fatalf("NewManager failed: %v", err)
+	}
+	defer m.Stop()
+
+	if err := m.PauseKey("same-key", "manual pause", time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("PauseKey manual failed: %v", err)
+	}
+	if err := m.PauseKey("same-key", automaticPauseReason, time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("PauseKey automatic failed: %v", err)
+	}
+
+	paused, entry, err := m.IsPaused("same-key")
+	if err != nil {
+		t.Fatalf("IsPaused failed: %v", err)
+	}
+	if !paused || entry == nil || entry.Reason != "manual pause" {
+		t.Fatalf("manual pause should remain, paused=%v entry=%v", paused, entry)
+	}
+}
+
 func TestManager_StartStop(t *testing.T) {
 	m, err := NewManager(QuotaConfig{Enabled: true})
 	if err != nil {
