@@ -105,7 +105,8 @@ func (h *Handler) PostResumeKey(c *gin.Context) {
 	}
 
 	var body struct {
-		KeyHash string `json:"key_hash"`
+		KeyHash        string `json:"key_hash"`
+		ExpectedReason string `json:"expected_reason"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
@@ -118,7 +119,12 @@ func (h *Handler) PostResumeKey(c *gin.Context) {
 		return
 	}
 
-	if err := qm.ResumeKey(keyHash); err != nil {
+	if body.ExpectedReason != "" {
+		if err := qm.ResumeKeyIfReason(keyHash, body.ExpectedReason); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+	} else if err := qm.ResumeKey(keyHash); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}

@@ -43,16 +43,12 @@ func NewManager(cfg QuotaConfig) (*Manager, error) {
 		_ = store.Close()
 		return nil, err
 	}
-	if !cfg.Enabled {
-		if err := m.clearAutomaticPauses(); err != nil {
-			_ = store.Close()
-			return nil, err
-		}
-	}
 	return m, nil
 }
 
 func (m *Manager) refreshPausedSnapshot() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	entries, err := m.store.ListPaused()
 	if err != nil {
 		return err
@@ -84,10 +80,8 @@ func (m *Manager) pausedSnapshot() map[string]PauseEntry {
 	return paused
 }
 
-func (m *Manager) updatePausedSnapshot(update func(map[string]PauseEntry)) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
+// updatePausedSnapshotLocked 在持有 m.mu 时更新不可变暂停快照。
+func (m *Manager) updatePausedSnapshotLocked(update func(map[string]PauseEntry)) {
 	current := m.pausedSnapshot()
 	next := make(map[string]PauseEntry, len(current)+1)
 	for key, entry := range current {
@@ -138,36 +132,12 @@ func (m *Manager) Stop() {
 	}
 }
 
-// UpdateConfig hot-reloads the quota configuration.
+// UpdateConfig hot-reloads the local quota configuration.
+// usage-service 下发的暂停状态只由其显式恢复指令管理，不能被本地配置变更清除。
 func (m *Manager) UpdateConfig(cfg QuotaConfig) {
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.config.Store(cfg)
-	m.mu.Unlock()
-	if !cfg.Enabled {
-		if err := m.clearAutomaticPauses(); err != nil {
-			log.Errorf("quota: clear automatic pauses: %v", err)
-		}
-	}
-}
-
-func (m *Manager) clearAutomaticPauses() error {
-	entries, err := m.store.ListPaused()
-	if err != nil {
-		return err
-	}
-
-	kept := entries[:0]
-	for _, entry := range entries {
-		if entry.Reason == automaticPauseReason {
-			if err := m.store.ResumeKey(entry.KeyHash); err != nil {
-				return err
-			}
-			continue
-		}
-		kept = append(kept, entry)
-	}
-	m.storePausedSnapshot(kept)
-	return nil
 }
 
 // EnforcerMiddleware returns the Gin middleware that blocks paused keys.
@@ -177,10 +147,11 @@ func (m *Manager) EnforcerMiddleware() gin.HandlerFunc {
 
 // PauseKey creates a pause entry.
 func (m *Manager) PauseKey(keyHash, reason string, expiresAt time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	if reason == automaticPauseReason {
-		if !m.Config().Enabled {
-			return nil
-		}
+		// 限额规则由 usage-service 决定；本地开关不能拒绝已认证的自动暂停指令。
 		if entry, ok := m.pausedSnapshot()[keyHash]; ok && !entry.IsExpired() && entry.Reason != automaticPauseReason {
 			return nil
 		}
@@ -196,7 +167,7 @@ func (m *Manager) PauseKey(keyHash, reason string, expiresAt time.Time) error {
 	if err := m.store.PauseKey(entry); err != nil {
 		return err
 	}
-	m.updatePausedSnapshot(func(paused map[string]PauseEntry) {
+	m.updatePausedSnapshotLocked(func(paused map[string]PauseEntry) {
 		if entry.IsExpired() {
 			delete(paused, keyHash)
 			return
@@ -206,14 +177,32 @@ func (m *Manager) PauseKey(keyHash, reason string, expiresAt time.Time) error {
 	return nil
 }
 
-// ResumeKey removes a pause entry.
+// ResumeKey removes a pause entry without a reason condition for existing management callers.
 func (m *Manager) ResumeKey(keyHash string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if err := m.store.ResumeKey(keyHash); err != nil {
 		return err
 	}
-	m.updatePausedSnapshot(func(paused map[string]PauseEntry) {
+	m.updatePausedSnapshotLocked(func(paused map[string]PauseEntry) {
 		delete(paused, keyHash)
 	})
+	return nil
+}
+
+// ResumeKeyIfReason 仅在当前原因匹配时恢复，用于保护被手动暂停替换的自动暂停。
+func (m *Manager) ResumeKeyIfReason(keyHash, expectedReason string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	deleted, err := m.store.ResumeKeyIfReason(keyHash, expectedReason)
+	if err != nil {
+		return err
+	}
+	if deleted {
+		m.updatePausedSnapshotLocked(func(paused map[string]PauseEntry) {
+			delete(paused, keyHash)
+		})
+	}
 	return nil
 }
 
@@ -228,6 +217,8 @@ func (m *Manager) IsPaused(keyHash string) (bool, *PauseEntry, error) {
 
 // ListPaused returns all non-expired pause entries.
 func (m *Manager) ListPaused() ([]PauseEntry, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	entries, err := m.store.ListPaused()
 	if err != nil {
 		return nil, err

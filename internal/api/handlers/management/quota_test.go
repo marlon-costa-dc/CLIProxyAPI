@@ -44,6 +44,49 @@ func TestGetPausedKeysReturnsEmptyListWhenQuotaDisabled(t *testing.T) {
 	}
 }
 
+func TestPostResumeKey_ExpectedReasonPreservesReplacedManualPause(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	qm, err := quota.NewManager(quota.QuotaConfig{Enabled: false})
+	if err != nil {
+		t.Fatalf("NewManager failed: %v", err)
+	}
+	defer qm.Stop()
+	const keyHash = "abcdef12"
+	if err := qm.PauseKey(keyHash, "spend_limit_exceeded", time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("PauseKey automatic failed: %v", err)
+	}
+	if err := qm.PauseKey(keyHash, "manual pause", time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("PauseKey manual replacement failed: %v", err)
+	}
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{}, nil)
+	h.SetQuotaManager(qm)
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v0/management/quota/resume", strings.NewReader(`{"key_hash":"`+keyHash+`","expected_reason":"spend_limit_exceeded"}`))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	h.PostResumeKey(ctx)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("conditional resume status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	paused, entry, err := qm.IsPaused(keyHash)
+	if err != nil || !paused || entry == nil || entry.Reason != "manual pause" {
+		t.Fatalf("manual replacement should remain, paused=%v entry=%v err=%v", paused, entry, err)
+	}
+
+	rec = httptest.NewRecorder()
+	ctx, _ = gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v0/management/quota/resume", strings.NewReader(`{"key_hash":"`+keyHash+`"}`))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	h.PostResumeKey(ctx)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unconditional resume status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if paused, _, err := qm.IsPaused(keyHash); err != nil || paused {
+		t.Fatalf("unconditional resume should retain existing behavior, paused=%v err=%v", paused, err)
+	}
+}
+
 func TestGetQuotaConfigReturnsCurrentConfig(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

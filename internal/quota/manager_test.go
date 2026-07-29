@@ -194,31 +194,120 @@ func TestManager_UpdateConfig(t *testing.T) {
 	}
 }
 
-func TestManager_DisableClearsAutomaticPausesOnly(t *testing.T) {
-	m, err := NewManager(QuotaConfig{Enabled: true})
+func TestManager_AcceptsAutomaticPauseWhenLocalQuotaDisabled(t *testing.T) {
+	m, err := NewManager(QuotaConfig{Enabled: false})
 	if err != nil {
 		t.Fatalf("NewManager failed: %v", err)
 	}
 	defer m.Stop()
 
+	if err := m.PauseKey("usage-service", automaticPauseReason, time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("PauseKey failed: %v", err)
+	}
+	paused, entry, err := m.IsPaused("usage-service")
+	if err != nil {
+		t.Fatalf("IsPaused failed: %v", err)
+	}
+	if !paused || entry == nil || entry.Reason != automaticPauseReason {
+		t.Fatalf("automatic pause should be retained, paused=%v entry=%v", paused, entry)
+	}
+}
+
+func TestManager_AutomaticPauseStillPreservesManualPauseWhenLocalQuotaDisabled(t *testing.T) {
+	m, err := NewManager(QuotaConfig{Enabled: false})
+	if err != nil {
+		t.Fatalf("NewManager failed: %v", err)
+	}
+	defer m.Stop()
+
+	if err := m.PauseKey("manual", "manual pause", time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("PauseKey manual failed: %v", err)
+	}
+	if err := m.PauseKey("manual", automaticPauseReason, time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("PauseKey automatic failed: %v", err)
+	}
+	paused, entry, err := m.IsPaused("manual")
+	if err != nil {
+		t.Fatalf("IsPaused failed: %v", err)
+	}
+	if !paused || entry == nil || entry.Reason != "manual pause" {
+		t.Fatalf("manual pause should remain, paused=%v entry=%v", paused, entry)
+	}
+}
+
+func TestManager_LocalDisabledLifecyclePreservesUsageServicePauses(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "quota.db")
+	m, err := NewManager(QuotaConfig{Enabled: false, DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("NewManager failed: %v", err)
+	}
 	if err := m.PauseKey("automatic", automaticPauseReason, time.Now().Add(time.Hour)); err != nil {
 		t.Fatalf("PauseKey automatic failed: %v", err)
 	}
 	if err := m.PauseKey("manual", "manual pause", time.Now().Add(time.Hour)); err != nil {
 		t.Fatalf("PauseKey manual failed: %v", err)
 	}
+	m.UpdateConfig(QuotaConfig{Enabled: false, DBPath: dbPath})
+	m.Stop()
 
-	m.UpdateConfig(QuotaConfig{Enabled: false})
-
-	if paused, _, err := m.IsPaused("automatic"); err != nil {
-		t.Fatalf("IsPaused automatic failed: %v", err)
-	} else if paused {
-		t.Fatal("automatic pause should be cleared when quota is disabled")
+	m, err = NewManager(QuotaConfig{Enabled: false, DBPath: dbPath})
+	if err != nil {
+		t.Fatalf("NewManager disabled failed: %v", err)
 	}
-	if paused, entry, err := m.IsPaused("manual"); err != nil {
-		t.Fatalf("IsPaused manual failed: %v", err)
-	} else if !paused || entry == nil || entry.Reason != "manual pause" {
-		t.Fatalf("manual pause should remain, paused=%v entry=%v", paused, entry)
+	defer m.Stop()
+	for _, want := range []struct {
+		key    string
+		reason string
+	}{{"automatic", automaticPauseReason}, {"manual", "manual pause"}} {
+		paused, entry, err := m.IsPaused(want.key)
+		if err != nil || !paused || entry == nil || entry.Reason != want.reason {
+			t.Fatalf("pause %q after disabled lifecycle = paused=%v entry=%v err=%v", want.key, paused, entry, err)
+		}
+	}
+}
+
+func TestManager_ResumeKeyIfReasonPreservesReplacedManualPause(t *testing.T) {
+	m, err := NewManager(QuotaConfig{Enabled: false})
+	if err != nil {
+		t.Fatalf("NewManager failed: %v", err)
+	}
+	defer m.Stop()
+
+	if err := m.PauseKey("same-key", automaticPauseReason, time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("PauseKey automatic failed: %v", err)
+	}
+	if err := m.PauseKey("same-key", "manual pause", time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("PauseKey manual replacement failed: %v", err)
+	}
+	if err := m.ResumeKeyIfReason("same-key", automaticPauseReason); err != nil {
+		t.Fatalf("ResumeKeyIfReason failed: %v", err)
+	}
+
+	paused, entry, err := m.IsPaused("same-key")
+	if err != nil || !paused || entry == nil || entry.Reason != "manual pause" {
+		t.Fatalf("manual replacement should remain, paused=%v entry=%v err=%v", paused, entry, err)
+	}
+}
+
+func TestManager_ResumeKeyIfReasonRemovesAutomaticPauseFromStoreAndSnapshot(t *testing.T) {
+	m, err := NewManager(QuotaConfig{Enabled: false})
+	if err != nil {
+		t.Fatalf("NewManager failed: %v", err)
+	}
+	defer m.Stop()
+
+	const keyHash = "automatic-key"
+	if err := m.PauseKey(keyHash, automaticPauseReason, time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("PauseKey automatic failed: %v", err)
+	}
+	if err := m.ResumeKeyIfReason(keyHash, automaticPauseReason); err != nil {
+		t.Fatalf("ResumeKeyIfReason failed: %v", err)
+	}
+	if paused, entry, err := m.Store().IsPaused(keyHash); err != nil || paused || entry != nil {
+		t.Fatalf("store pause = paused=%v entry=%v err=%v, want deleted", paused, entry, err)
+	}
+	if paused, entry, err := m.IsPaused(keyHash); err != nil || paused || entry != nil {
+		t.Fatalf("snapshot pause = paused=%v entry=%v err=%v, want deleted", paused, entry, err)
 	}
 }
 

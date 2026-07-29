@@ -75,6 +75,19 @@ func (s *Store) ResumeKey(keyHash string) error {
 	return err
 }
 
+// ResumeKeyIfReason 仅在当前暂停原因匹配时删除，避免自动恢复覆盖并发写入的手动暂停。
+func (s *Store) ResumeKeyIfReason(keyHash, expectedReason string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	result, err := s.db.Exec("DELETE FROM key_pauses WHERE key_hash = ? AND reason = ?", keyHash, expectedReason)
+	if err != nil {
+		return false, err
+	}
+	deleted, err := result.RowsAffected()
+	return deleted > 0, err
+}
+
 // IsPaused checks whether a key is currently paused.
 // Returns the pause entry if paused.
 func (s *Store) IsPaused(keyHash string) (bool, *PauseEntry, error) {
