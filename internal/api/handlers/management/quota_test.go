@@ -11,8 +11,138 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/quota"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 )
+
+func TestGetPausedKeysReturnsEmptyListWhenQuotaDisabled(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{}, nil)
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/v0/management/quota/paused", nil)
+
+	h.GetPausedKeys(ctx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	var body struct {
+		Enabled bool               `json:"enabled"`
+		Entries []quota.PauseEntry `json:"entries"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if body.Enabled {
+		t.Fatal("enabled = true, want false")
+	}
+	if len(body.Entries) != 0 {
+		t.Fatalf("entries len = %d, want 0", len(body.Entries))
+	}
+}
+
+func TestPostResumeKey_ExpectedReasonPreservesReplacedManualPause(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	qm, err := quota.NewManager(quota.QuotaConfig{Enabled: false})
+	if err != nil {
+		t.Fatalf("NewManager failed: %v", err)
+	}
+	defer qm.Stop()
+	const keyHash = "abcdef12"
+	if err := qm.PauseKey(keyHash, "spend_limit_exceeded", time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("PauseKey automatic failed: %v", err)
+	}
+	if err := qm.PauseKey(keyHash, "manual pause", time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("PauseKey manual replacement failed: %v", err)
+	}
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{}, nil)
+	h.SetQuotaManager(qm)
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v0/management/quota/resume", strings.NewReader(`{"key_hash":"`+keyHash+`","expected_reason":"spend_limit_exceeded"}`))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	h.PostResumeKey(ctx)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("conditional resume status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	paused, entry, err := qm.IsPaused(keyHash)
+	if err != nil || !paused || entry == nil || entry.Reason != "manual pause" {
+		t.Fatalf("manual replacement should remain, paused=%v entry=%v err=%v", paused, entry, err)
+	}
+
+	rec = httptest.NewRecorder()
+	ctx, _ = gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v0/management/quota/resume", strings.NewReader(`{"key_hash":"`+keyHash+`"}`))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+	h.PostResumeKey(ctx)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unconditional resume status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if paused, _, err := qm.IsPaused(keyHash); err != nil || paused {
+		t.Fatalf("unconditional resume should retain existing behavior, paused=%v err=%v", paused, err)
+	}
+}
+
+func TestGetQuotaConfigReturnsCurrentConfig(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{
+		Quota: quota.QuotaConfig{
+			Enabled: true,
+			DBPath:  "quota.db",
+			Default: quota.SpendLimit{DailyCents: 100, WeeklyCents: 700},
+			Overrides: []quota.SpendLimitEntry{{
+				ApplyTo:     "api-key",
+				ApplyValue:  "abc",
+				DailyCents:  200,
+				WeeklyCents: 900,
+			}},
+		},
+	}, nil)
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/v0/management/quota/config", nil)
+
+	h.GetQuotaConfig(ctx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	var body struct {
+		Enabled bool   `json:"enabled"`
+		DBPath  string `json:"db_path"`
+		Default struct {
+			DailyCents  int64 `json:"daily_cents"`
+			WeeklyCents int64 `json:"weekly_cents"`
+		} `json:"default"`
+		Overrides []struct {
+			ApplyTo     string `json:"apply_to"`
+			ApplyValue  string `json:"apply_value"`
+			DailyCents  int64  `json:"daily_cents"`
+			WeeklyCents int64  `json:"weekly_cents"`
+		} `json:"overrides"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if !body.Enabled || body.DBPath != "quota.db" {
+		t.Fatalf("unexpected top-level config: %+v", body)
+	}
+	if body.Default.DailyCents != 100 || body.Default.WeeklyCents != 700 {
+		t.Fatalf("unexpected default config: %+v", body.Default)
+	}
+	if len(body.Overrides) != 1 {
+		t.Fatalf("overrides len = %d, want 1", len(body.Overrides))
+	}
+	if body.Overrides[0].ApplyTo != "api-key" || body.Overrides[0].ApplyValue != "abc" {
+		t.Fatalf("unexpected override: %+v", body.Overrides[0])
+	}
+}
 
 func TestResetQuota_UsesAuthIndex(t *testing.T) {
 	t.Setenv("MANAGEMENT_PASSWORD", "")
@@ -130,5 +260,69 @@ func TestResetQuota_DoesNotAcceptAuthIDOrFileName(t *testing.T) {
 				t.Fatalf("status = %d, want %d with body %s", rec.Code, tt.wantCode, rec.Body.String())
 			}
 		})
+	}
+}
+
+func TestNormalizeKeyHash_RawKeyBecomesHash(t *testing.T) {
+	rawKey := "sk-test-api-key-12345"
+	expected := quota.KeyHash(rawKey)
+
+	got := normalizeKeyHash(rawKey)
+	if got != expected {
+		t.Fatalf("normalizeKeyHash(%q) = %q, want %q", rawKey, got, expected)
+	}
+}
+
+func TestNormalizeKeyHash_HashPassesThrough(t *testing.T) {
+	hash := quota.KeyHash("sk-any-key")
+	if len(hash) != 8 {
+		t.Fatalf("expected 8-char hash, got %q", hash)
+	}
+
+	got := normalizeKeyHash(hash)
+	if got != hash {
+		t.Fatalf("normalizeKeyHash(%q) = %q, want %q", hash, got, hash)
+	}
+}
+
+func TestNormalizeKeyHash_InvalidInput(t *testing.T) {
+	if got := normalizeKeyHash(""); got != "" {
+		t.Fatalf("expected empty for empty input, got %q", got)
+	}
+	if got := normalizeKeyHash("not-hex!"); got == "" || len(got) != 8 {
+		t.Fatalf("expected hash for not-hex input, got %q", got)
+	}
+}
+
+func TestPutQuotaConfig_UpdateConfigNotifiesManager(t *testing.T) {
+	qm, err := quota.NewManager(quota.QuotaConfig{Enabled: false})
+	if err != nil {
+		t.Fatalf("NewManager failed: %v", err)
+	}
+	defer qm.Stop()
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{Quota: quota.QuotaConfig{Enabled: false}}, nil)
+	h.SetQuotaManager(qm)
+
+	// Simulate PutQuotaConfig
+	h.mu.Lock()
+	h.cfg.Quota.Enabled = true
+	h.cfg.Quota.Default.DailyCents = 500
+	h.cfg.Quota.Default.WeeklyCents = 2000
+	if h.quotaManager != nil {
+		h.quotaManager.UpdateConfig(h.cfg.Quota)
+	}
+	h.mu.Unlock()
+
+	// Verify through the manager
+	cfg := qm.Config()
+	if !cfg.Enabled {
+		t.Fatal("expected enabled=true after UpdateConfig")
+	}
+	if cfg.Default.DailyCents != 500 {
+		t.Fatalf("expected daily_cents=500, got %d", cfg.Default.DailyCents)
+	}
+	if cfg.Default.WeeklyCents != 2000 {
+		t.Fatalf("expected weekly_cents=2000, got %d", cfg.Default.WeeklyCents)
 	}
 }

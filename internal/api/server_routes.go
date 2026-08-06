@@ -60,6 +60,9 @@ func (s *Server) setupRoutes() {
 	// OpenAI compatible API routes
 	v1 := s.engine.Group("/v1")
 	v1.Use(AuthMiddleware(s.accessManager))
+	if s.quotaManager != nil {
+		v1.Use(s.quotaManager.EnforcerMiddleware())
+	}
 	{
 		v1.GET("/models", s.unifiedModelsHandler(openaiHandlers, claudeCodeHandlers))
 		v1.POST("/chat/completions", openaiHandlers.ChatCompletions)
@@ -82,6 +85,10 @@ func (s *Server) setupRoutes() {
 		v1.POST("/realtime/calls", s.codexLiveHandler.Handle)
 		v1.GET("/realtime/calls/:call_id", s.codexLiveHandler.HandleSideband)
 		v1.GET("/realtime", s.codexLiveHandler.HandleSideband)
+
+		if s.quotaManager != nil {
+			v1.GET("/usage/self", newSelfUsageHandler(s.quotaManager).handleSelfUsage)
+		}
 	}
 
 	openaiV1 := s.engine.Group("/openai/v1")
