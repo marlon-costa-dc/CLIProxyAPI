@@ -1154,7 +1154,8 @@ func (r *ModelRegistry) GetModelCount(modelID string) int {
 //   - modelID: The model ID to check
 //
 // Returns:
-//   - []string: Provider identifiers ordered by availability count (descending)
+//   - []string: Provider identifiers ordered with explicitly configured providers first,
+//     then by availability count (descending) and provider name.
 func (r *ModelRegistry) GetModelProviders(modelID string) []string {
 	r.mutex.RLock()
 	defer r.mutex.RUnlock()
@@ -1187,12 +1188,7 @@ func (r *ModelRegistry) GetModelProviders(modelID string) []string {
 		// 	continue
 		// }
 		// providers = append(providers, providerCount{name: name, count: adjusted})
-		userDefined := false
-		if registration.InfoByProvider != nil {
-			if info := registration.InfoByProvider[name]; info != nil {
-				userDefined = info.UserDefined
-			}
-		}
+		userDefined := r.providerHasUserDefinedModelLocked(name, modelID)
 		providers = append(providers, providerCount{name: name, count: count, userDefined: userDefined})
 	}
 	if len(providers) == 0 {
@@ -1214,6 +1210,18 @@ func (r *ModelRegistry) GetModelProviders(modelID string) []string {
 		result = append(result, item.name)
 	}
 	return result
+}
+
+func (r *ModelRegistry) providerHasUserDefinedModelLocked(provider, modelID string) bool {
+	for clientID, clientProvider := range r.clientProviders {
+		if clientProvider != provider {
+			continue
+		}
+		if info := r.clientModelInfos[clientID][modelID]; info != nil && info.UserDefined {
+			return true
+		}
+	}
+	return false
 }
 
 // GetModelInfo returns ModelInfo, prioritizing provider-specific definition if available.

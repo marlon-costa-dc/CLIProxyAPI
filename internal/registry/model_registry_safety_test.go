@@ -98,6 +98,21 @@ func TestGetModelProvidersPrefersConfiguredModels(t *testing.T) {
 	}
 }
 
+func TestGetModelProvidersDropsConfiguredPriorityAfterLastConfiguredClientIsRemoved(t *testing.T) {
+	r := newTestModelRegistry()
+	r.RegisterClient("catalog-a", "opencode", []*ModelInfo{{ID: "shared-model"}})
+	r.RegisterClient("catalog-b", "opencode", []*ModelInfo{{ID: "shared-model"}})
+	r.RegisterClient("configured", "claude", []*ModelInfo{{ID: "shared-model", UserDefined: true}})
+	r.RegisterClient("discovered", "claude", []*ModelInfo{{ID: "shared-model"}})
+
+	r.UnregisterClient("configured")
+
+	providers := r.GetModelProviders("shared-model")
+	if len(providers) != 2 || providers[0] != "opencode" || providers[1] != "claude" {
+		t.Fatalf("provider order = %v, want availability order after configured client removal", providers)
+	}
+}
+
 func TestGetModelProvidersUsesAvailabilityWithoutConfiguredModels(t *testing.T) {
 	r := newTestModelRegistry()
 	r.RegisterClient("claude", "claude", []*ModelInfo{{ID: "shared-model"}})
