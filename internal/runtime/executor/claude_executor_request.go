@@ -610,8 +610,14 @@ func isZlibHeader(header []byte) bool {
 // single authority for every decision that has to agree with the OAuth beta
 // profile, including the extended-cache-ttl beta and the matching body cache ttl.
 func claudeCredentialUsesOAuth(auth *cliproxyauth.Auth, apiKey string) bool {
+	if isClaudeOAuthToken(apiKey) {
+		return true
+	}
+	if auth != nil && auth.AuthKind() == cliproxyauth.AuthKindAPIKey {
+		return false
+	}
 	hasAPIKeyAttr := auth != nil && auth.Attributes != nil && strings.TrimSpace(auth.Attributes["api_key"]) != ""
-	return isClaudeOAuthToken(apiKey) || !hasAPIKeyAttr
+	return !hasAPIKeyAttr
 }
 
 func copyClaudeCallerFingerprintHeaders(dst, src http.Header) {
@@ -624,7 +630,10 @@ func copyClaudeCallerFingerprintHeaders(dst, src http.Header) {
 			lowerName != "x-app" && lowerName != "x-client-request-id" &&
 			!strings.HasPrefix(lowerName, "anthropic-") &&
 			!strings.HasPrefix(lowerName, "x-stainless-") &&
-			!strings.HasPrefix(lowerName, "x-claude-code-") {
+			!strings.HasPrefix(lowerName, "x-claude-code-") &&
+			!strings.HasPrefix(lowerName, "x-claude-remote-") &&
+			lowerName != "x-client-app" &&
+			lowerName != "x-anthropic-additional-protection" {
 			continue
 		}
 		dst.Del(name)
@@ -690,11 +699,17 @@ func applyClaudeHeadersWithNativeProfile(
 	useOAuthBetas := fp.UseOAuthBetas
 	isAnthropicBase := isAnthropicUpstreamURL(r.URL)
 	forceXAPIKey := auth != nil && auth.Attributes != nil && strings.EqualFold(strings.TrimSpace(auth.Attributes["anthropic_auth_scheme"]), "x-api-key")
-	if forceXAPIKey || (isAnthropicBase && useAPIKey) {
-		r.Header.Del("Authorization")
-		r.Header.Set("x-api-key", apiKey)
+	if strings.TrimSpace(apiKey) != "" {
+		if forceXAPIKey || (isAnthropicBase && useAPIKey) {
+			r.Header.Del("Authorization")
+			r.Header.Set("x-api-key", apiKey)
+		} else {
+			r.Header.Del("x-api-key")
+			r.Header.Set("Authorization", "Bearer "+apiKey)
+		}
 	} else {
-		r.Header.Set("Authorization", "Bearer "+apiKey)
+		r.Header.Del("Authorization")
+		r.Header.Del("x-api-key")
 	}
 	r.Header.Set("Content-Type", "application/json")
 
@@ -880,6 +895,19 @@ func applyClaudeHeadersWithNativeProfile(
 			return errSessionID
 		}
 		identityHeader("X-Claude-Code-Session-Id", sessionID)
+	}
+	// Preserve native Claude Code subagent and environment headers when present in the incoming request.
+	for _, hdr := range []string{
+		"X-Claude-Code-Agent-Id",
+		"X-Claude-Code-Parent-Agent-Id",
+		"X-Claude-Remote-Container-Id",
+		"X-Claude-Remote-Session-Id",
+		"X-Client-App",
+		"X-Anthropic-Additional-Protection",
+	} {
+		if val := helps.HeaderValueCaseInsensitive(incomingHeaders, hdr); val != "" {
+			r.Header.Set(hdr, val)
+		}
 	}
 	// Per-request UUID, matches Claude Code's x-client-request-id for first-party API.
 	// identityHeader prefers the incoming value for a confirmed client, so a confirmed
@@ -1393,6 +1421,25 @@ func remapOAuthToolNamesWithBatchedEdits(body []byte, mcpAliases claudeMCPAliasO
 							return true
 						})
 					}
+				case "tool_search_tool_result":
+					toolRefs := part.Get("content.tool_references")
+					if toolRefs.Exists() && toolRefs.IsArray() {
+						toolRefs.ForEach(func(_, refPart gjson.Result) bool {
+							if refPart.Get("type").String() != "tool_reference" {
+								return true
+							}
+							nameResult := refPart.Get("tool_name")
+							refToolName := nameResult.String()
+							if newName, renamed := rewriteName(refToolName); renamed {
+								if !appendStringEdit(nameResult, newName) {
+									validOffsets = false
+									return false
+								}
+								recordRename(refToolName, newName)
+							}
+							return true
+						})
+					}
 				}
 				return validOffsets
 			})
@@ -1621,6 +1668,21 @@ func remapOAuthToolNamesWithOptionsLegacy(body []byte, mcpAliases claudeMCPAlias
 							return true
 						})
 					}
+				case "tool_search_tool_result":
+					toolRefs := part.Get("content.tool_references")
+					if toolRefs.Exists() && toolRefs.IsArray() {
+						toolRefs.ForEach(func(refIndex, refPart gjson.Result) bool {
+							if refPart.Get("type").String() == "tool_reference" {
+								refToolName := refPart.Get("tool_name").String()
+								if newName, renamed := rewriteName(refToolName); renamed {
+									refPath := fmt.Sprintf("messages.%d.content.%d.content.tool_references.%d.tool_name", msgIndex.Int(), contentIndex.Int(), refIndex.Int())
+									body, _ = sjson.SetBytes(body, refPath, newName)
+									recordRename(refToolName, newName)
+								}
+							}
+							return true
+						})
+					}
 				}
 				return true
 			})
@@ -1647,6 +1709,18 @@ type claudeMCPAliasResolver struct {
 	exact   map[string]string
 	aliases []claudeMCPAliasEntry
 	servers map[string]struct{}
+}
+
+type claudeMCPAliasRestoreError struct {
+	error
+}
+
+func (e claudeMCPAliasRestoreError) Unwrap() error {
+	return e.error
+}
+
+func (claudeMCPAliasRestoreError) IsRequestScoped() bool {
+	return true
 }
 
 func newClaudeMCPAliasResolver(reverseMap map[string]string) claudeMCPAliasResolver {
@@ -1762,7 +1836,7 @@ func (resolver claudeMCPAliasResolver) resolve(name string) (string, bool, error
 		return matchedOriginal, true, nil
 	}
 	if matchCount > 1 {
-		return "", false, fmt.Errorf("cannot restore Claude OAuth MCP tool alias %q: matched multiple declared aliases", name)
+		return "", false, claudeMCPAliasRestoreError{fmt.Errorf("cannot restore Claude OAuth MCP tool alias %q: matched multiple declared aliases", name)}
 	}
 
 	parts, validAlias := parseClaudeMCPAlias(normalizedName)
@@ -1817,10 +1891,10 @@ func (resolver claudeMCPAliasResolver) resolve(name string) (string, bool, error
 		return matchedOriginal, true, nil
 	}
 	if matchCount > 1 {
-		return "", false, fmt.Errorf("cannot restore Claude OAuth MCP tool alias %q: semantic suffix matches multiple declared tools", name)
+		return "", false, claudeMCPAliasRestoreError{fmt.Errorf("cannot restore Claude OAuth MCP tool alias %q: semantic suffix matches multiple declared tools", name)}
 	}
 
-	return "", false, fmt.Errorf("cannot restore Claude OAuth MCP tool alias %q: no unique request-local match", name)
+	return "", false, claudeMCPAliasRestoreError{fmt.Errorf("cannot restore Claude OAuth MCP tool alias %q: no unique request-local match", name)}
 }
 
 // reverseRemapOAuthToolNames reverses the tool name mapping for non-stream responses
@@ -1881,6 +1955,26 @@ func reverseRemapOAuthToolNames(body []byte, reverseMap map[string]string) ([]by
 					return true
 				})
 			}
+		case "tool_search_tool_result":
+			toolRefs := part.Get("content.tool_references")
+			if toolRefs.Exists() && toolRefs.IsArray() {
+				toolRefs.ForEach(func(refIndex, refPart gjson.Result) bool {
+					if refPart.Get("type").String() != "tool_reference" {
+						return true
+					}
+					toolName := refPart.Get("tool_name").String()
+					origName, matched, errResolve := resolver.resolve(toolName)
+					if errResolve != nil {
+						resolveErr = errResolve
+						return false
+					}
+					if matched {
+						path := fmt.Sprintf("content.%d.content.tool_references.%d.tool_name", index.Int(), refIndex.Int())
+						body, _ = sjson.SetBytes(body, path, origName)
+					}
+					return true
+				})
+			}
 		}
 		return resolveErr == nil
 	})
@@ -1929,6 +2023,44 @@ func reverseRemapOAuthToolNamesFromStreamLine(line []byte, reverseMap map[string
 			return line, nil
 		}
 		updated, err = sjson.SetBytes(payload, "content_block.tool_name", origName)
+	case "tool_search_tool_result":
+		toolRefs := contentBlock.Get("content.tool_references")
+		if !toolRefs.Exists() || !toolRefs.IsArray() {
+			return line, nil
+		}
+		updatedPayload := payload
+		var resolveErr error
+		hasChange := false
+		toolRefs.ForEach(func(refIndex, refPart gjson.Result) bool {
+			if refPart.Get("type").String() != "tool_reference" {
+				return true
+			}
+			toolName := refPart.Get("tool_name").String()
+			origName, matched, errResolve := resolver.resolve(toolName)
+			if errResolve != nil {
+				resolveErr = errResolve
+				return false
+			}
+			if matched {
+				path := fmt.Sprintf("content_block.content.tool_references.%d.tool_name", refIndex.Int())
+				updatedPayload, err = sjson.SetBytes(updatedPayload, path, origName)
+				if err != nil {
+					return false
+				}
+				hasChange = true
+			}
+			return true
+		})
+		if resolveErr != nil {
+			return line, resolveErr
+		}
+		if err != nil {
+			return line, fmt.Errorf("rewrite Claude OAuth MCP tool alias: %w", err)
+		}
+		if !hasChange {
+			return line, nil
+		}
+		updated = updatedPayload
 	default:
 		return line, nil
 	}
