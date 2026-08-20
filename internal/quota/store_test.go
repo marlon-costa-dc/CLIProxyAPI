@@ -5,6 +5,23 @@ import (
 	"time"
 )
 
+func TestStore_ConfiguresSingleConnectionAndExpiryIndex(t *testing.T) {
+	s := newTestStore(t)
+	defer s.Close()
+
+	if got := s.db.Stats().MaxOpenConnections; got != 1 {
+		t.Fatalf("max open connections = %d, want 1", got)
+	}
+
+	var indexName string
+	if err := s.db.QueryRow(`select name from sqlite_master where type = 'index' and name = 'idx_key_pauses_expires_at'`).Scan(&indexName); err != nil {
+		t.Fatalf("expiry index lookup failed: %v", err)
+	}
+	if indexName != "idx_key_pauses_expires_at" {
+		t.Fatalf("index name = %q, want idx_key_pauses_expires_at", indexName)
+	}
+}
+
 func TestStore_PauseKeyAndIsPaused(t *testing.T) {
 	s := newTestStore(t)
 	defer s.Close()

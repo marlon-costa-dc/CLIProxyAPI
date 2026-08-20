@@ -24,6 +24,8 @@ func NewStore(dbPath string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open quota db: %w", err)
 	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 	s := &Store{db: db}
 	if err := s.Init(); err != nil {
 		db.Close()
@@ -41,7 +43,10 @@ func (s *Store) Init() error {
 		expires_at INTEGER NOT NULL DEFAULT 0,
 		created_at INTEGER NOT NULL
 	)`
-	_, err := s.db.Exec(query)
+	if _, err := s.db.Exec(query); err != nil {
+		return err
+	}
+	_, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_key_pauses_expires_at ON key_pauses(expires_at)`)
 	return err
 }
 
