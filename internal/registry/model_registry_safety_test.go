@@ -83,6 +83,48 @@ func TestGetAvailableModelsByProviderReturnsClones(t *testing.T) {
 	}
 }
 
+func TestGetModelProvidersPrefersConfiguredModels(t *testing.T) {
+	r := newTestModelRegistry()
+	r.RegisterClient("catalog-a", "opencode", []*ModelInfo{{ID: "shared-model"}})
+	r.RegisterClient("catalog-b", "opencode", []*ModelInfo{{ID: "shared-model"}})
+	r.RegisterClient("configured", "claude", []*ModelInfo{{ID: "shared-model", UserDefined: true}})
+
+	providers := r.GetModelProviders("shared-model")
+	if len(providers) != 2 {
+		t.Fatalf("provider count = %d, want 2: %v", len(providers), providers)
+	}
+	if providers[0] != "claude" || providers[1] != "opencode" {
+		t.Fatalf("provider order = %v, want configured claude before discovered opencode", providers)
+	}
+}
+
+func TestGetModelProvidersDropsConfiguredPriorityAfterLastConfiguredClientIsRemoved(t *testing.T) {
+	r := newTestModelRegistry()
+	r.RegisterClient("catalog-a", "opencode", []*ModelInfo{{ID: "shared-model"}})
+	r.RegisterClient("catalog-b", "opencode", []*ModelInfo{{ID: "shared-model"}})
+	r.RegisterClient("configured", "claude", []*ModelInfo{{ID: "shared-model", UserDefined: true}})
+	r.RegisterClient("discovered", "claude", []*ModelInfo{{ID: "shared-model"}})
+
+	r.UnregisterClient("configured")
+
+	providers := r.GetModelProviders("shared-model")
+	if len(providers) != 2 || providers[0] != "opencode" || providers[1] != "claude" {
+		t.Fatalf("provider order = %v, want availability order after configured client removal", providers)
+	}
+}
+
+func TestGetModelProvidersUsesAvailabilityWithoutConfiguredModels(t *testing.T) {
+	r := newTestModelRegistry()
+	r.RegisterClient("claude", "claude", []*ModelInfo{{ID: "shared-model"}})
+	r.RegisterClient("opencode-a", "opencode", []*ModelInfo{{ID: "shared-model"}})
+	r.RegisterClient("opencode-b", "opencode", []*ModelInfo{{ID: "shared-model"}})
+
+	providers := r.GetModelProviders("shared-model")
+	if len(providers) != 2 || providers[0] != "opencode" || providers[1] != "claude" {
+		t.Fatalf("provider order = %v, want availability order when neither model is configured", providers)
+	}
+}
+
 func TestCleanupExpiredQuotasInvalidatesAvailableModelsCache(t *testing.T) {
 	r := newTestModelRegistry()
 	r.RegisterClient("client-1", "openai", []*ModelInfo{{ID: "m1", Created: 1}})

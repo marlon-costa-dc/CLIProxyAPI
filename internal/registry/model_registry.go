@@ -1154,7 +1154,8 @@ func (r *ModelRegistry) GetModelCount(modelID string) int {
 //   - modelID: The model ID to check
 //
 // Returns:
-//   - []string: Provider identifiers ordered by availability count (descending)
+//   - []string: Provider identifiers ordered with explicitly configured providers first,
+//     then by availability count (descending) and provider name.
 func (r *ModelRegistry) GetModelProviders(modelID string) []string {
 	r.mutex.RLock()
 	defer r.mutex.RUnlock()
@@ -1165,8 +1166,9 @@ func (r *ModelRegistry) GetModelProviders(modelID string) []string {
 	}
 
 	type providerCount struct {
-		name  string
-		count int
+		name        string
+		count       int
+		userDefined bool
 	}
 	providers := make([]providerCount, 0, len(registration.Providers))
 	// suspendedByProvider := make(map[string]int)
@@ -1186,13 +1188,17 @@ func (r *ModelRegistry) GetModelProviders(modelID string) []string {
 		// 	continue
 		// }
 		// providers = append(providers, providerCount{name: name, count: adjusted})
-		providers = append(providers, providerCount{name: name, count: count})
+		userDefined := r.providerHasUserDefinedModelLocked(name, modelID)
+		providers = append(providers, providerCount{name: name, count: count, userDefined: userDefined})
 	}
 	if len(providers) == 0 {
 		return nil
 	}
 
 	sort.Slice(providers, func(i, j int) bool {
+		if providers[i].userDefined != providers[j].userDefined {
+			return providers[i].userDefined
+		}
 		if providers[i].count == providers[j].count {
 			return providers[i].name < providers[j].name
 		}
@@ -1204,6 +1210,18 @@ func (r *ModelRegistry) GetModelProviders(modelID string) []string {
 		result = append(result, item.name)
 	}
 	return result
+}
+
+func (r *ModelRegistry) providerHasUserDefinedModelLocked(provider, modelID string) bool {
+	for clientID, clientProvider := range r.clientProviders {
+		if clientProvider != provider {
+			continue
+		}
+		if info := r.clientModelInfos[clientID][modelID]; info != nil && info.UserDefined {
+			return true
+		}
+	}
+	return false
 }
 
 // GetModelInfo returns ModelInfo, prioritizing provider-specific definition if available.
