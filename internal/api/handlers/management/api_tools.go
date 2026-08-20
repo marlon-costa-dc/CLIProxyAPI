@@ -21,7 +21,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/proxyutil"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/oauth2"
-	"golang.org/x/oauth2/google"
 )
 
 const defaultAPICallTimeout = 60 * time.Second
@@ -332,75 +331,6 @@ func (h *Handler) resolveTokenForAuth(ctx context.Context, auth *coreauth.Auth, 
 	}
 
 	return tokenValueForAuth(auth), nil
-}
-
-func (h *Handler) refreshGeminiOAuthAccessToken(ctx context.Context, auth *coreauth.Auth) (string, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if auth == nil {
-		return "", nil
-	}
-
-	metadata, updater := geminiOAuthMetadata(auth)
-	if len(metadata) == 0 {
-		return "", fmt.Errorf("gemini oauth metadata missing")
-	}
-
-	base := make(map[string]any)
-	if tokenRaw, ok := metadata["token"].(map[string]any); ok && tokenRaw != nil {
-		base = cloneMap(tokenRaw)
-	}
-
-	var token oauth2.Token
-	if len(base) > 0 {
-		if raw, errMarshal := json.Marshal(base); errMarshal == nil {
-			_ = json.Unmarshal(raw, &token)
-		}
-	}
-
-	if token.AccessToken == "" {
-		token.AccessToken = stringValue(metadata, "access_token")
-	}
-	if token.RefreshToken == "" {
-		token.RefreshToken = stringValue(metadata, "refresh_token")
-	}
-	if token.TokenType == "" {
-		token.TokenType = stringValue(metadata, "token_type")
-	}
-	if token.Expiry.IsZero() {
-		if expiry := stringValue(metadata, "expiry"); expiry != "" {
-			if ts, errParseTime := time.Parse(time.RFC3339, expiry); errParseTime == nil {
-				token.Expiry = ts
-			}
-		}
-	}
-
-	conf := &oauth2.Config{
-		ClientID:     oauthClientValue(metadata, "client_id", geminiOAuthClientIDEnv),
-		ClientSecret: oauthClientValue(metadata, "client_secret", geminiOAuthSecretEnv),
-		Scopes:       geminiOAuthScopes,
-		Endpoint:     google.Endpoint,
-	}
-
-	ctxToken := ctx
-	httpClient := &http.Client{
-		Timeout: defaultAPICallTimeout,
-	}
-	ctxToken = context.WithValue(ctxToken, oauth2.HTTPClient, httpClient)
-
-	src := conf.TokenSource(ctxToken, &token)
-	currentToken, errToken := src.Token()
-	if errToken != nil {
-		return "", errToken
-	}
-
-	merged := buildOAuthTokenMap(base, currentToken)
-	fields := buildOAuthTokenFields(currentToken, merged)
-	if updater != nil {
-		updater(fields)
-	}
-	return strings.TrimSpace(currentToken.AccessToken), nil
 }
 
 func (h *Handler) refreshAntigravityOAuthAccessToken(ctx context.Context, auth *coreauth.Auth, requestProxyURL string) (string, error) {
@@ -1077,7 +1007,8 @@ func (h *Handler) GetCopilotQuota(c *gin.Context) {
 	req.Header.Set("Accept", "application/json")
 
 	httpClient := &http.Client{
-		Timeout: defaultAPICallTimeout,
+		Timeout:   defaultAPICallTimeout,
+		Transport: h.apiCallTransport(auth, ""),
 	}
 
 	resp, errDo := httpClient.Do(req)
@@ -1193,7 +1124,8 @@ func (h *Handler) enrichCopilotTokenResponse(ctx context.Context, response apiCa
 	req.Header.Set("Accept", "application/json")
 
 	httpClient := &http.Client{
-		Timeout: defaultAPICallTimeout,
+		Timeout:   defaultAPICallTimeout,
+		Transport: h.apiCallTransport(auth, ""),
 	}
 
 	quotaResp, errDo := httpClient.Do(req)

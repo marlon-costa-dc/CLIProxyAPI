@@ -3,6 +3,7 @@
 package registry
 
 import (
+	"sort"
 	"strings"
 )
 
@@ -32,7 +33,11 @@ type staticModelsJSON struct {
 	Qoder       []*ModelInfo `json:"qoder"`
 	Antigravity []*ModelInfo `json:"antigravity"`
 	XAI         []*ModelInfo `json:"xai"`
+	Devin       []*ModelInfo `json:"devin"`
 	ZAI         []*ModelInfo `json:"zai"`
+	OpenCode    []*ModelInfo `json:"opencode"`
+	OpenCodeGo  []*ModelInfo `json:"opencode-go"`
+	Poolside    []*ModelInfo `json:"poolside"`
 }
 
 // GetClaudeModels returns the standard Claude model definitions.
@@ -341,6 +346,12 @@ func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 		return GetAmazonQModels()
 	case "antigravity":
 		return GetAntigravityModels()
+	case "opencode":
+		return GetOpenCodeModels("zen")
+	case "opencode-go":
+		return GetOpenCodeModels("go")
+	case "poolside":
+		return GetPoolsideModels()
 	case "xai", "x-ai", "grok":
 		return GetXAIModels()
 	case "qoder":
@@ -384,6 +395,9 @@ func LookupStaticModelInfo(modelID string) *ModelInfo {
 		data.XAI,
 		data.Qoder,
 		data.ZAI,
+		data.OpenCode,
+		data.OpenCodeGo,
+		data.Poolside,
 	}
 	for _, models := range allModels {
 		for _, m := range models {
@@ -907,7 +921,80 @@ func GetQoderModels() []*ModelInfo {
 	return cloneModelInfos(getModels().Qoder)
 }
 
+// GetDevinModels returns the standard Devin model definitions.
+func GetDevinModels() []*ModelInfo {
+	return cloneModelInfos(getModels().Devin)
+}
+
 // GetZAIModels returns the Z.AI / ZCode (GLM) coding-plan model definitions.
 func GetZAIModels() []*ModelInfo {
 	return cloneModelInfos(getModels().ZAI)
+}
+
+// GetOpenCodeModels returns the OpenCode model definitions for the given gateway
+// ("zen" or "go"). Models are generated from the embedded opencode_routes.json
+// route table, which is the canonical, refresh-immune source: models.json is a
+// generated projection that the CI "Refresh models catalog" step replaces with a
+// remote catalog that does not carry OpenCode-specific route tables, so the
+// embedded table is the source of truth for the listing. When a refreshed
+// catalog still carries richer OpenCode entries, those are preferred.
+func GetOpenCodeModels(gateway string) []*ModelInfo {
+	if strings.EqualFold(gateway, "go") {
+		if m := getModels().OpenCodeGo; len(m) > 0 {
+			return cloneModelInfos(m)
+		}
+		return openCodeModelsFromRoutes("go")
+	}
+	if m := getModels().OpenCode; len(m) > 0 {
+		return cloneModelInfos(m)
+	}
+	return openCodeModelsFromRoutes("zen")
+}
+
+// openCodeRoutesModelInfo builds a ModelInfo from an embedded OpenCode route-table
+// entry (opencode_routes.json). The route table only carries ID -> protocol, so
+// capability fields are populated with the OpenCode-wide defaults that the
+// generated catalog mirrors.
+func openCodeRoutesModelInfo(gateway, modelID, protocol string) *ModelInfo {
+	info := &ModelInfo{
+		ID:                        modelID,
+		Object:                    "model",
+		OwnedBy:                   "opencode",
+		Type:                      "opencode",
+		DisplayName:               modelID,
+		Description:               "OpenCode " + gateway + " gateway — " + modelID,
+		ContextLength:             500000,
+		MaxCompletionTokens:       65536,
+		SupportedInputModalities:  []string{"text"},
+		SupportedOutputModalities: []string{"text"},
+		Thinking: &ThinkingSupport{
+			Levels: []string{"low", "medium", "high", "xhigh"},
+		},
+	}
+	if protocol == "gemini" {
+		info.SupportedEndpoints = []string{"/v1/models/" + modelID}
+	} else {
+		info.SupportedEndpoints = []string{OpenCodeModelPath(gateway, modelID)}
+	}
+	return info
+}
+
+// openCodeModelsFromRoutes materializes ModelInfo entries from the embedded
+// opencode_routes.json route table for the given gateway.
+func openCodeModelsFromRoutes(gateway string) []*ModelInfo {
+	routes, ok := openCodeRoutes[gateway]
+	if !ok || len(routes) == 0 {
+		return nil
+	}
+	out := make([]*ModelInfo, 0, len(routes))
+	for id, protocol := range routes {
+		out = append(out, openCodeRoutesModelInfo(gateway, id, protocol))
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
+// GetPoolsideModels returns the Poolside model definitions.
+func GetPoolsideModels() []*ModelInfo {
+	return cloneModelInfos(getModels().Poolside)
 }

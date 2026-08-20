@@ -137,6 +137,9 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 			models = registry.GetCodexProModels()
 		}
 		models = applyExcludedModels(models, excluded)
+	case "devin":
+		models = registry.GetDevinModels()
+		models = applyExcludedModels(models, excluded)
 	case "kimi":
 		models = registry.GetKimiModels()
 		models = applyExcludedModels(models, excluded)
@@ -167,6 +170,23 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 		models = applyExcludedModels(models, excluded)
 	case "zai":
 		models = registry.GetZAIModels()
+		models = applyExcludedModels(models, excluded)
+	case constant.OpenCode:
+		models = registry.GetOpenCodeModels("zen")
+		models = applyExcludedModels(models, excluded)
+	case constant.OpenCodeGo:
+		models = registry.GetOpenCodeModels("go")
+		models = applyExcludedModels(models, excluded)
+	case constant.Poolside:
+		models = registry.GetPoolsideModels()
+		if fb := strings.TrimSpace(s.cfg.Poolside.FallbackModel); fb != "" {
+			models = append(models, &registry.ModelInfo{
+				ID:          fb,
+				Name:        fb,
+				DisplayName: fb + " (Poolside fallback)",
+				OwnedBy:     "poolside",
+			})
+		}
 		models = applyExcludedModels(models, excluded)
 	default:
 		// Handle OpenAI-compatibility providers by name using config

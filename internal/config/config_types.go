@@ -8,18 +8,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// RequestScopedErrorRule configures custom classification and handling for upstream errors.
-type RequestScopedErrorRule struct {
-	// Status matches the HTTP status code of the upstream response (e.g. 400).
-	Status int `yaml:"status,omitempty" json:"status,omitempty"`
-	// Match matches substrings in the upstream error body.
-	Match []string `yaml:"match,omitempty" json:"match,omitempty"`
-	// MatchRegexr matches regular expressions in the upstream error body.
-	MatchRegexr []string `yaml:"match-regexr,omitempty" json:"match-regexr,omitempty"`
-	// Action specifies the handling behavior: "stop", "stop-and-cooldown", "continue", "continue-and-cooldown".
-	Action string `yaml:"action,omitempty" json:"action,omitempty"`
-}
-
 // AmpModelMapping maps an Amp-requested model to an available proxy model.
 type AmpModelMapping struct {
 	From  string `yaml:"from" json:"from"`
@@ -79,6 +67,18 @@ type KiroRateLimitConfig struct {
 	BackoffMax        string  `yaml:"backoff-max,omitempty" json:"backoff-max,omitempty"`
 	BackoffMultiplier float64 `yaml:"backoff-multiplier,omitempty" json:"backoff-multiplier,omitempty"`
 	SuspendCooldown   string  `yaml:"suspend-cooldown,omitempty" json:"suspend-cooldown,omitempty"`
+}
+
+// RequestScopedErrorRule configures custom classification and handling for upstream errors.
+type RequestScopedErrorRule struct {
+	// Status matches the HTTP status code of the upstream response (e.g. 400).
+	Status int `yaml:"status,omitempty" json:"status,omitempty"`
+	// Match matches substrings in the upstream error body.
+	Match []string `yaml:"match,omitempty" json:"match,omitempty"`
+	// MatchRegexr matches regular expressions in the upstream error body.
+	MatchRegexr []string `yaml:"match-regexr,omitempty" json:"match-regexr,omitempty"`
+	// Action specifies the handling behavior: "stop", "stop-and-cooldown", "continue", "continue-and-cooldown".
+	Action string `yaml:"action,omitempty" json:"action,omitempty"`
 }
 
 // PluginsConfig holds dynamic plugin system settings.
@@ -202,6 +202,13 @@ type XAIConfig struct {
 type AntigravityConfig struct {
 	// SensitiveWords is a list of words to obfuscate with zero-width characters in system instructions.
 	SensitiveWords []string `yaml:"sensitive-words,omitempty" json:"sensitive-words,omitempty"`
+}
+
+// PoolsideConfig configures provider-wide Poolside request behavior.
+type PoolsideConfig struct {
+	// FallbackModel is the Poolside model used when the requested model is not
+	// registered for the Poolside provider. An empty value disables fallback.
+	FallbackModel string `yaml:"fallback-model,omitempty" json:"fallback-model,omitempty"`
 }
 
 // CodexConfig configures provider-wide Codex request behavior.
@@ -608,6 +615,15 @@ type XAIKey = CodexKey
 
 // XAIModel uses the Codex model mapping structure for xAI models.
 type XAIModel = CodexModel
+
+// OpenCodeKey uses the Codex API key structure for native OpenCode (Zen/Go) execution.
+type OpenCodeKey = CodexKey
+
+// OpenCodeGoKey uses the Codex API key structure for native OpenCode Go execution.
+type OpenCodeGoKey = CodexKey
+
+// PoolsideKey uses the Codex API key structure for native Poolside execution.
+type PoolsideKey = CodexKey
 
 // GeminiKey represents the configuration for a Gemini API key,
 // including optional overrides for upstream base URL, proxy routing, and headers.
