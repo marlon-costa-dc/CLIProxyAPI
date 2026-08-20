@@ -207,10 +207,13 @@ func baselineExecutorAuths() []*coreauth.Auth {
 		"vertex",
 		"aistudio",
 		"antigravity",
+		"devin",
 		"kimi",
 		"xai",
 		"zai",
 		"opencode",
+		constant.OpenCodeGo,
+		constant.Poolside,
 		"openai-compatibility",
 	}
 	auths := make([]*coreauth.Auth, 0, len(providers))
@@ -294,6 +297,8 @@ func (s *Service) registerExecutorForAuth(a *coreauth.Auth, forceReplace bool) {
 		s.coreManager.RegisterExecutor(executor.NewAntigravityExecutor(cfg))
 	case "claude":
 		s.coreManager.RegisterExecutor(executor.NewClaudeExecutor(cfg))
+	case "devin":
+		s.coreManager.RegisterExecutor(executor.NewDevinExecutor(cfg))
 	case "kimi":
 		s.coreManager.RegisterExecutor(executor.NewKimiExecutor(cfg))
 	case "kiro":
@@ -324,7 +329,11 @@ func (s *Service) registerExecutorForAuth(a *coreauth.Auth, forceReplace bool) {
 	case "zai":
 		s.coreManager.RegisterExecutor(executor.NewZAIExecutor(cfg))
 	case "opencode":
-		s.coreManager.RegisterExecutor(executor.NewOpenCodeExecutor(cfg))
+		s.coreManager.RegisterExecutor(executor.NewOpenCodeExecutor(constant.OpenCode))
+	case constant.OpenCodeGo:
+		s.coreManager.RegisterExecutor(executor.NewOpenCodeExecutor(constant.OpenCodeGo))
+	case constant.Poolside:
+		s.coreManager.RegisterExecutor(executor.NewPoolsideExecutor(cfg))
 	default:
 		providerKey := strings.ToLower(strings.TrimSpace(a.Provider))
 		if providerKey == "" {
