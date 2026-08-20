@@ -307,6 +307,7 @@ func readStreamBootstrap(ctx context.Context, ch <-chan cliproxyexecutor.StreamC
 
 func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, resultModel string, opts cliproxyexecutor.Options, headers http.Header, buffered []cliproxyexecutor.StreamChunk, remaining <-chan cliproxyexecutor.StreamChunk, aliasResult OAuthModelAliasResult, ephemeralResult bool, cleanups ...func()) *cliproxyexecutor.StreamResult {
 	out := make(chan cliproxyexecutor.StreamChunk)
+	streamStart := time.Now()
 	go func() {
 		defer close(out)
 		for _, cleanup := range cleanups {
@@ -323,6 +324,8 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 		emit := func(chunk cliproxyexecutor.StreamChunk) bool {
 			if chunk.Err != nil && !failed {
 				failed = true
+				entry := logEntryWithRequestID(ctx)
+				warnLogUpstreamFailure(ctx, entry, provider, resultModel, auth, time.Since(streamStart), chunk.Err)
 				rerr := resultErrorFromError(chunk.Err)
 				action, okAction := matchRequestScopedErrorAction(auth, chunk.Err, m.runtimeConfigSnapshot())
 				result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: rerr, Options: opts}
@@ -441,7 +444,10 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			}
 			return err
 		}
+		entry := logEntryWithRequestID(ctx)
+		startStream := time.Now()
 		streamResult, errStream := executor.ExecuteStream(attemptCtx, auth, execReq, execOpts)
+		durationStream := time.Since(startStream)
 		if errStream != nil {
 			if errCtx := ctx.Err(); errCtx != nil {
 				scope.release()
@@ -461,6 +467,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 				}
 				if errRefresh != nil {
 					errStream = errRefresh
+					warnLogUpstreamFailure(ctx, entry, provider, execModel, auth, durationStream, errStream)
 				} else if okRefresh {
 					if streamResult != nil {
 						discardStreamChunks(streamResult.Chunks)
@@ -473,9 +480,12 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 					scope.release()
 					scope = newTTFTScope(ctx, ttftTimeout)
 					attemptCtx = scope.ctx
+					startRetry := time.Now()
 					streamResult, errStream = executor.ExecuteStream(attemptCtx, auth, execReq, execOpts)
+					durationRetry := time.Since(startRetry)
 					errStream = checkTTFTErr(errStream)
 					if errStream != nil {
+						warnLogUpstreamFailure(ctx, entry, provider, execModel, auth, durationRetry, errStream)
 						if errCtx := ctx.Err(); errCtx != nil {
 							scope.release()
 							if streamResult != nil {
@@ -484,7 +494,11 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 							return nil, errCtx
 						}
 					}
+				} else {
+					warnLogUpstreamFailure(ctx, entry, provider, execModel, auth, durationStream, errStream)
 				}
+			} else {
+				warnLogUpstreamFailure(ctx, entry, provider, execModel, auth, durationStream, errStream)
 			}
 		}
 		if !ephemeralResult {
@@ -558,6 +572,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 				if errRefresh != nil {
 					discardStreamChunks(streamResult.Chunks)
 					bootstrapErr = errRefresh
+					warnLogUpstreamFailure(ctx, entry, provider, execModel, auth, time.Since(startStream), bootstrapErr)
 					streamResult = &cliproxyexecutor.StreamResult{}
 				} else if okRefresh {
 					discardStreamChunks(streamResult.Chunks)
@@ -569,6 +584,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 					scope.release()
 					scope = newTTFTScope(ctx, ttftTimeout)
 					attemptCtx = scope.ctx
+					startRetry := time.Now()
 					retryStream, retryErr := executor.ExecuteStream(attemptCtx, auth, execReq, execOpts)
 					retryStream, retryErr = validateStreamResult(retryStream, retryErr)
 					scope.stop()
@@ -582,6 +598,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 							return nil, errCtx
 						}
 						bootstrapErr = retryErr
+						warnLogUpstreamFailure(ctx, entry, provider, execModel, auth, time.Since(startRetry), bootstrapErr)
 						streamResult = &cliproxyexecutor.StreamResult{}
 					} else {
 						streamResult = retryStream
@@ -590,8 +607,15 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 							bootstrapErr = scope.timeoutError()
 						}
 						bootstrapErr = checkTTFTErr(bootstrapErr)
+						if bootstrapErr != nil {
+							warnLogUpstreamFailure(ctx, entry, provider, execModel, auth, time.Since(startRetry), bootstrapErr)
+						}
 					}
+				} else {
+					warnLogUpstreamFailure(ctx, entry, provider, execModel, auth, time.Since(startStream), bootstrapErr)
 				}
+			} else {
+				warnLogUpstreamFailure(ctx, entry, provider, execModel, auth, time.Since(startStream), bootstrapErr)
 			}
 		}
 		if !ephemeralResult {
@@ -676,6 +700,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			if payloadBytes == 0 {
 				emptyErr = &Error{Code: "empty_stream", Message: "upstream stream closed before first payload", Retryable: true}
 			}
+			warnLogUpstreamFailure(ctx, entry, provider, execModel, auth, time.Since(startStream), emptyErr)
 			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: emptyErr, Options: execOpts}
 			m.recordExecutionResult(ctx, result, auth, ephemeralResult)
 			discardStreamChunks(streamResult.Chunks)

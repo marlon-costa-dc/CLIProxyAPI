@@ -11,8 +11,8 @@ run-name: >-
 #     GITHUB_TOKEN events do not cascade)
 #   - workflow_dispatch with optional `tag` input
 #
-# Runner: self-hosted `cliproxy` (docker host LXC). QEMU + buildx produce both
-# linux/amd64 and linux/arm64 from a single x64 host.
+# Runner: ubuntu-latest (GitHub-hosted). QEMU + buildx produce both
+# linux/amd64 and linux/arm64 from the x64 host.
 #
 # Registries:
 #   - GHCR: ghcr.io/<owner>/cli-proxy-api-plus using built-in GITHUB_TOKEN
@@ -52,7 +52,12 @@ concurrency:
 
 jobs:
   build:
-    runs-on: [self-hosted, cliproxy]
+    # GitHub-hosted runner: the workflow already uses QEMU for linux/arm64, so a
+    # standard ubuntu runner builds both platforms. The previous self-hosted
+    # 'cliproxy' runner is offline, which left every docker-image run queued
+    # forever (dc9/dc10/dc11 never built). Fall back here; when the self-hosted
+    # host returns it can be re-added as an alternative runner group.
+    runs-on: ubuntu-latest
     steps:
       - name: Resolve build ref
         id: ref
@@ -82,10 +87,9 @@ jobs:
           EXPECTED_COMMIT: ${{ inputs.commit }}
         run: test "$(git rev-parse HEAD)" = "${EXPECTED_COMMIT}"
 
-      - name: Set up QEMU (for arm64 emulation on x64 self-hosted runner)
+      - name: Set up QEMU (for arm64 emulation)
         uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130
-        with:
-          platforms: arm64
+        platforms: arm64
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
