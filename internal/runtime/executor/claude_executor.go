@@ -218,18 +218,20 @@ func (e *ClaudeExecutor) PrepareRequest(req *http.Request, auth *cliproxyauth.Au
 		return nil
 	}
 	apiKey, _ := claudeCreds(auth)
-	if strings.TrimSpace(apiKey) == "" {
-		return nil
-	}
-	useAPIKey := auth != nil && auth.Attributes != nil && strings.TrimSpace(auth.Attributes["api_key"]) != ""
+	useAPIKey := auth != nil && (auth.AuthKind() == cliproxyauth.AuthKindAPIKey || (auth.Attributes != nil && strings.TrimSpace(auth.Attributes["api_key"]) != ""))
 	forceXAPIKey := auth != nil && auth.Attributes != nil && strings.EqualFold(strings.TrimSpace(auth.Attributes["anthropic_auth_scheme"]), "x-api-key")
 	isAnthropicBase := isAnthropicUpstreamURL(req.URL)
-	if forceXAPIKey || (isAnthropicBase && useAPIKey) {
-		req.Header.Del("Authorization")
-		req.Header.Set("x-api-key", apiKey)
+	if strings.TrimSpace(apiKey) != "" {
+		if forceXAPIKey || (isAnthropicBase && useAPIKey) {
+			req.Header.Del("Authorization")
+			req.Header.Set("x-api-key", apiKey)
+		} else {
+			req.Header.Del("x-api-key")
+			req.Header.Set("Authorization", "Bearer "+apiKey)
+		}
 	} else {
+		req.Header.Del("Authorization")
 		req.Header.Del("x-api-key")
-		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 	var attrs map[string]string
 	if auth != nil {
