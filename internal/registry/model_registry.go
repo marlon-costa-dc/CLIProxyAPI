@@ -1165,8 +1165,9 @@ func (r *ModelRegistry) GetModelProviders(modelID string) []string {
 	}
 
 	type providerCount struct {
-		name  string
-		count int
+		name        string
+		count       int
+		userDefined bool
 	}
 	providers := make([]providerCount, 0, len(registration.Providers))
 	// suspendedByProvider := make(map[string]int)
@@ -1186,13 +1187,22 @@ func (r *ModelRegistry) GetModelProviders(modelID string) []string {
 		// 	continue
 		// }
 		// providers = append(providers, providerCount{name: name, count: adjusted})
-		providers = append(providers, providerCount{name: name, count: count})
+		userDefined := false
+		if registration.InfoByProvider != nil {
+			if info := registration.InfoByProvider[name]; info != nil {
+				userDefined = info.UserDefined
+			}
+		}
+		providers = append(providers, providerCount{name: name, count: count, userDefined: userDefined})
 	}
 	if len(providers) == 0 {
 		return nil
 	}
 
 	sort.Slice(providers, func(i, j int) bool {
+		if providers[i].userDefined != providers[j].userDefined {
+			return providers[i].userDefined
+		}
 		if providers[i].count == providers[j].count {
 			return providers[i].name < providers[j].name
 		}
