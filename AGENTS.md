@@ -3,7 +3,15 @@
 Go 1.26+ proxy server providing OpenAI/Gemini/Claude/Codex compatible APIs with OAuth and round-robin load balancing.
 
 ## Repository
-- GitHub: https://github.com/router-for-me/CLIProxyAPI
+- Fork: https://github.com/marlon-costa-dc/CLIProxyAPI
+- Upstream: https://github.com/router-for-me/CLIProxyAPI
+
+## Authority and integration
+- Upstream `router-for-me/CLIProxyAPI` defines the original MIT project's runtime architecture and general behavior.
+- Fork `main` is the integration authority for the maintained downstream delta, CI, documentation, and releases. When upstream and fork instructions differ, preserve upstream behavior unless the fork delta explicitly changes it.
+- Reconcile upstream changes through reviewed `main`-targeting pull requests. Do not treat an upstream branch as the fork's integration branch or overwrite fork-only work.
+- `README-ccs-fork.md` owns fork provenance, legal boundaries, remote roles, and the release contract.
+- `.github/workflows/release.yaml` and `.goreleaser.yml` are the release automation owners. Documentation must not redefine their implementation or publish a release implicitly.
 
 ## Commands
 ```bash
