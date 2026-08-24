@@ -83,6 +83,25 @@ func TestRetryablePreFirstByteError(t *testing.T) {
 	}
 }
 
+func TestOrderedCandidateProvidersScopesExecutionToCandidateChannel(t *testing.T) {
+	providers := []string{"openai-compat", "codex", "claude", "codex"}
+
+	got := orderedCandidateProviders(providers, "codex")
+	want := []string{"codex", "codex"}
+	if len(got) != len(want) {
+		t.Fatalf("orderedCandidateProviders() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("orderedCandidateProviders()[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+
+	if got := orderedCandidateProviders(providers, "vertex"); len(got) != 0 {
+		t.Fatalf("orderedCandidateProviders() = %v, want no providers for absent channel", got)
+	}
+}
+
 // TestOrderedFailoverErrorFallbackTrace proves AC#4 secret-safe observability:
 // the wrapper exposes from/to/reason/status/chain_index without secrets.
 func TestOrderedFailoverErrorFallbackTrace(t *testing.T) {

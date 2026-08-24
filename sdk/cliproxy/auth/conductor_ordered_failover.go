@@ -163,8 +163,9 @@ func (m *Manager) executeWithOrderedFailover(ctx context.Context, providers []st
 		candidateReq := req
 		candidateReq.Model = candidate.UpstreamModel
 		candidateOpts := withOrderedCandidateMetadata(opts, idx, candidate)
+		candidateProviders := orderedCandidateProviders(providers, candidate.Channel)
 		tried := make(map[string]struct{})
-		resp, err := m.executeMixedOnce(ctx, providers, candidateReq, candidateOpts, maxRetryCredentials, tracker, tried)
+		resp, err := m.executeMixedOnce(ctx, candidateProviders, candidateReq, candidateOpts, maxRetryCredentials, tracker, tried)
 		if err == nil {
 			return resp, nil
 		}
@@ -205,8 +206,9 @@ func (m *Manager) executeCountWithOrderedFailover(ctx context.Context, providers
 		candidateReq := req
 		candidateReq.Model = candidate.UpstreamModel
 		candidateOpts := withOrderedCandidateMetadata(opts, idx, candidate)
+		candidateProviders := orderedCandidateProviders(providers, candidate.Channel)
 		tried := make(map[string]struct{})
-		resp, err := m.executeCountMixedOnce(ctx, providers, candidateReq, candidateOpts, maxRetryCredentials, tracker, tried)
+		resp, err := m.executeCountMixedOnce(ctx, candidateProviders, candidateReq, candidateOpts, maxRetryCredentials, tracker, tried)
 		if err == nil {
 			return resp, nil
 		}
@@ -247,8 +249,9 @@ func (m *Manager) executeStreamWithOrderedFailover(ctx context.Context, provider
 		candidateReq := req
 		candidateReq.Model = candidate.UpstreamModel
 		candidateOpts := withOrderedCandidateMetadata(opts, idx, candidate)
+		candidateProviders := orderedCandidateProviders(providers, candidate.Channel)
 		tried := make(map[string]struct{})
-		streamResult, err := m.executeStreamMixedOnce(ctx, providers, candidateReq, candidateOpts, maxRetryCredentials, tracker, tried)
+		streamResult, err := m.executeStreamMixedOnce(ctx, candidateProviders, candidateReq, candidateOpts, maxRetryCredentials, tracker, tried)
 		if err == nil {
 			// Bytes are flowing from this candidate. No further fallback is
 			// permitted after this point — the client already received bytes.
@@ -321,6 +324,21 @@ func (m *Manager) orderedChainChannelForProviders(providers []string) string {
 		}
 	}
 	return ""
+}
+
+func orderedCandidateProviders(providers []string, channel string) []string {
+	channel = strings.ToLower(strings.TrimSpace(channel))
+	if channel == "" {
+		return nil
+	}
+	filtered := make([]string, 0, len(providers))
+	for _, provider := range providers {
+		provider = strings.TrimSpace(provider)
+		if OAuthModelAliasChannel(provider, "oauth") == channel {
+			filtered = append(filtered, provider)
+		}
+	}
+	return filtered
 }
 
 // withOrderedCandidateMetadata attaches the ordered candidate index to the
