@@ -66,3 +66,11 @@ docker-compose.override.yml
 
 # Local LLM Wiki vault
 .llm-wiki
+
+# Gas Town (added by gt)
+.runtime/
+.opencode/
+.logs/
+__pycache__/
+state.json
+CLAUDE.local.md
