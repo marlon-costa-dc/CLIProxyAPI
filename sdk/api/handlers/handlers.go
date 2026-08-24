@@ -18,6 +18,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/quota"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
@@ -162,9 +163,11 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
 		if requestGinCtx, ok := ctx.Value("gin").(*gin.Context); ok && requestGinCtx != nil && requestGinCtx.Request != nil {
 			ginCtx = requestGinCtx
 			key = strings.TrimSpace(ginCtx.GetHeader("Idempotency-Key"))
-			requestPath = strings.TrimSpace(ginCtx.FullPath())
-			if requestPath == "" && ginCtx.Request.URL != nil {
+			if ginCtx.Request.URL != nil {
 				requestPath = strings.TrimSpace(ginCtx.Request.URL.Path)
+			}
+			if requestPath == "" {
+				requestPath = strings.TrimSpace(ginCtx.FullPath())
 			}
 		}
 	}
@@ -192,6 +195,13 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
 	}
 	if callerScope := requestCallerScope(ginCtx); callerScope != "" {
 		meta[coreexecutor.CallerScopeMetadataKey] = callerScope
+	}
+	if ginCtx != nil {
+		if value, exists := ginCtx.Get("userApiKey"); exists && value != nil {
+			if apiKey := strings.TrimSpace(fmt.Sprint(value)); apiKey != "" {
+				meta[quota.KeyHashMetadataKey] = quota.KeyHash(apiKey)
+			}
+		}
 	}
 	if disallowFreeAuthFromContext(ctx) {
 		meta[coreexecutor.DisallowFreeAuthMetadataKey] = true

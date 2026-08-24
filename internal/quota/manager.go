@@ -11,12 +11,13 @@ import (
 
 const automaticPauseReason = "spend_limit_exceeded"
 
-// Manager coordinates pause state management, middleware, and background cleanup.
+// Manager coordinates quota state management, middleware, and background cleanup.
 type Manager struct {
-	store  *Store
-	config atomic.Value // holds QuotaConfig
-	paused atomic.Value // holds map[string]PauseEntry
-	mu     sync.Mutex
+	store      *Store
+	config     atomic.Value // holds QuotaConfig
+	paused     atomic.Value // holds map[string]PauseEntry
+	downgraded atomic.Value // holds map[string]DowngradeEntry
+	mu         sync.Mutex
 
 	stopCh chan struct{}
 	wg     sync.WaitGroup
@@ -40,6 +41,10 @@ func NewManager(cfg QuotaConfig) (*Manager, error) {
 	}
 	m.config.Store(cfg)
 	if err := m.refreshPausedSnapshot(); err != nil {
+		_ = store.Close()
+		return nil, err
+	}
+	if err := m.refreshDowngradedSnapshot(); err != nil {
 		_ = store.Close()
 		return nil, err
 	}
@@ -80,7 +85,41 @@ func (m *Manager) pausedSnapshot() map[string]PauseEntry {
 	return paused
 }
 
-// updatePausedSnapshotLocked 在持有 m.mu 时更新不可变暂停快照。
+func (m *Manager) refreshDowngradedSnapshot() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	entries, err := m.store.ListDowngraded()
+	if err != nil {
+		return err
+	}
+	m.storeDowngradedSnapshot(entries)
+	return nil
+}
+
+func (m *Manager) storeDowngradedSnapshot(entries []DowngradeEntry) {
+	downgraded := make(map[string]DowngradeEntry, len(entries))
+	for _, entry := range entries {
+		if entry.IsExpired() {
+			continue
+		}
+		downgraded[entry.KeyHash] = entry
+	}
+	m.downgraded.Store(downgraded)
+}
+
+func (m *Manager) downgradedSnapshot() map[string]DowngradeEntry {
+	if m == nil {
+		return nil
+	}
+	value := m.downgraded.Load()
+	if value == nil {
+		return nil
+	}
+	downgraded, _ := value.(map[string]DowngradeEntry)
+	return downgraded
+}
+
+// updatePausedSnapshotLocked updates the immutable pause snapshot while m.mu is held.
 func (m *Manager) updatePausedSnapshotLocked(update func(map[string]PauseEntry)) {
 	current := m.pausedSnapshot()
 	next := make(map[string]PauseEntry, len(current)+1)
@@ -91,6 +130,17 @@ func (m *Manager) updatePausedSnapshotLocked(update func(map[string]PauseEntry))
 	m.paused.Store(next)
 }
 
+// updateDowngradedSnapshotLocked updates the immutable downgrade snapshot while m.mu is held.
+func (m *Manager) updateDowngradedSnapshotLocked(update func(map[string]DowngradeEntry)) {
+	current := m.downgradedSnapshot()
+	next := make(map[string]DowngradeEntry, len(current)+1)
+	for key, entry := range current {
+		next[key] = entry
+	}
+	update(next)
+	m.downgraded.Store(next)
+}
+
 // Start launches the background cleanup goroutine.
 func (m *Manager) Start() error {
 	log.Info("quota: manager started")
@@ -98,21 +148,27 @@ func (m *Manager) Start() error {
 	m.wg.Add(1)
 	go func() {
 		defer m.wg.Done()
-		// ponytail: 1min tick — 到期停用最多 1 分钟内自动恢复；之前 5 分钟太慢。
+		// Expired quota states are removed within one minute.
 		ticker := time.NewTicker(1 * time.Minute)
 		defer ticker.Stop()
 
 		for {
 			select {
 			case <-ticker.C:
-				if n, err := m.store.CleanupExpired(); err != nil {
-					log.Errorf("quota: cleanup error: %v", err)
-				} else {
-					if n > 0 {
-						log.Debugf("quota: cleaned %d expired entries", n)
-					}
+				pauseCount, pauseErr := m.store.CleanupExpired()
+				if pauseErr != nil {
+					log.Errorf("quota: cleanup pause entries error: %v", pauseErr)
+				}
+				downgradeCount, downgradeErr := m.store.CleanupExpiredDowngrades()
+				if downgradeErr != nil {
+					log.Errorf("quota: cleanup downgrade entries error: %v", downgradeErr)
+				}
+				if pauseErr == nil && downgradeErr == nil && (pauseCount > 0 || downgradeCount > 0) {
 					if err := m.refreshPausedSnapshot(); err != nil {
 						log.Errorf("quota: refresh pause snapshot error: %v", err)
+					}
+					if err := m.refreshDowngradedSnapshot(); err != nil {
+						log.Errorf("quota: refresh downgrade snapshot error: %v", err)
 					}
 				}
 			case <-m.stopCh:
@@ -133,7 +189,7 @@ func (m *Manager) Stop() {
 }
 
 // UpdateConfig hot-reloads the local quota configuration.
-// usage-service 下发的暂停状态只由其显式恢复指令管理，不能被本地配置变更清除。
+// Usage-service states are changed only by its explicit resume instructions.
 func (m *Manager) UpdateConfig(cfg QuotaConfig) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -151,7 +207,7 @@ func (m *Manager) PauseKey(keyHash, reason string, expiresAt time.Time) error {
 	defer m.mu.Unlock()
 
 	if reason == automaticPauseReason {
-		// 限额规则由 usage-service 决定；本地开关不能拒绝已认证的自动暂停指令。
+		// Usage-service owns spend decisions, so local quota settings do not reject automatic pauses.
 		if entry, ok := m.pausedSnapshot()[keyHash]; ok && !entry.IsExpired() && entry.Reason != automaticPauseReason {
 			return nil
 		}
@@ -177,6 +233,60 @@ func (m *Manager) PauseKey(keyHash, reason string, expiresAt time.Time) error {
 	return nil
 }
 
+// DowngradeKey creates or refreshes a fallback-model state for one API key.
+func (m *Manager) DowngradeKey(keyHash, reason, fallbackModel string, expiresAt time.Time) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	entry, err := m.store.UpsertDowngrade(DowngradeEntry{
+		KeyHash:       keyHash,
+		Reason:        reason,
+		FallbackModel: fallbackModel,
+		DowngradedAt:  time.Now(),
+		ExpiresAt:     expiresAt,
+	})
+	if err != nil {
+		return err
+	}
+	m.updateDowngradedSnapshotLocked(func(downgraded map[string]DowngradeEntry) {
+		if entry.IsExpired() {
+			delete(downgraded, keyHash)
+			return
+		}
+		downgraded[keyHash] = entry
+	})
+	return nil
+}
+
+// ResumeDowngradeKey removes a fallback-model state without a reason condition.
+func (m *Manager) ResumeDowngradeKey(keyHash string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := m.store.ResumeDowngrade(keyHash); err != nil {
+		return err
+	}
+	m.updateDowngradedSnapshotLocked(func(downgraded map[string]DowngradeEntry) {
+		delete(downgraded, keyHash)
+	})
+	return nil
+}
+
+// ResumeDowngradeKeyIfReason removes a fallback-model state only when its reason matches.
+func (m *Manager) ResumeDowngradeKeyIfReason(keyHash, expectedReason string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	deleted, err := m.store.ResumeDowngradeIfReason(keyHash, expectedReason)
+	if err != nil {
+		return err
+	}
+	if deleted {
+		m.updateDowngradedSnapshotLocked(func(downgraded map[string]DowngradeEntry) {
+			delete(downgraded, keyHash)
+		})
+	}
+	return nil
+}
+
 // ResumeKey removes a pause entry without a reason condition for existing management callers.
 func (m *Manager) ResumeKey(keyHash string) error {
 	m.mu.Lock()
@@ -190,7 +300,7 @@ func (m *Manager) ResumeKey(keyHash string) error {
 	return nil
 }
 
-// ResumeKeyIfReason 仅在当前原因匹配时恢复，用于保护被手动暂停替换的自动暂停。
+// ResumeKeyIfReason resumes only a matching reason, protecting manual pause replacements.
 func (m *Manager) ResumeKeyIfReason(keyHash, expectedReason string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -224,6 +334,27 @@ func (m *Manager) ListPaused() ([]PauseEntry, error) {
 		return nil, err
 	}
 	m.storePausedSnapshot(entries)
+	return entries, nil
+}
+
+// IsDowngraded checks whether a key has a current fallback-model state.
+func (m *Manager) IsDowngraded(keyHash string) (bool, *DowngradeEntry, error) {
+	entry, ok := m.downgradedSnapshot()[keyHash]
+	if !ok || entry.IsExpired() {
+		return false, nil, nil
+	}
+	return true, &entry, nil
+}
+
+// ListDowngraded returns all non-expired fallback-model states.
+func (m *Manager) ListDowngraded() ([]DowngradeEntry, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	entries, err := m.store.ListDowngraded()
+	if err != nil {
+		return nil, err
+	}
+	m.storeDowngradedSnapshot(entries)
 	return entries, nil
 }
 

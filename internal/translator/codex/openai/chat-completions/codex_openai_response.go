@@ -13,6 +13,7 @@ import (
 	"time"
 
 	translatorcommon "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/common"
+	"github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -583,7 +584,39 @@ func findToolCallState(p *ConvertCliToOpenAIParams, eventResult, itemResult gjso
 			return state
 		}
 	}
-	return p.currentToolCall
+
+	var candidate *toolCallStreamState
+	seen := make(map[*toolCallStreamState]struct{})
+	for _, state := range p.toolCallStates {
+		if state.Done {
+			continue
+		}
+		if _, ok := seen[state]; ok {
+			continue
+		}
+		seen[state] = struct{}{}
+		if candidate == nil {
+			candidate = state
+			continue
+		}
+		logrus.WithFields(logrus.Fields{
+			"tool_call_state_fallback": "ambiguous_tool_call",
+			"event_has_item_id":        eventResult.Get("item_id").Exists(),
+			"event_has_output_index":   eventResult.Get("output_index").Exists(),
+		}).Debug("codex tool call state fallback skipped")
+		return nil
+	}
+	if candidate == nil && p.currentToolCall != nil {
+		return p.currentToolCall
+	}
+	if candidate != nil {
+		logrus.WithFields(logrus.Fields{
+			"tool_call_state_fallback": "unique_active_tool_call",
+			"event_has_item_id":        eventResult.Get("item_id").Exists(),
+			"event_has_output_index":   eventResult.Get("output_index").Exists(),
+		}).Debug("codex tool call state fallback")
+	}
+	return candidate
 }
 
 func isCodexToolCallType(itemType string) bool {

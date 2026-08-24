@@ -32,9 +32,9 @@ func normalizeKeyHash(input string) string {
 	if input == "" {
 		return ""
 	}
-	// If it looks like an 8-char hex hash, use as-is.
+	// Canonical short hashes are lower-case hexadecimal.
 	if len(input) == 8 && isHexString(input) {
-		return input
+		return strings.ToLower(input)
 	}
 	// Otherwise treat as raw API key and hash it.
 	return quota.KeyHash(input)

@@ -21,6 +21,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/clienterror"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/quota"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
@@ -197,11 +198,11 @@ func (s *Server) codexAlphaSearchModelRouterHost() handlers.PluginModelRouterHos
 	if s == nil {
 		return nil
 	}
-	if s.pluginHost != nil {
-		return s.pluginHost
-	}
 	if s.handlers != nil && s.handlers.ModelRouterHost != nil {
 		return s.handlers.ModelRouterHost
+	}
+	if s.pluginHost != nil {
+		return s.pluginHost
 	}
 	return nil
 }
@@ -224,6 +225,13 @@ func (s *Server) codexAlphaSearchSelectionModel(ctx context.Context, c *gin.Cont
 	}
 	metadata := map[string]any{
 		coreexecutor.RequestedModelMetadataKey: model,
+	}
+	if c != nil {
+		if value, exists := c.Get("userApiKey"); exists && value != nil {
+			if apiKey := strings.TrimSpace(fmt.Sprint(value)); apiKey != "" {
+				metadata[quota.KeyHashMetadataKey] = quota.KeyHash(apiKey)
+			}
+		}
 	}
 	if requestPath != "" {
 		metadata[coreexecutor.RequestPathMetadataKey] = requestPath

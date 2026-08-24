@@ -34,19 +34,34 @@ func NewStore(dbPath string) (*Store, error) {
 	return s, nil
 }
 
-// Init creates the key_pauses table if it does not exist.
+// Init creates the quota pause and downgrade tables if they do not exist.
 func (s *Store) Init() error {
-	query := `CREATE TABLE IF NOT EXISTS key_pauses (
+	pauseQuery := `CREATE TABLE IF NOT EXISTS key_pauses (
 		key_hash   TEXT PRIMARY KEY,
 		reason     TEXT NOT NULL DEFAULT '',
 		paused_at  INTEGER NOT NULL,
 		expires_at INTEGER NOT NULL DEFAULT 0,
 		created_at INTEGER NOT NULL
 	)`
-	if _, err := s.db.Exec(query); err != nil {
+	if _, err := s.db.Exec(pauseQuery); err != nil {
 		return err
 	}
-	_, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_key_pauses_expires_at ON key_pauses(expires_at)`)
+	if _, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_key_pauses_expires_at ON key_pauses(expires_at)`); err != nil {
+		return err
+	}
+
+	downgradeQuery := `CREATE TABLE IF NOT EXISTS key_downgrades (
+		key_hash       TEXT PRIMARY KEY,
+		reason         TEXT NOT NULL DEFAULT '',
+		fallback_model TEXT NOT NULL,
+		downgraded_at  INTEGER NOT NULL,
+		expires_at     INTEGER NOT NULL DEFAULT 0,
+		created_at     INTEGER NOT NULL
+	)`
+	if _, err := s.db.Exec(downgradeQuery); err != nil {
+		return err
+	}
+	_, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_key_downgrades_expires_at ON key_downgrades(expires_at)`)
 	return err
 }
 
@@ -80,7 +95,7 @@ func (s *Store) ResumeKey(keyHash string) error {
 	return err
 }
 
-// ResumeKeyIfReason 仅在当前暂停原因匹配时删除，避免自动恢复覆盖并发写入的手动暂停。
+// ResumeKeyIfReason deletes only a matching pause reason so automatic recovery cannot remove a manual pause.
 func (s *Store) ResumeKeyIfReason(keyHash, expectedReason string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

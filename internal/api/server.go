@@ -228,6 +228,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	} else {
 		s.quotaManager = quotaManager
 		s.mgmt.SetQuotaManager(quotaManager)
+		s.handlers.SetModelRouterHost(quota.NewModelRouterHost(quotaManager, optionState.pluginHost))
 	}
 
 	// Home heartbeat gate: when home is enabled, block all endpoints with 503 until the

@@ -1403,6 +1403,12 @@ func removeHeadFileObject(t *testing.T, repoDir, path string) {
 	if errOpen != nil {
 		t.Fatalf("open repository before object removal: %v", errOpen)
 	}
+	repoClosed := false
+	t.Cleanup(func() {
+		if !repoClosed {
+			_ = repo.Close()
+		}
+	})
 	worktree, errWorktree := repo.Worktree()
 	if errWorktree != nil {
 		t.Fatalf("open worktree before object removal: %v", errWorktree)
@@ -1442,6 +1448,10 @@ func removeHeadFileObject(t *testing.T, repoDir, path string) {
 	if errVerify := verifyRepositoryHead(repo); !isRepositoryCorruptionError(errVerify) {
 		t.Fatalf("verifyRepositoryHead error = %v, want repository corruption", errVerify)
 	}
+	if errClose := repo.Close(); errClose != nil {
+		t.Fatalf("close repository after object removal: %v", errClose)
+	}
+	repoClosed = true
 }
 
 func corruptGitRepository(t *testing.T, repoDir string) *git.Repository {

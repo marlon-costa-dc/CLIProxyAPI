@@ -577,3 +577,40 @@ func TestConvertCodexResponseToOpenAI_NonStreamMultiMessageEmptyTrailingKeepsCon
 		t.Fatalf("expected content %q, got %q; resp=%s", "the real answer", got.String(), string(out))
 	}
 }
+
+func TestConvertCodexResponseToOpenAI_UnknownItemIDStillUsesOutputIndex(t *testing.T) {
+	ctx := context.Background()
+	var param any
+	send := func(event string) [][]byte {
+		return ConvertCodexResponseToOpenAI(ctx, "gpt-5.5", nil, nil, []byte("data: "+event), &param)
+	}
+
+	send(`{"type":"response.output_item.added","output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_read","name":"Read","arguments":""}}`)
+	send(`{"type":"response.output_item.added","output_index":1,"item":{"id":"fc_2","type":"function_call","call_id":"call_other","name":"Other","arguments":""}}`)
+	out := send(`{"type":"response.function_call_arguments.delta","item_id":"unknown","output_index":0,"delta":"{\"file_path\":\"x\",\"offset\":100,\"limit\":200}"}`)
+	if len(out) != 1 {
+		t.Fatalf("expected one arguments chunk, got %d", len(out))
+	}
+	toolCall := gjson.GetBytes(out[0], "choices.0.delta.tool_calls.0")
+	if got := toolCall.Get("index").Int(); got != 0 {
+		t.Fatalf("expected output-index route to call 0, got %d; chunk=%s", got, out[0])
+	}
+	if got := toolCall.Get("function.arguments").String(); got != `{"file_path":"x","offset":100,"limit":200}` {
+		t.Fatalf("unexpected Read arguments %q; chunk=%s", got, out[0])
+	}
+}
+
+func TestConvertCodexResponseToOpenAI_MissingToolIdentityDoesNotGuessBetweenCalls(t *testing.T) {
+	ctx := context.Background()
+	var param any
+	send := func(event string) [][]byte {
+		return ConvertCodexResponseToOpenAI(ctx, "gpt-5.5", nil, nil, []byte("data: "+event), &param)
+	}
+
+	send(`{"type":"response.output_item.added","output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_read","name":"Read","arguments":""}}`)
+	send(`{"type":"response.output_item.added","output_index":1,"item":{"id":"fc_2","type":"function_call","call_id":"call_other","name":"Other","arguments":""}}`)
+	out := send(`{"type":"response.function_call_arguments.delta","delta":"{\"file_path\":\"x\",\"offset\":999999,\"limit\":999999}"}`)
+	if len(out) != 0 {
+		t.Fatalf("expected ambiguous arguments delta to be suppressed, got %d: %s", len(out), out[0])
+	}
+}
