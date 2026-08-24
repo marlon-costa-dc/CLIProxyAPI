@@ -50,8 +50,8 @@ var locales = map[string]map[string]string{
 // ──────────────────────────────────────────
 // Tab names
 // ──────────────────────────────────────────
-var zhTabNames = []string{"仪表盘", "配置", "认证文件", "API 密钥", "OAuth", "日志"}
-var enTabNames = []string{"Dashboard", "Config", "Auth Files", "API Keys", "OAuth", "Logs"}
+var zhTabNames = []string{"仪表盘", "配置", "认证文件", "API 密钥", "OAuth", "使用统计", "日志"}
+var enTabNames = []string{"Dashboard", "Config", "Auth Files", "API Keys", "OAuth", "Usage", "Logs"}
 
 // TabNames returns tab names in the current locale.
 func TabNames() []string {
@@ -120,18 +120,20 @@ var zhStrings = map[string]string{
 	"bool_no":          "否",
 
 	// ── Config ──
-	"config_title":      "⚙ 配置",
-	"config_help1":      "  [↑↓/jk] 导航 • [Enter/Space] 编辑 • [r] 刷新",
-	"config_help2":      "  布尔: Enter 切换 • 文本/数字: Enter 输入, Enter 确认, Esc 取消",
-	"updated_ok":        "✓ 更新成功",
-	"no_config":         "  未加载配置",
-	"invalid_int":       "无效整数",
-	"section_server":    "服务器",
-	"section_logging":   "日志与统计",
-	"section_quota":     "配额超限处理",
-	"section_routing":   "路由",
-	"section_websocket": "WebSocket",
-	"section_other":     "其他",
+	"config_title":              "⚙ 配置",
+	"config_help1":              "  [↑↓/jk] 导航 • [Enter/Space] 编辑 • [r] 刷新",
+	"config_help2":              "  布尔: Enter 切换 • 文本/数字: Enter 输入, Enter 确认, Esc 取消",
+	"updated_ok":                "✓ 更新成功",
+	"no_config":                 "  未加载配置",
+	"invalid_int":               "无效整数",
+	"section_server":            "服务器",
+	"section_logging":           "日志与统计",
+	"section_quota":             "配额超限处理",
+	"section_routing":           "路由",
+	"section_websocket":         "WebSocket",
+	"section_other":             "其他",
+	"oauth_model_alias_label":   "OAuth 模型别名",
+	"oauth_model_alias_summary": "%d 个通道, %d 个别名有顺序池",
 
 	// ── Auth Files ──
 	"auth_title":      "🔑 认证文件",
@@ -275,18 +277,20 @@ var enStrings = map[string]string{
 	"bool_no":          "No",
 
 	// ── Config ──
-	"config_title":      "⚙ Configuration",
-	"config_help1":      "  [↑↓/jk] Navigate • [Enter/Space] Edit • [r] Refresh",
-	"config_help2":      "  Bool: Enter to toggle • String/Int: Enter to type, Enter to confirm, Esc to cancel",
-	"updated_ok":        "✓ Updated successfully",
-	"no_config":         "  No configuration loaded",
-	"invalid_int":       "invalid integer",
-	"section_server":    "Server",
-	"section_logging":   "Logging & Stats",
-	"section_quota":     "Quota Exceeded Handling",
-	"section_routing":   "Routing",
-	"section_websocket": "WebSocket",
-	"section_other":     "Other",
+	"config_title":              "⚙ Configuration",
+	"config_help1":              "  [↑↓/jk] Navigate • [Enter/Space] Edit • [r] Refresh",
+	"config_help2":              "  Bool: Enter to toggle • String/Int: Enter to type, Enter to confirm, Esc to cancel",
+	"updated_ok":                "✓ Updated successfully",
+	"no_config":                 "  No configuration loaded",
+	"invalid_int":               "invalid integer",
+	"section_server":            "Server",
+	"section_logging":           "Logging & Stats",
+	"section_quota":             "Quota Exceeded Handling",
+	"section_routing":           "Routing",
+	"section_websocket":         "WebSocket",
+	"section_other":             "Other",
+	"oauth_model_alias_label":   "OAuth Model Alias",
+	"oauth_model_alias_summary": "%d channels, %d ordered aliases",
 
 	// ── Auth Files ──
 	"auth_title":      "🔑 Auth Files",

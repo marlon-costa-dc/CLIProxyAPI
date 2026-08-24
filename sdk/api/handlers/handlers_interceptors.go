@@ -32,6 +32,25 @@ type streamInterceptorDetector interface {
 	HasStreamInterceptors() bool
 }
 
+// streamChunkRequestBodyPolicy reports whether payload stream-chunk interceptors
+// still require OriginalRequest/RequestBody (legacy schema_version < 3).
+type streamChunkRequestBodyPolicy interface {
+	StreamChunkPayloadIncludesRequestBody() bool
+}
+
+// streamChunkPayloadIncludesRequestBody returns true when at least one active
+// stream interceptor needs per-chunk request bodies. Evaluated per call so
+// mid-stream plugin reloads stay correct. Unknown hosts default to true.
+func streamChunkPayloadIncludesRequestBody(host PluginInterceptorHost) bool {
+	if host == nil {
+		return false
+	}
+	if policy, ok := host.(streamChunkRequestBodyPolicy); ok {
+		return policy.StreamChunkPayloadIncludesRequestBody()
+	}
+	return true
+}
+
 type requestInterceptorDetector interface {
 	HasRequestInterceptors() bool
 }
@@ -135,10 +154,11 @@ func requestTerminationError(resp pluginapi.RequestInterceptResponse) *interface
 
 func directTerminationError(statusCode int, headers http.Header, body []byte) *interfaces.ErrorMessage {
 	return &interfaces.ErrorMessage{
-		StatusCode:     normalizedTerminationStatus(statusCode),
-		DirectResponse: true,
-		Body:           cloneBytes(body),
-		Headers:        cloneHeader(headers),
+		StatusCode:            normalizedTerminationStatus(statusCode),
+		DirectResponse:        true,
+		TrustedDirectResponse: true,
+		Body:                  cloneBytes(body),
+		Headers:               cloneHeader(headers),
 	}
 }
 
@@ -406,7 +426,7 @@ func interceptStreamChunk(ctx context.Context, host PluginInterceptorHost, req p
 
 func (h *BaseAPIHandler) applyRequestInterceptorsBeforeAuth(ctx context.Context, handlerType, requestedModel, requestID string, req coreexecutor.Request, opts coreexecutor.Options, skipPluginID string) (coreexecutor.Request, coreexecutor.Options, *interfaces.ErrorMessage) {
 	host := h.interceptorHost()
-	if host == nil {
+	if !requestInterceptorsEnabled(host) {
 		return req, opts, nil
 	}
 	resp := interceptRequestBeforeAuth(ctx, host, pluginapi.RequestInterceptRequest{

@@ -3,7 +3,6 @@ package helps
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/clienterror"
 	internallogging "github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
@@ -22,24 +22,28 @@ import (
 )
 
 type UsageReporter struct {
-	provider     string
-	executorType string
-	model        string
-	alias        string
-	authID       string
-	authIndex    string
-	authType     string
-	apiKey       string
-	source       string
-	reasoning    string
-	serviceTier  string
-	generate     bool
-	requestedAt  time.Time
-	ttftMu       sync.RWMutex
-	ttft         time.Duration
-	ttftStart    time.Time
-	ttftSet      bool
-	once         sync.Once
+	provider        string
+	executorType    string
+	model           string
+	alias           string
+	authID          string
+	authIndex       string
+	authType        string
+	apiKey          string
+	source          string
+	reasoning       string
+	serviceTier     string
+	generate        bool
+	requestedAt     time.Time
+	quotaHeadersMu  sync.RWMutex
+	quotaHeaders    http.Header
+	ttftMu          sync.RWMutex
+	ttft            time.Duration
+	ttftStart       time.Time
+	ttftSet         bool
+	once            sync.Once
+	authMu          sync.RWMutex
+	accessTokenHash string
 }
 
 type usageExecutor interface {
@@ -50,6 +54,14 @@ func NewExecutorUsageReporter(ctx context.Context, executor usageExecutor, model
 	provider := ""
 	if executor != nil {
 		provider = executor.Identifier()
+		// Executors that reuse another's wire format (e.g. ZAIExecutor over the
+		// Claude path) can override the attributed provider key so usage is not
+		// misclassified as the host executor.
+		if pk, ok := executor.(interface{ ProviderKey() string }); ok {
+			if v := strings.TrimSpace(pk.ProviderKey()); v != "" {
+				provider = v
+			}
+		}
 	}
 	reporter := NewUsageReporter(ctx, provider, model, auth)
 	reporter.executorType = ExecutorTypeName(executor)
@@ -77,8 +89,28 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
 	if auth != nil {
 		reporter.authID = auth.ID
 		reporter.authIndex = auth.EnsureIndex()
+		reporter.accessTokenHash = authAccessTokenSHA256(auth)
 	}
 	return reporter
+}
+
+// UpdateAccessTokenFingerprint records the token version actually used upstream.
+func (r *UsageReporter) UpdateAccessTokenFingerprint(auth *cliproxyauth.Auth) {
+	if r == nil {
+		return
+	}
+	r.authMu.Lock()
+	r.accessTokenHash = authAccessTokenSHA256(auth)
+	r.authMu.Unlock()
+}
+
+func (r *UsageReporter) accessTokenFingerprint() string {
+	if r == nil {
+		return ""
+	}
+	r.authMu.RLock()
+	defer r.authMu.RUnlock()
+	return r.accessTokenHash
 }
 
 func ExecutorTypeName(executor any) string {
@@ -188,6 +220,10 @@ func (r *UsageReporter) PublishFailure(ctx context.Context, errs ...error) {
 	r.publishWithOutcome(ctx, usage.Detail{}, true, failFromErrors(errs...))
 }
 
+func (r *UsageReporter) PublishFailureWithDetail(ctx context.Context, detail usage.Detail, errs ...error) {
+	r.publishWithOutcome(ctx, detail, true, failFromErrors(errs...))
+}
+
 func (r *UsageReporter) TrackFailure(ctx context.Context, errPtr *error) {
 	if r == nil || errPtr == nil {
 		return
@@ -236,8 +272,48 @@ func (r *UsageReporter) EnsurePublished(ctx context.Context) {
 }
 
 func (r *UsageReporter) publishRecord(ctx context.Context, record usage.Record) {
-	record.ResponseHeaders = internallogging.GetResponseHeaders(ctx)
+	record.ResponseHeaders = r.responseHeaders(ctx)
 	usage.PublishRecord(ctx, record)
+}
+
+// ObserveQuotaHeaders merges provider quota metadata that arrived outside the
+// HTTP response header block, such as Codex websocket rate-limit events.
+func (r *UsageReporter) ObserveQuotaHeaders(headers http.Header) {
+	if r == nil || len(headers) == 0 {
+		return
+	}
+	r.quotaHeadersMu.Lock()
+	if r.quotaHeaders == nil {
+		r.quotaHeaders = make(http.Header, len(headers))
+	}
+	for key, values := range headers {
+		canonicalKey := http.CanonicalHeaderKey(strings.TrimSpace(key))
+		if canonicalKey == "" {
+			continue
+		}
+		r.quotaHeaders[canonicalKey] = append([]string(nil), values...)
+	}
+	r.quotaHeadersMu.Unlock()
+}
+
+func (r *UsageReporter) responseHeaders(ctx context.Context) http.Header {
+	headers := internallogging.GetResponseHeaders(ctx)
+	if r == nil {
+		return headers
+	}
+	r.quotaHeadersMu.RLock()
+	if len(r.quotaHeaders) == 0 {
+		r.quotaHeadersMu.RUnlock()
+		return headers
+	}
+	if headers == nil {
+		headers = make(http.Header, len(r.quotaHeaders))
+	}
+	for key, values := range r.quotaHeaders {
+		headers[key] = append([]string(nil), values...)
+	}
+	r.quotaHeadersMu.RUnlock()
+	return headers
 }
 
 func (r *UsageReporter) buildRecord(detail usage.Detail, failed bool, failures ...usage.Failure) usage.Record {
@@ -264,6 +340,7 @@ func (r *UsageReporter) buildRecordForModel(model string, detail usage.Detail, f
 		APIKey:              r.apiKey,
 		AuthID:              r.authID,
 		AuthIndex:           r.authIndex,
+		AccessTokenSHA256:   r.accessTokenFingerprint(),
 		AuthType:            r.authType,
 		ReasoningEffort:     r.reasoning,
 		ServiceTier:         r.serviceTier,
@@ -283,14 +360,10 @@ func failFromErrors(errs ...error) usage.Failure {
 		if err == nil {
 			continue
 		}
-		fail := usage.Failure{
-			Body: strings.TrimSpace(err.Error()),
+		return usage.Failure{
+			Body:       strings.TrimSpace(err.Error()),
+			StatusCode: clienterror.HTTPStatusFromError(err),
 		}
-		var se interface{ StatusCode() int }
-		if errors.As(err, &se) && se != nil {
-			fail.StatusCode = se.StatusCode()
-		}
-		return fail
 	}
 	return usage.Failure{}
 }
@@ -506,6 +579,15 @@ func (b *StreamUsageBuffer) Publish(ctx context.Context, reporter *UsageReporter
 	return true
 }
 
+// PublishFailure emits the latest observed usage detail together with failure details.
+func (b *StreamUsageBuffer) PublishFailure(ctx context.Context, reporter *UsageReporter, errs ...error) bool {
+	if b == nil || reporter == nil {
+		return false
+	}
+	reporter.PublishFailureWithDetail(ctx, b.detail, errs...)
+	return true
+}
+
 // Detail returns the latest observed usage detail.
 func (b *StreamUsageBuffer) Detail() (usage.Detail, bool) {
 	if b == nil || !b.ok {
@@ -688,9 +770,32 @@ func ParseClaudeStreamUsage(line []byte) (usage.Detail, bool) {
 func parseClaudeUsageNode(usageNode gjson.Result) usage.Detail {
 	cacheReadTokens := usageNode.Get("cache_read_input_tokens").Int()
 	cacheCreationTokens := usageNode.Get("cache_creation_input_tokens").Int()
+	rawOutputTokens := usageNode.Get("output_tokens").Int()
+	// Anthropic reports thinking as a subset of output_tokens. Prefer the official
+	// nested field, then fall back to legacy aliases used by some gateways.
+	reasoningNode := firstExistingUsageNode(
+		usageNode,
+		"output_tokens_details.thinking_tokens",
+		"output_tokens_details.reasoning_tokens",
+		"thinking_tokens",
+	)
+	reasoningTokens := reasoningNode.Int()
+	if reasoningTokens < 0 {
+		reasoningTokens = 0
+	}
+	nonReasoningOutput := rawOutputTokens
+	if reasoningTokens > 0 && reasoningTokens <= rawOutputTokens {
+		nonReasoningOutput = rawOutputTokens - reasoningTokens
+	} else if reasoningTokens > rawOutputTokens {
+		// Keep Detail.OutputTokens authoritative for keeper subset checks and
+		// avoid inventing extra non-reasoning output when the upstream payload
+		// is inconsistent.
+		nonReasoningOutput = 0
+	}
 	detail := usage.Detail{
 		InputTokens:         usageNode.Get("input_tokens").Int(),
-		OutputTokens:        usageNode.Get("output_tokens").Int(),
+		OutputTokens:        rawOutputTokens,
+		ReasoningTokens:     reasoningTokens,
 		CachedTokens:        cacheReadTokens,
 		CacheReadTokens:     cacheReadTokens,
 		CacheCreationTokens: cacheCreationTokens,
@@ -698,12 +803,14 @@ func parseClaudeUsageNode(usageNode gjson.Result) usage.Detail {
 	if detail.CachedTokens == 0 {
 		detail.CachedTokens = detail.CacheCreationTokens
 	}
-	detail.TotalTokens = detail.InputTokens + detail.OutputTokens + detail.CacheReadTokens + detail.CacheCreationTokens
+	// raw output_tokens already includes thinking; cache fields are independent
+	// from input_tokens in the Messages API.
+	detail.TotalTokens = detail.InputTokens + rawOutputTokens + detail.CacheReadTokens + detail.CacheCreationTokens
 	detail.TokenBreakdown = usage.NewIndependentTokenBreakdown(
 		detail.InputTokens,
 		detail.CacheReadTokens,
 		detail.CacheCreationTokens,
-		detail.OutputTokens,
+		nonReasoningOutput,
 		detail.ReasoningTokens,
 		detail.TotalTokens,
 	)
@@ -744,6 +851,35 @@ func parseGeminiFamilyUsageDetail(node gjson.Result) usage.Detail {
 		detail.TotalTokens,
 	)
 	return detail
+}
+
+func hasGeminiFamilyUsageTokenFields(node gjson.Result) bool {
+	return node.Get("promptTokenCount").Exists() ||
+		node.Get("candidatesTokenCount").Exists() ||
+		node.Get("thoughtsTokenCount").Exists() ||
+		node.Get("totalTokenCount").Exists() ||
+		node.Get("cachedContentTokenCount").Exists()
+}
+
+func ParseGeminiCLIUsage(data []byte) usage.Detail {
+	root := gjson.ParseBytes(data)
+	node := firstExistingUsageNode(root, "response.usageMetadata", "response.usage_metadata", "usageMetadata", "usage_metadata")
+	if !node.Exists() {
+		return usage.Detail{}
+	}
+	return parseGeminiFamilyUsageDetail(node)
+}
+
+func ParseGeminiCLIStreamUsage(line []byte) (usage.Detail, bool) {
+	payload := jsonPayload(line)
+	if len(payload) == 0 || !gjson.ValidBytes(payload) {
+		return usage.Detail{}, false
+	}
+	node := firstExistingUsageNode(gjson.ParseBytes(payload), "response.usageMetadata", "response.usage_metadata", "usageMetadata", "usage_metadata")
+	if !node.Exists() || !hasGeminiFamilyUsageTokenFields(node) {
+		return usage.Detail{}, false
+	}
+	return parseGeminiFamilyUsageDetail(node), true
 }
 
 func parseInteractionsUsageDetail(node gjson.Result) usage.Detail {
@@ -864,7 +1000,11 @@ func ParseGeminiStreamUsage(line []byte) (usage.Detail, bool) {
 	if !node.Exists() {
 		return usage.Detail{}, false
 	}
-	return parseGeminiFamilyUsageDetail(node), true
+	detail := parseGeminiFamilyUsageDetail(node)
+	if !hasNonZeroTokenUsage(detail) {
+		return usage.Detail{}, false
+	}
+	return detail, true
 }
 
 func firstExistingUsageNode(root gjson.Result, paths ...string) gjson.Result {

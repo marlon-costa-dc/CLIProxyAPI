@@ -24,12 +24,17 @@ type GeminiKey = internalconfig.GeminiKey
 type CodexKey = internalconfig.CodexKey
 type XAIKey = internalconfig.XAIKey
 type XAIModel = internalconfig.XAIModel
+type OpenCodeKey = internalconfig.OpenCodeKey
+type OpenCodeGoKey = internalconfig.OpenCodeGoKey
+type PoolsideKey = internalconfig.PoolsideKey
+type PoolsideConfig = internalconfig.PoolsideConfig
 type ClaudeKey = internalconfig.ClaudeKey
 type VertexCompatKey = internalconfig.VertexCompatKey
 type VertexCompatModel = internalconfig.VertexCompatModel
 type OpenAICompatibility = internalconfig.OpenAICompatibility
 type OpenAICompatibilityAPIKey = internalconfig.OpenAICompatibilityAPIKey
 type OpenAICompatibilityModel = internalconfig.OpenAICompatibilityModel
+type KiroRateLimitConfig = internalconfig.KiroRateLimitConfig
 
 type TLS = internalconfig.TLSConfig
 

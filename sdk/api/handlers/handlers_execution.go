@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/clienterror"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
@@ -291,22 +292,25 @@ func (h *BaseAPIHandler) applyRequestInterceptorsAfterPluginExecutorRoute(ctx co
 	return req, opts, nil
 }
 
+func ExecutionErrorMessage(err error) *interfaces.ErrorMessage {
+	return executionErrorMessage(err)
+}
+
 func executionErrorMessage(err error) *interfaces.ErrorMessage {
 	var terminated *coreexecutor.RequestTerminatedError
 	if errors.As(err, &terminated) && terminated != nil {
 		return &interfaces.ErrorMessage{
-			StatusCode:     normalizedTerminationStatus(terminated.StatusCode()),
-			Error:          err,
-			DirectResponse: true,
-			Body:           terminated.ResponseBody(),
-			Headers:        terminated.ResponseHeaders(),
+			StatusCode:            normalizedTerminationStatus(terminated.StatusCode()),
+			Error:                 err,
+			DirectResponse:        true,
+			TrustedDirectResponse: terminated.Trusted,
+			Body:                  terminated.ResponseBody(),
+			Headers:               terminated.ResponseHeaders(),
 		}
 	}
 	status := http.StatusInternalServerError
-	if se, ok := err.(interface{ StatusCode() int }); ok && se != nil {
-		if code := se.StatusCode(); code > 0 {
-			status = code
-		}
+	if code := clienterror.HTTPStatusFromError(err); code > 0 {
+		status = code
 	}
 	var addon http.Header
 	if he, ok := err.(interface{ Headers() http.Header }); ok && he != nil {

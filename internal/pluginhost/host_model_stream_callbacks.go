@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
@@ -27,17 +28,15 @@ func (h *Host) callHostModelExecuteStream(ctx context.Context, request []byte) (
 	}
 	// Detach request cancellation while preserving callback values; callback cleanup owns the model stream lifetime.
 	streamCtx, cancel := context.WithCancel(context.WithoutCancel(callbackCtx))
+	// cancel transfers to the stream bridge on success below.
+	_ = cancel
 	stream, errMsg := executor.ExecuteModelStream(streamCtx, modelExecutionRequestFromPlugin(req.HostModelExecutionRequest, skipPluginID))
 	if errMsg != nil {
 		cancel()
 		return nil, modelExecutionError(errMsg)
 	}
-	streamID := ""
-	if h.modelStreams != nil {
-		streamID = h.modelStreams.open(req.HostCallbackID, stream.Chunks, cancel)
-	}
+	streamID := h.openModelStreamWithCancel(req.HostCallbackID, stream.Chunks, cancel)
 	if streamID == "" {
-		cancel()
 		return nil, fmt.Errorf("host model stream bridge is unavailable")
 	}
 	if req.HostCallbackID != "" {
@@ -84,4 +83,16 @@ func (h *Host) callHostModelStreamClose(request []byte) ([]byte, error) {
 		h.modelStreams.close(req.StreamID)
 	}
 	return marshalRPCResult(rpcEmptyResponse{})
+}
+
+// openModelStreamWithCancel registers the stream chunk channel and hands the
+// cancel function over to the stream registry, which owns calling it when the
+// stream is closed. When the registry is unavailable the cancel is consumed
+// here so no context is leaked.
+func (h *Host) openModelStreamWithCancel(callbackID string, chunks <-chan handlers.ModelExecutionChunk, cancel context.CancelFunc) string {
+	if h == nil || h.modelStreams == nil {
+		cancel()
+		return ""
+	}
+	return h.modelStreams.open(callbackID, chunks, cancel)
 }

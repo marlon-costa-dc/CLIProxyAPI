@@ -54,6 +54,7 @@ func SaveConfigPreserveComments(configFile string, cfg *Config) error {
 
 	pruneMappingToGeneratedKeys(original.Content[0], generated.Content[0], "oauth-excluded-models")
 	pruneMappingToGeneratedKeys(original.Content[0], generated.Content[0], "oauth-model-alias")
+	pruneMappingToGeneratedKeys(original.Content[0], generated.Content[0], "oauth-request-scoped-errors")
 	pruneMappingToGeneratedKeys(original.Content[0], generated.Content[0], "plugins", "configs")
 
 	// Merge generated into original in-place, preserving comments/order of existing nodes.
@@ -311,6 +312,11 @@ func appendPath(path []string, key string) []string {
 // represents a known default value that should not be written to the config file.
 // This prevents non-zero defaults from polluting the config.
 func isKnownDefaultValue(path []string, node *yaml.Node) bool {
+	// Weight is pointer-backed, so an explicit zero is meaningful and must be preserved.
+	if len(path) > 0 && path[len(path)-1] == "weight" && node != nil && node.Kind == yaml.ScalarNode && node.Tag == "!!int" {
+		return false
+	}
+
 	// First check if it's a zero value
 	if isZeroValueNode(node) {
 		return true
@@ -682,10 +688,10 @@ func pruneMappingToGeneratedKeys(dstRoot, srcRoot *yaml.Node, keyPath ...string)
 	}
 	srcIdx := findMapKeyIndex(srcRoot, key)
 	if srcIdx < 0 {
-		// Keep an explicit empty mapping for oauth-model-alias when it was previously present.
-		// When users delete the last channel from oauth-model-alias via the management API,
+		// Keep an explicit empty mapping for oauth-model-alias and oauth-request-scoped-errors when previously present.
+		// When users delete the last channel via the management API,
 		// we want that deletion to persist across hot reloads and restarts.
-		if key == "oauth-model-alias" {
+		if key == "oauth-model-alias" || key == "oauth-request-scoped-errors" {
 			dstRoot.Content[dstIdx+1] = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
 			return
 		}

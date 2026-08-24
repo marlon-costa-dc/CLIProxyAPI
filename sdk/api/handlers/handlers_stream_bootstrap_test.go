@@ -237,8 +237,8 @@ func (e *splitResponsesEventStreamExecutor) Execute(context.Context, *coreauth.A
 
 func (e *splitResponsesEventStreamExecutor) ExecuteStream(context.Context, *coreauth.Auth, coreexecutor.Request, coreexecutor.Options) (*coreexecutor.StreamResult, error) {
 	ch := make(chan coreexecutor.StreamChunk, 2)
-	ch <- coreexecutor.StreamChunk{Payload: []byte("event: response.completed")}
-	ch <- coreexecutor.StreamChunk{Payload: []byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\",\"output\":[]}}")}
+	ch <- coreexecutor.StreamChunk{Payload: []byte("event: response.completed\n")}
+	ch <- coreexecutor.StreamChunk{Payload: []byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\",\"output\":[]}}\n\n")}
 	close(ch)
 	return &coreexecutor.StreamResult{Chunks: ch}, nil
 }
@@ -552,6 +552,35 @@ func TestExecuteStreamWithAuthManager_RetriesAfterDroppedBootstrapPayload(t *tes
 	}
 	if strings.Join(intercepted, ",") != "drop,ok" {
 		t.Fatalf("intercepted payloads = %v, want [drop ok] without double interception", intercepted)
+	}
+}
+
+func TestExecuteStreamWithAuthManager_ResetsResponsesValidatorOnBootstrapRetry(t *testing.T) {
+	executor := &bootstrapStreamExecutor{stream: func(_ context.Context, call int) (*coreexecutor.StreamResult, error) {
+		chunks := make(chan coreexecutor.StreamChunk, 2)
+		if call == 1 {
+			chunks <- coreexecutor.StreamChunk{Payload: []byte("event: response.completed\ndata: {\"type\":\"response.completed\",")}
+			chunks <- coreexecutor.StreamChunk{Err: &coreauth.Error{HTTPStatus: http.StatusUnauthorized, Message: "unauthorized"}}
+		} else {
+			chunks <- coreexecutor.StreamChunk{Payload: []byte("event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")}
+		}
+		close(chunks)
+		return &coreexecutor.StreamResult{Chunks: chunks}, nil
+	}}
+	handler, _ := registerBootstrapExecutor(t, executor)
+
+	dataChan, _, errChan := handler.ExecuteStreamWithAuthManager(context.Background(), "openai-response", "bootstrap-model", []byte(`{"model":"bootstrap-model"}`), "")
+	var got []byte
+	for chunk := range dataChan {
+		got = append(got, chunk...)
+	}
+	for msg := range errChan {
+		if msg != nil {
+			t.Fatalf("unexpected stream error after retry: %+v", msg)
+		}
+	}
+	if executor.Calls() != 2 || !strings.Contains(string(got), "response.completed") {
+		t.Fatalf("retry calls=%d payload=%q", executor.Calls(), got)
 	}
 }
 
@@ -1149,10 +1178,10 @@ func TestExecuteStreamWithAuthManager_AllowsSplitOpenAIResponsesSSEEventLines(t 
 	if len(got) != 2 {
 		t.Fatalf("expected 2 forwarded chunks, got %d: %#v", len(got), got)
 	}
-	if got[0] != "event: response.completed" {
+	if got[0] != "event: response.completed\n" {
 		t.Fatalf("unexpected first chunk: %q", got[0])
 	}
-	expectedData := "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\",\"output\":[]}}"
+	expectedData := "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\",\"output\":[]}}\n\n"
 	if got[1] != expectedData {
 		t.Fatalf("unexpected second chunk.\nGot:  %q\nWant: %q", got[1], expectedData)
 	}

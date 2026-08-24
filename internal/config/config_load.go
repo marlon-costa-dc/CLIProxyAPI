@@ -51,6 +51,15 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 		return cfg, nil
 	}
 
+	if errValidate := validateCredentialWeightYAML(data); errValidate != nil {
+		if optional {
+			cfgOptional := &Config{CredentialInFlight: DefaultCredentialInFlightConfig()}
+			cfgOptional.NormalizePluginsConfig()
+			return cfgOptional, nil
+		}
+		return nil, errValidate
+	}
+
 	// Unmarshal the YAML data into the Config struct.
 	var cfg Config
 	// Set defaults before unmarshal so that absent keys keep defaults.
@@ -84,6 +93,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 		return nil, errValidate
 	}
 	if errValidate := cfg.Codex.LiveMediaRelay.Validate(); errValidate != nil {
+		return nil, errValidate
+	}
+	if errValidate := cfg.ValidateCredentialWeights(); errValidate != nil {
 		return nil, errValidate
 	}
 
@@ -147,6 +159,15 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	// Sanitize Codex keys: drop entries without base-url
 	cfg.SanitizeCodexKeys()
 
+	// Sanitize OpenCode keys: drop entries without base-url
+	cfg.SanitizeOpenCodeKeys()
+
+	// Sanitize OpenCode Go keys: drop entries without base-url
+	cfg.SanitizeOpenCodeGoKeys()
+
+	// Sanitize Poolside keys: drop entries without base-url
+	cfg.SanitizePoolsideKeys()
+
 	// Sanitize xAI keys: drop entries without base-url
 	cfg.SanitizeXAIKeys()
 
@@ -167,6 +188,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 	// Normalize global OAuth model name aliases.
 	cfg.SanitizeOAuthModelAlias()
+
+	// Normalize global OAuth request-scoped error rules.
+	cfg.SanitizeOAuthRequestScopedErrors()
 
 	// Validate raw payload rules and drop invalid entries.
 	cfg.SanitizePayloadRules()

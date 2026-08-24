@@ -26,6 +26,8 @@ type oauthModelAliasEntry struct {
 type oauthModelAliasTable struct {
 	// reverse maps channel -> alias (lower) -> entry with upstream model and flags.
 	reverse map[string]map[string]oauthModelAliasEntry
+	// ordered maps channel -> alias (lower) -> entries in config order for sequential failover.
+	ordered map[string]map[string][]oauthModelAliasEntry
 }
 
 // OAuthModelAliasResult contains the resolved upstream model and mapping metadata.
@@ -41,6 +43,7 @@ func compileOAuthModelAliasTable(aliases map[string][]internalconfig.OAuthModelA
 	}
 	out := &oauthModelAliasTable{
 		reverse: make(map[string]map[string]oauthModelAliasEntry, len(aliases)),
+		ordered: make(map[string]map[string][]oauthModelAliasEntry, len(aliases)),
 	}
 	for rawChannel, entries := range aliases {
 		channel := strings.ToLower(strings.TrimSpace(rawChannel))
@@ -48,6 +51,7 @@ func compileOAuthModelAliasTable(aliases map[string][]internalconfig.OAuthModelA
 			continue
 		}
 		rev := make(map[string]oauthModelAliasEntry, len(entries))
+		ord := make(map[string][]oauthModelAliasEntry, len(entries))
 		for _, entry := range entries {
 			name := strings.TrimSpace(entry.Name)
 			alias := strings.TrimSpace(entry.Alias)
@@ -58,21 +62,28 @@ func compileOAuthModelAliasTable(aliases map[string][]internalconfig.OAuthModelA
 				continue
 			}
 			aliasKey := strings.ToLower(alias)
-			if _, exists := rev[aliasKey]; exists {
-				continue
-			}
-			rev[aliasKey] = oauthModelAliasEntry{
+			e := oauthModelAliasEntry{
 				upstreamModel: name,
 				configAlias:   alias,
 				forceMapping:  entry.ForceMapping,
 			}
+			if _, exists := rev[aliasKey]; !exists {
+				rev[aliasKey] = e
+			}
+			ord[aliasKey] = append(ord[aliasKey], e)
 		}
 		if len(rev) > 0 {
 			out.reverse[channel] = rev
 		}
+		if len(ord) > 0 {
+			out.ordered[channel] = ord
+		}
 	}
 	if len(out.reverse) == 0 {
 		out.reverse = nil
+	}
+	if len(out.ordered) == 0 {
+		out.ordered = nil
 	}
 	return out
 }
@@ -112,9 +123,9 @@ func modelAliasLookupCandidates(requestedModel string) (thinking.SuffixResult, [
 	if base == "" {
 		base = requestedModel
 	}
-	candidates := []string{base}
+	candidates := []string{requestedModel}
 	if base != requestedModel {
-		candidates = append(candidates, requestedModel)
+		candidates = append(candidates, base)
 	}
 	return requestResult, candidates
 }
@@ -151,12 +162,12 @@ func resolveModelAliasPoolFromConfigModels(requestedModel string, models []model
 		return nil
 	}
 
-	out := make([]string, 0)
-	seen := make(map[string]struct{})
-	for i := range models {
-		name := strings.TrimSpace(models[i].GetName())
-		alias := strings.TrimSpace(models[i].GetAlias())
-		for _, candidate := range candidates {
+	for _, candidate := range candidates {
+		out := make([]string, 0)
+		seen := make(map[string]struct{})
+		for i := range models {
+			name := strings.TrimSpace(models[i].GetName())
+			alias := strings.TrimSpace(models[i].GetAlias())
 			if candidate == "" || alias == "" || !strings.EqualFold(alias, candidate) {
 				continue
 			}
@@ -167,23 +178,22 @@ func resolveModelAliasPoolFromConfigModels(requestedModel string, models []model
 			resolved = preserveResolvedModelSuffix(resolved, requestResult)
 			key := strings.ToLower(strings.TrimSpace(resolved))
 			if key == "" {
-				break
+				continue
 			}
 			if _, exists := seen[key]; exists {
-				break
+				continue
 			}
 			seen[key] = struct{}{}
 			out = append(out, resolved)
-			break
+		}
+		if len(out) > 0 {
+			return out
 		}
 	}
-	if len(out) > 0 {
-		return out
-	}
 
-	for i := range models {
-		name := strings.TrimSpace(models[i].GetName())
-		for _, candidate := range candidates {
+	for _, candidate := range candidates {
+		for i := range models {
+			name := strings.TrimSpace(models[i].GetName())
 			if candidate == "" || name == "" || !strings.EqualFold(name, candidate) {
 				continue
 			}
@@ -214,15 +224,15 @@ func resolveModelAliasResultFromConfigModels(requestedModel string, models []mod
 	if baseModel == "" {
 		baseModel = requestedModel
 	}
-	for i := range models {
-		original := strings.TrimSpace(models[i].GetName())
-		alias := strings.TrimSpace(models[i].GetAlias())
-		if original == "" || alias == "" {
+	for _, candidate := range candidates {
+		key := strings.TrimSpace(candidate)
+		if key == "" {
 			continue
 		}
-		for _, candidate := range candidates {
-			key := strings.TrimSpace(candidate)
-			if key == "" || !strings.EqualFold(alias, key) {
+		for i := range models {
+			original := strings.TrimSpace(models[i].GetName())
+			alias := strings.TrimSpace(models[i].GetAlias())
+			if original == "" || alias == "" || !strings.EqualFold(alias, key) {
 				continue
 			}
 			if strings.EqualFold(original, baseModel) {
@@ -343,15 +353,15 @@ func resolveUpstreamModelFromAliases(aliases []internalconfig.OAuthModelAlias, r
 	if baseModel == "" {
 		baseModel = strings.TrimSpace(requestedModel)
 	}
-	for _, entry := range aliases {
-		original := strings.TrimSpace(entry.Name)
-		alias := strings.TrimSpace(entry.Alias)
-		if original == "" || alias == "" {
+	for _, candidate := range candidates {
+		key := strings.TrimSpace(candidate)
+		if key == "" {
 			continue
 		}
-		for _, candidate := range candidates {
-			key := strings.TrimSpace(candidate)
-			if key == "" || !strings.EqualFold(alias, key) {
+		for _, entry := range aliases {
+			original := strings.TrimSpace(entry.Name)
+			alias := strings.TrimSpace(entry.Alias)
+			if original == "" || alias == "" || !strings.EqualFold(alias, key) {
 				continue
 			}
 			if strings.EqualFold(original, baseModel) {
@@ -394,13 +404,8 @@ func resolveUpstreamModelFromAliasTable(m *Manager, auth *Auth, requestedModel, 
 		return OAuthModelAliasResult{}
 	}
 
-	requestResult := thinking.ParseSuffix(requestedModel)
+	requestResult, candidates := modelAliasLookupCandidates(requestedModel)
 	baseModel := requestResult.ModelName
-
-	candidates := []string{baseModel}
-	if baseModel != requestedModel {
-		candidates = append(candidates, requestedModel)
-	}
 
 	raw := m.oauthModelAlias.Load()
 	table, _ := raw.(*oauthModelAliasTable)
@@ -477,7 +482,7 @@ func modelAliasChannel(auth *Auth) string {
 // and auth kind. Returns empty string if the provider/authKind combination doesn't support
 // OAuth model alias (e.g., API key authentication).
 //
-// Built-in channels: vertex, aistudio, antigravity, claude, codex, kimi.
+// Built-in channels: gemini-cli, vertex, aistudio, antigravity, claude, codex, iflow, kiro, github-copilot, kimi.
 // Plugin OAuth providers use their normalized provider key as the channel.
 func OAuthModelAliasChannel(provider, authKind string) string {
 	provider = strings.ToLower(strings.TrimSpace(provider))
@@ -494,7 +499,7 @@ func OAuthModelAliasChannel(provider, authKind string) string {
 		return "claude"
 	case "codex":
 		return "codex"
-	case "aistudio", "antigravity", "kimi":
+	case "gemini-cli", "aistudio", "antigravity", "iflow", "kiro", "github-copilot", "kimi":
 		return provider
 	default:
 		return provider

@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	codexUserAgent             = "codex-tui/0.135.0 (Mac OS 26.5.0; arm64) iTerm.app/3.6.10 (codex-tui; 0.135.0)"
+	codexUserAgent             = "codex-tui/0.146.0 (Mac OS 26.5.0; arm64) iTerm.app/3.6.10 (codex-tui; 0.146.0)"
 	codexOriginator            = "codex-tui"
 	codexDefaultImageToolModel = "gpt-image-2"
 	codexResponsesLiteHeader   = "X-OpenAI-Internal-Codex-Responses-Lite"
@@ -32,13 +32,20 @@ const (
 
 var dataTag = []byte("data:")
 
-func translateCodexRequestPair(from, to sdktranslator.Format, model string, originalPayload, payload []byte, stream bool) ([]byte, []byte) {
+func translateCodexRequestPair(from, to sdktranslator.Format, model string, originalPayload, payload []byte, stream bool, preserveEmptyThinkingBlocks ...bool) ([]byte, []byte) {
+	isCompat := len(preserveEmptyThinkingBlocks) > 0 && preserveEmptyThinkingBlocks[0]
+	translate := func(raw []byte) []byte {
+		if isCompat && from == sdktranslator.FormatClaude && to == sdktranslator.FormatCodex {
+			return helps.TranslateRequestWithAPIKeyModelCompatibility(context.Background(), nil, nil, from, to, model, raw, stream, true)
+		}
+		return sdktranslator.TranslateRequest(from, to, model, raw, stream)
+	}
 	if bytes.Equal(originalPayload, payload) {
-		body := sdktranslator.TranslateRequest(from, to, model, payload, stream)
+		body := translate(payload)
 		return body, body
 	}
-	originalTranslated := sdktranslator.TranslateRequest(from, to, model, originalPayload, stream)
-	body := sdktranslator.TranslateRequest(from, to, model, payload, stream)
+	originalTranslated := translate(originalPayload)
+	body := translate(payload)
 	return originalTranslated, body
 }
 
@@ -50,6 +57,8 @@ func (e *CodexExecutor) PrepareRequest(req *http.Request, auth *cliproxyauth.Aut
 	apiKey, _ := codexCreds(auth)
 	if strings.TrimSpace(apiKey) != "" {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
+	} else {
+		req.Header.Del("Authorization")
 	}
 	var attrs map[string]string
 	if auth != nil {
@@ -107,15 +116,9 @@ func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Form
 			cache = cached
 		}
 	} else if sourceFormatEqual(from, sdktranslator.FormatOpenAIResponse) {
-		promptCacheKey := gjson.GetBytes(req.Payload, "prompt_cache_key")
-		if promptCacheKey.Exists() {
-			cache.ID = promptCacheKey.String()
-		}
+		cache.ID = codexPromptCacheKeyFromClient(ctx, req, userPayload, headers)
 	} else if sourceFormatEqual(from, sdktranslator.FormatOpenAI) {
-		if promptCacheKey := gjson.GetBytes(req.Payload, "prompt_cache_key"); promptCacheKey.Exists() {
-			cache.ID = strings.TrimSpace(promptCacheKey.String())
-		}
-		if cache.ID == "" {
+		if cache.ID = codexPromptCacheKeyFromClient(ctx, req, userPayload, headers); cache.ID == "" {
 			cache.ID = helps.ProviderSessionUUID("codex", req.Metadata)
 		}
 		if cache.ID == "" {
@@ -132,8 +135,24 @@ func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Form
 		rawJSON = helps.SetStringIfDifferent(rawJSON, "prompt_cache_key", cache.ID)
 	}
 	rawJSON = helps.SanitizeCodexInputItemIDs(rawJSON)
+	rawJSON = normalizeCodexPreviousResponseIDForPromptCache(from, rawJSON)
+	rawJSON = normalizeCodexDeveloperCurrentTimeForPromptCache(from, rawJSON)
 	var identityState codexIdentityConfuseState
 	rawJSON, identityState = applyCodexIdentityConfuseBody(e.cfg, auth, userPayload, rawJSON)
+	if identityState.promptCacheKey == "" && identityState.enabled && cache.ID != "" {
+		// The resolved client key came from provider options or session
+		// headers rather than the payload body; remap it through the same
+		// identity-confusion derivation so the original never leaks upstream.
+		identityState.originalPromptCacheKey = cache.ID
+		identityState.promptCacheKey = codexIdentityConfuseUUID(identityState.authID, "prompt-cache", cache.ID)
+		rawJSON = helps.SetStringIfDifferent(rawJSON, "prompt_cache_key", identityState.promptCacheKey)
+		if turnMetadata := strings.TrimSpace(gjson.GetBytes(rawJSON, "client_metadata.x-codex-turn-metadata").String()); turnMetadata != "" {
+			rawJSON, _ = sjson.SetBytes(rawJSON, "client_metadata.x-codex-turn-metadata", applyCodexTurnMetadataIdentityConfuse(turnMetadata, &identityState))
+		}
+		if windowID := strings.TrimSpace(gjson.GetBytes(rawJSON, "client_metadata.x-codex-window-id").String()); windowID != "" {
+			rawJSON, _ = sjson.SetBytes(rawJSON, "client_metadata.x-codex-window-id", identityState.promptCacheKey+":0")
+		}
+	}
 	if identityState.promptCacheKey != "" {
 		cache.ID = identityState.promptCacheKey
 	}
@@ -269,9 +288,11 @@ func codexIdentityConfuseUUID(authID string, kind string, value string) string {
 	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(name)).String()
 }
 
-func applyCodexHeaders(r *http.Request, auth *cliproxyauth.Auth, token string, stream bool, cfg *config.Config) {
+func applyCodexHeaders(r *http.Request, auth *cliproxyauth.Auth, token string, stream bool, cfg *config.Config, clientHeaders ...http.Header) {
 	var ginHeaders http.Header
-	if ginCtx, ok := r.Context().Value("gin").(*gin.Context); ok && ginCtx != nil && ginCtx.Request != nil {
+	if len(clientHeaders) > 0 && clientHeaders[0] != nil {
+		ginHeaders = clientHeaders[0]
+	} else if ginCtx, ok := r.Context().Value("gin").(*gin.Context); ok && ginCtx != nil && ginCtx.Request != nil {
 		ginHeaders = ginCtx.Request.Header
 	}
 	applyCodexHeadersFromSources(r, auth, token, stream, cfg, ginHeaders)
@@ -296,9 +317,12 @@ func applyModelHeaderOverrides(headers http.Header, modelName string) {
 
 // applyCodexDirectImageHeaders sets Codex upstream headers for direct /images/* calls.
 // Downstream client User-Agent values are not forwarded to reduce Cloudflare 1010 blocks.
-func applyCodexDirectImageHeaders(r *http.Request, auth *cliproxyauth.Auth, token string, stream bool, cfg *config.Config) {
+func applyCodexDirectImageHeaders(r *http.Request, auth *cliproxyauth.Auth, token string, stream bool, cfg *config.Config, clientHeaders ...http.Header) {
 	var ginHeaders http.Header
-	if ginCtx, ok := r.Context().Value("gin").(*gin.Context); ok && ginCtx != nil && ginCtx.Request != nil {
+	if len(clientHeaders) > 0 && clientHeaders[0] != nil {
+		ginHeaders = clientHeaders[0].Clone()
+		ginHeaders.Del("User-Agent")
+	} else if ginCtx, ok := r.Context().Value("gin").(*gin.Context); ok && ginCtx != nil && ginCtx.Request != nil {
 		ginHeaders = ginCtx.Request.Header.Clone()
 		ginHeaders.Del("User-Agent")
 	}
@@ -307,7 +331,11 @@ func applyCodexDirectImageHeaders(r *http.Request, auth *cliproxyauth.Auth, toke
 
 func applyCodexHeadersFromSources(r *http.Request, auth *cliproxyauth.Auth, token string, stream bool, cfg *config.Config, ginHeaders http.Header) {
 	r.Header.Set("Content-Type", "application/json")
-	r.Header.Set("Authorization", "Bearer "+token)
+	if strings.TrimSpace(token) != "" {
+		r.Header.Set("Authorization", "Bearer "+token)
+	} else {
+		r.Header.Del("Authorization")
+	}
 
 	if ginHeaders != nil && ginHeaders.Get("X-Codex-Beta-Features") != "" {
 		r.Header.Set("X-Codex-Beta-Features", ginHeaders.Get("X-Codex-Beta-Features"))
@@ -315,12 +343,13 @@ func applyCodexHeadersFromSources(r *http.Request, auth *cliproxyauth.Auth, toke
 	misc.EnsureHeader(r.Header, ginHeaders, "Version", "")
 	misc.EnsureHeader(r.Header, ginHeaders, "X-Codex-Turn-Metadata", "")
 	misc.EnsureHeader(r.Header, ginHeaders, "X-Client-Request-Id", "")
+	misc.EnsureHeader(r.Header, ginHeaders, "X-Codex-Window-Id", "")
+	misc.EnsureHeader(r.Header, ginHeaders, "Thread-Id", "")
+	misc.EnsureHeader(r.Header, ginHeaders, "Session_id", "")
+	misc.EnsureHeader(r.Header, ginHeaders, "X-Openai-Internal-Codex-Responses-Lite", "")
+
 	cfgUserAgent, _ := codexHeaderDefaults(cfg, auth)
 	ensureHeaderWithConfigPrecedence(r.Header, ginHeaders, "User-Agent", cfgUserAgent, codexUserAgent)
-
-	if strings.Contains(r.Header.Get("User-Agent"), "Mac OS") {
-		misc.EnsureHeader(r.Header, ginHeaders, "Session_id", uuid.NewString())
-	}
 
 	if stream {
 		r.Header.Set("Accept", "text/event-stream")
@@ -329,12 +358,7 @@ func applyCodexHeadersFromSources(r *http.Request, auth *cliproxyauth.Auth, toke
 	}
 	r.Header.Set("Connection", "Keep-Alive")
 
-	isAPIKey := false
-	if auth != nil && auth.Attributes != nil {
-		if v := strings.TrimSpace(auth.Attributes["api_key"]); v != "" {
-			isAPIKey = true
-		}
-	}
+	isAPIKey := codexAuthUsesAPIKey(auth)
 	if originator := strings.TrimSpace(ginHeaders.Get("Originator")); originator != "" {
 		r.Header.Set("Originator", originator)
 	} else if !isAPIKey {
@@ -351,7 +375,16 @@ func applyCodexHeadersFromSources(r *http.Request, auth *cliproxyauth.Auth, toke
 	if auth != nil {
 		attrs = auth.Attributes
 	}
-	util.ApplyCustomHeadersFromAttrs(r, attrs)
+	util.ApplyCustomHeadersFromAttrs(r, attrs, ginHeaders)
+	applyCodexCloakingHeaders(r.Header, cfg)
+}
+
+func applyCodexCloakingHeaders(headers http.Header, cfg *config.Config) {
+	if headers == nil || cfg == nil || cfg.Codex.DisableCodexCloaking {
+		return
+	}
+	headers.Set("User-Agent", codexUserAgent)
+	headers.Set("Originator", codexOriginator)
 }
 
 func normalizeCodexInstructions(body []byte) []byte {
@@ -479,4 +512,227 @@ func codexImageGenerationToolModel(body []byte) string {
 		}
 	}
 	return codexDefaultImageToolModel
+}
+
+func normalizeCodexPreviousResponseIDForPromptCache(from sdktranslator.Format, rawJSON []byte) []byte {
+	if !sourceFormatEqual(from, sdktranslator.FormatOpenAIResponse) {
+		return rawJSON
+	}
+	if strings.TrimSpace(gjson.GetBytes(rawJSON, "previous_response_id").String()) == "" {
+		return rawJSON
+	}
+	if strings.TrimSpace(gjson.GetBytes(rawJSON, "prompt_cache_key").String()) == "" {
+		return rawJSON
+	}
+
+	input := gjson.GetBytes(rawJSON, "input")
+	if !codexInputLooksLikeFullTranscript(input) {
+		return rawJSON
+	}
+
+	updated, errDelete := sjson.DeleteBytes(rawJSON, "previous_response_id")
+	if errDelete != nil {
+		return rawJSON
+	}
+	return updated
+}
+
+func codexInputLooksLikeFullTranscript(input gjson.Result) bool {
+	if !input.Exists() || !input.IsArray() {
+		return false
+	}
+	for _, item := range input.Array() {
+		// Some Responses transcript items omit type, so assistant role alone is transcript evidence.
+		if strings.TrimSpace(item.Get("role").String()) == "assistant" {
+			return true
+		}
+		switch strings.TrimSpace(item.Get("type").String()) {
+		case "compaction", "compaction_summary":
+			return true
+		}
+	}
+	return false
+}
+
+// codexPromptCacheKeyFromClient resolves the client-intended prompt cache key
+// across payload JSON paths and request headers, preserving cross-request
+// cache affinity when the body omits an explicit key.
+func codexPromptCacheKeyFromClient(ctx context.Context, req cliproxyexecutor.Request, rawJSON []byte, headers http.Header) string {
+	if key := codexPromptCacheKeyFromJSON(req.Payload); key != "" {
+		return key
+	}
+	if key := codexPromptCacheKeyFromJSON(rawJSON); key != "" {
+		return key
+	}
+	if key := codexPromptCacheKeyFromHeaders(ctx); key != "" {
+		return key
+	}
+	return codexPromptCacheKeyFromHeader(headers)
+}
+
+func codexPromptCacheKeyFromJSON(payload []byte) string {
+	if len(payload) == 0 {
+		return ""
+	}
+	for _, path := range []string{
+		"prompt_cache_key",
+		"promptCacheKey",
+		"providerOptions.openai.promptCacheKey",
+		"provider_options.openai.prompt_cache_key",
+		"provider_options.openai.promptCacheKey",
+	} {
+		if value := strings.TrimSpace(gjson.GetBytes(payload, path).String()); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func codexPromptCacheKeyFromHeaders(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	ginCtx, ok := ctx.Value("gin").(*gin.Context)
+	if !ok || ginCtx == nil || ginCtx.Request == nil {
+		return ""
+	}
+	return codexPromptCacheKeyFromHeader(ginCtx.Request.Header)
+}
+
+func codexPromptCacheKeyFromHeader(headers http.Header) string {
+	for _, name := range []string{"X-Session-ID", "Session_id", "Conversation_id"} {
+		if value := headerValueCaseInsensitive(headers, name); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+// normalizeCodexDeveloperCurrentTimeForPromptCache normalizes the volatile
+// "Current time" line inside injected developer env blocks so identical
+// sessions hit the upstream prompt cache instead of being keyed by the
+// wall-clock timestamp.
+func normalizeCodexDeveloperCurrentTimeForPromptCache(from sdktranslator.Format, rawJSON []byte) []byte {
+	if !sourceFormatEqual(from, sdktranslator.FormatOpenAIResponse) {
+		return rawJSON
+	}
+	if strings.TrimSpace(gjson.GetBytes(rawJSON, "prompt_cache_key").String()) == "" {
+		return rawJSON
+	}
+	if strings.TrimSpace(gjson.GetBytes(rawJSON, "input.0.role").String()) != "developer" {
+		return rawJSON
+	}
+
+	content := gjson.GetBytes(rawJSON, "input.0.content")
+	if !content.Exists() {
+		return rawJSON
+	}
+	if content.Type != gjson.String {
+		return rawJSON
+	}
+	normalized, changed := normalizeCodexOpenCodeEnvCurrentTime(content.String())
+	if !changed {
+		return rawJSON
+	}
+	updated, errSet := sjson.SetBytes(rawJSON, "input.0.content", normalized)
+	if errSet != nil {
+		return rawJSON
+	}
+	return updated
+}
+
+func normalizeCodexOpenCodeEnvCurrentTime(content string) (string, bool) {
+	const envStartMarker = "<env>"
+	const envEndMarker = "</env>"
+
+	searchStart := 0
+	for {
+		envStart := strings.Index(content[searchStart:], envStartMarker)
+		if envStart < 0 {
+			return content, false
+		}
+		envStart += searchStart
+		blockStart := envStart + len(envStartMarker)
+		envEnd := strings.Index(content[blockStart:], envEndMarker)
+		if envEnd < 0 {
+			return content, false
+		}
+		blockEnd := blockStart + envEnd
+		block := content[blockStart:blockEnd]
+		if !looksLikeOpenCodeEnvBlock(block) {
+			searchStart = blockEnd + len(envEndMarker)
+			continue
+		}
+
+		normalizedBlock, changed := normalizeCodexCurrentTimeLineInBlock(block)
+		if !changed {
+			searchStart = blockEnd + len(envEndMarker)
+			continue
+		}
+		return content[:blockStart] + normalizedBlock + content[blockEnd:], true
+	}
+}
+
+func looksLikeOpenCodeEnvBlock(block string) bool {
+	required := strings.Contains(block, "Working directory:")
+	if !required {
+		return false
+	}
+
+	// OpenCode env blocks vary by version; two secondary markers avoid matching arbitrary developer text.
+	markerCount := 0
+	for _, marker := range []string{
+		"Workspace root folder:",
+		"Is directory a git repo:",
+		"Platform:",
+		"Today's date:",
+	} {
+		if strings.Contains(block, marker) {
+			markerCount++
+		}
+	}
+	return markerCount >= 2
+}
+
+func normalizeCodexCurrentTimeLineInBlock(content string) (string, bool) {
+	const label = "Current time: "
+	index := strings.Index(content, label)
+	if index < 0 {
+		return content, false
+	}
+
+	valueStart := index + len(label)
+	valueEnd := len(content)
+	if newlineIndex := strings.IndexByte(content[valueStart:], '\n'); newlineIndex >= 0 {
+		valueEnd = valueStart + newlineIndex
+	}
+	rawValue := strings.TrimSpace(content[valueStart:valueEnd])
+	if !looksLikeISODatePrefix(rawValue) {
+		return content, false
+	}
+
+	normalizedLine := label + rawValue[:10] + "T00:00:00.000Z"
+	if content[index:valueEnd] == normalizedLine {
+		return content, false
+	}
+	return content[:index] + normalizedLine + content[valueEnd:], true
+}
+
+func looksLikeISODatePrefix(value string) bool {
+	if len(value) < len("2006-01-02") {
+		return false
+	}
+	for index := 0; index < len("2006-01-02"); index++ {
+		switch index {
+		case 4, 7:
+			if value[index] != '-' {
+				return false
+			}
+		default:
+			if value[index] < '0' || value[index] > '9' {
+				return false
+			}
+		}
+	}
+	return true
 }

@@ -16,6 +16,10 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 		return nil, fmt.Errorf("config payload is empty")
 	}
 
+	if errValidate := validateCredentialWeightYAML(data); errValidate != nil {
+		return nil, errValidate
+	}
+
 	var cfg Config
 	// Keep defaults aligned with LoadConfigOptional.
 	cfg.Host = "" // Default empty: binds to all interfaces (IPv4 + IPv6)
@@ -40,6 +44,9 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 
 	cfg.CredentialConcurrency = cfg.CredentialConcurrency.WithDefaults()
 	if errValidate := cfg.CredentialInFlight.Validate(); errValidate != nil {
+		return nil, errValidate
+	}
+	if errValidate := cfg.ValidateCredentialWeights(); errValidate != nil {
 		return nil, errValidate
 	}
 
@@ -91,6 +98,9 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	cfg.SanitizeInteractionsKeys()
 	cfg.SanitizeVertexCompatKeys()
 	cfg.SanitizeCodexKeys()
+	cfg.SanitizeOpenCodeKeys()
+	cfg.SanitizeOpenCodeGoKeys()
+	cfg.SanitizePoolsideKeys()
 	cfg.SanitizeXAIKeys()
 	cfg.SanitizeCodexHeaderDefaults()
 	cfg.SanitizeClaudeHeaderDefaults()
@@ -98,6 +108,7 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	cfg.SanitizeOpenAICompatibility()
 	cfg.OAuthExcludedModels = NormalizeOAuthExcludedModels(cfg.OAuthExcludedModels)
 	cfg.SanitizeOAuthModelAlias()
+	cfg.SanitizeOAuthRequestScopedErrors()
 	cfg.SanitizePayloadRules()
 
 	return &cfg, nil

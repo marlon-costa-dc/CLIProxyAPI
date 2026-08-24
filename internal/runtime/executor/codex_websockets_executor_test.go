@@ -24,6 +24,8 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+var benchmarkBuildCodexWebsocketRequestBodyOutput []byte
+
 func TestBuildCodexWebsocketRequestBodyPreservesPreviousResponseID(t *testing.T) {
 	body := []byte(`{"model":"gpt-5-codex","previous_response_id":"resp-1","input":[{"type":"message","id":"msg-1"}]}`)
 
@@ -43,11 +45,21 @@ func TestBuildCodexWebsocketRequestBodyPreservesPreviousResponseID(t *testing.T)
 	}
 }
 
+func BenchmarkBuildCodexWebsocketRequestBodyLargePayload(b *testing.B) {
+	body := []byte(`{"model":"gpt-5.6","input":[{"type":"message","id":"msg_1","role":"user","content":"` + strings.Repeat("x", 8<<20) + `"}]}`)
+	b.ReportAllocs()
+	b.SetBytes(int64(len(body)))
+	b.ResetTimer()
+	for b.Loop() {
+		benchmarkBuildCodexWebsocketRequestBodyOutput = buildCodexWebsocketRequestBody(body)
+	}
+}
+
 func TestBuildCodexWebsocketRequestBodySanitizesOverlongInputItemIDs(t *testing.T) {
 	longReasoningItemID := "rs_" + strings.Repeat("a", 64)
 	longCallItemID := strings.Repeat("grok-call-item-", 6)
 	longOutputItemID := strings.Repeat("grok-output-item-", 6)
-	body := []byte(`{"model":"gpt-5-codex","input":[{"type":"reasoning","id":"` + longReasoningItemID + `","encrypted_content":"gAAAA-encrypted","summary":[]},{"type":"function_call","id":"` + longCallItemID + `","call_id":"call-1","name":"lookup"},{"type":"function_call_output","id":"` + longOutputItemID + `","call_id":"call-1","output":"ok"},{"type":"message","id":"msg-1"}]}`)
+	body := []byte(`{"model":"gpt-5-codex","input":[{"type":"reasoning","id":"` + longReasoningItemID + `","encrypted_content":"gAAAA-encrypted","summary":[]},{"type":"function_call","id":"` + longCallItemID + `","call_id":"call-1","name":"lookup"},{"type":"function_call_output","id":"` + longOutputItemID + `","call_id":"call-1","output":"ok"},{"type":"message","id":"item_74ec40c883248ebb4885ec84"}]}`)
 
 	first := buildCodexWebsocketRequestBody(body)
 	second := buildCodexWebsocketRequestBody(body)
@@ -79,8 +91,8 @@ func TestBuildCodexWebsocketRequestBodySanitizesOverlongInputItemIDs(t *testing.
 	if got := gjson.GetBytes(first, "input.1.call_id").String(); got != "call-1" {
 		t.Fatalf("function call output call_id = %q, want call-1", got)
 	}
-	if got := gjson.GetBytes(first, "input.2.id").String(); got != "msg-1" {
-		t.Fatalf("valid input item ID changed: %q", got)
+	if got := gjson.GetBytes(first, "input.2.id").String(); got != "msg_item_74ec40c883248ebb4885ec84" {
+		t.Fatalf("message input item ID was not normalized: %q", got)
 	}
 }
 
@@ -670,6 +682,76 @@ func TestCodexWebsocketsExecuteStreamPropagatesUpstreamErrorForDownstreamWebsock
 	}
 }
 
+func TestCodexWebsocketsExecuteStreamDownstreamWebsocketResponseIncomplete(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	incompletePayload := []byte(`{"type":"response.incomplete","response":{"id":"resp_1","status":"incomplete"}}`)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade websocket: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+
+		if _, _, errRead := conn.ReadMessage(); errRead != nil {
+			t.Errorf("read first message: %v", errRead)
+			return
+		}
+		if errWrite := conn.WriteMessage(websocket.TextMessage, incompletePayload); errWrite != nil {
+			t.Errorf("write incomplete message: %v", errWrite)
+			return
+		}
+		// Keep connection open without closing or sending more messages
+		_, _, _ = conn.ReadMessage()
+	}))
+	defer server.Close()
+
+	exec := NewCodexWebsocketsExecutor(&config.Config{SDKConfig: config.SDKConfig{DisableImageGeneration: config.DisableImageGenerationAll}})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "sk-test", "base_url": server.URL}}
+	req := cliproxyexecutor.Request{
+		Model:   "gpt-5-codex",
+		Payload: []byte(`{"model":"gpt-5-codex","input":[{"type":"message","role":"user","content":"hello"}]}`),
+	}
+	opts := cliproxyexecutor.Options{
+		Metadata: map[string]any{
+			cliproxyexecutor.ExecutionSessionMetadataKey: "sess-incomplete-test",
+		},
+		SourceFormat:   sdktranslator.FromString("openai-response"),
+		ResponseFormat: sdktranslator.FromString("openai-response"),
+	}
+	ctx := cliproxyexecutor.WithDownstreamWebsocket(context.Background())
+
+	result, err := exec.ExecuteStream(ctx, auth, req, opts)
+	if err != nil {
+		t.Fatalf("ExecuteStream() error = %v", err)
+	}
+
+	select {
+	case chunk, ok := <-result.Chunks:
+		if !ok {
+			t.Fatal("stream closed before response.incomplete chunk")
+		}
+		if !bytes.Contains(chunk.Payload, []byte("response.incomplete")) {
+			t.Fatalf("chunk payload = %q, want response.incomplete", chunk.Payload)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for response.incomplete stream chunk")
+	}
+
+	select {
+	case chunk, ok := <-result.Chunks:
+		if ok {
+			t.Fatalf("unexpected chunk after terminal event: %#v", chunk)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("result.Chunks not closed after response.incomplete; executor hung reading open socket")
+	}
+
+	req2Ctx, req2Cancel := context.WithTimeout(ctx, 1*time.Second)
+	defer req2Cancel()
+	_, _ = exec.ExecuteStream(req2Ctx, auth, req, opts)
+}
+
 func TestSendTerminalWebsocketReadInvalidatesBeforeWaitingForCapacity(t *testing.T) {
 	terminalErr := &websocket.CloseError{Code: websocket.CloseMessageTooBig}
 
@@ -997,7 +1079,63 @@ func TestApplyCodexWebsocketHeadersDefaultsToCurrentResponsesBeta(t *testing.T) 
 	}
 }
 
-func TestApplyCodexWebsocketHeadersPassesThroughClientIdentityHeaders(t *testing.T) {
+func TestApplyCodexWebsocketHeadersDefaultsToCodexCloaking(t *testing.T) {
+	tests := []struct {
+		name  string
+		auth  *cliproxyauth.Auth
+		token string
+	}{
+		{
+			name: "OAuth",
+			auth: &cliproxyauth.Auth{
+				Provider: "codex",
+				Attributes: map[string]string{
+					"header:User-Agent": "custom-ua",
+					"header:Originator": "custom-origin",
+				},
+			},
+		},
+		{
+			name: "API key",
+			auth: &cliproxyauth.Auth{
+				Provider: "codex",
+				Attributes: map[string]string{
+					"api_key":           "sk-test",
+					"header:User-Agent": "custom-ua",
+					"header:Originator": "custom-origin",
+				},
+			},
+			token: "sk-test",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &config.Config{
+				CodexHeaderDefaults: config.CodexHeaderDefaults{UserAgent: "config-ua"},
+			}
+			ctx := contextWithGinHeaders(map[string]string{
+				"User-Agent": "client-ua",
+				"Originator": "client-origin",
+			})
+			headers := http.Header{}
+			headers.Set("User-Agent", "existing-ua")
+			headers.Set("Originator", "existing-origin")
+
+			headers = applyCodexWebsocketHeaders(ctx, headers, tt.auth, tt.token, cfg)
+
+			if got := headers.Get("User-Agent"); got != codexUserAgent {
+				t.Fatalf("User-Agent = %q, want %q", got, codexUserAgent)
+			}
+			if got := headers.Get("Originator"); got != codexOriginator {
+				t.Fatalf("Originator = %q, want %q", got, codexOriginator)
+			}
+		})
+	}
+}
+
+func TestApplyCodexWebsocketHeadersPassesThroughClientIdentityHeadersWhenCloakingDisabled(t *testing.T) {
+	cfg := &config.Config{Codex: config.CodexConfig{DisableCodexCloaking: true}}
 	auth := &cliproxyauth.Auth{
 		Provider: "codex",
 		Metadata: map[string]any{"email": "user@example.com"},
@@ -1011,7 +1149,7 @@ func TestApplyCodexWebsocketHeadersPassesThroughClientIdentityHeaders(t *testing
 		"session-id":            "legacy-session",
 	})
 
-	headers := applyCodexWebsocketHeaders(ctx, http.Header{}, auth, "", nil)
+	headers := applyCodexWebsocketHeaders(ctx, http.Header{}, auth, "", cfg)
 
 	if got := headers.Get("Originator"); got != "Codex Desktop" {
 		t.Fatalf("Originator = %s, want %s", got, "Codex Desktop")
@@ -1059,6 +1197,7 @@ func TestApplyCodexWebsocketHeadersCanonicalizesLegacyUnderscoreSessionHeader(t 
 
 func TestApplyCodexWebsocketHeadersUsesConfigDefaultsForOAuth(t *testing.T) {
 	cfg := &config.Config{
+		Codex: config.CodexConfig{DisableCodexCloaking: true},
 		CodexHeaderDefaults: config.CodexHeaderDefaults{
 			UserAgent:    "my-codex-client/1.0",
 			BetaFeatures: "feature-a,feature-b",
@@ -1084,6 +1223,7 @@ func TestApplyCodexWebsocketHeadersUsesConfigDefaultsForOAuth(t *testing.T) {
 
 func TestApplyCodexWebsocketHeadersPrefersExistingHeadersOverClientAndConfig(t *testing.T) {
 	cfg := &config.Config{
+		Codex: config.CodexConfig{DisableCodexCloaking: true},
 		CodexHeaderDefaults: config.CodexHeaderDefaults{
 			UserAgent:    "config-ua",
 			BetaFeatures: "config-beta",
@@ -1113,6 +1253,7 @@ func TestApplyCodexWebsocketHeadersPrefersExistingHeadersOverClientAndConfig(t *
 
 func TestApplyCodexWebsocketHeadersConfigUserAgentOverridesClientHeader(t *testing.T) {
 	cfg := &config.Config{
+		Codex: config.CodexConfig{DisableCodexCloaking: true},
 		CodexHeaderDefaults: config.CodexHeaderDefaults{
 			UserAgent:    "config-ua",
 			BetaFeatures: "config-beta",
@@ -1139,6 +1280,7 @@ func TestApplyCodexWebsocketHeadersConfigUserAgentOverridesClientHeader(t *testi
 
 func TestApplyCodexWebsocketHeadersIgnoresConfigForAPIKeyAuth(t *testing.T) {
 	cfg := &config.Config{
+		Codex: config.CodexConfig{DisableCodexCloaking: true},
 		CodexHeaderDefaults: config.CodexHeaderDefaults{
 			UserAgent:    "config-ua",
 			BetaFeatures: "config-beta",
@@ -1510,6 +1652,7 @@ func TestApplyCodexHeadersUsesConfigUserAgentForOAuth(t *testing.T) {
 		t.Fatalf("NewRequest() error = %v", err)
 	}
 	cfg := &config.Config{
+		Codex: config.CodexConfig{DisableCodexCloaking: true},
 		CodexHeaderDefaults: config.CodexHeaderDefaults{
 			UserAgent:    "config-ua",
 			BetaFeatures: "config-beta",
@@ -1530,6 +1673,118 @@ func TestApplyCodexHeadersUsesConfigUserAgentForOAuth(t *testing.T) {
 	}
 	if got := req.Header.Get("x-codex-beta-features"); got != "" {
 		t.Fatalf("x-codex-beta-features = %q, want empty", got)
+	}
+}
+
+func TestApplyCodexHeadersDefaultsToCodexCloaking(t *testing.T) {
+	req, err := http.NewRequest(http.MethodPost, "https://example.com/responses", nil)
+	if err != nil {
+		t.Fatalf("NewRequest() error = %v", err)
+	}
+	req.Header.Set("User-Agent", "existing-ua")
+	req.Header.Set("Originator", "existing-origin")
+	cfg := &config.Config{
+		CodexHeaderDefaults: config.CodexHeaderDefaults{
+			UserAgent: "config-ua",
+		},
+	}
+	auth := &cliproxyauth.Auth{
+		Provider: "codex",
+		Attributes: map[string]string{
+			"api_key":           "api-key",
+			"header:User-Agent": "custom-ua",
+			"header:Originator": "custom-origin",
+		},
+	}
+	ginHeaders := http.Header{
+		"User-Agent": []string{"client-ua"},
+		"Originator": []string{"client-origin"},
+	}
+
+	applyCodexHeadersFromSources(req, auth, "api-key", false, cfg, ginHeaders)
+
+	if got := req.Header.Get("User-Agent"); got != codexUserAgent {
+		t.Fatalf("User-Agent = %q, want %q", got, codexUserAgent)
+	}
+	if got := req.Header.Get("Originator"); got != codexOriginator {
+		t.Fatalf("Originator = %q, want %q", got, codexOriginator)
+	}
+}
+
+func TestApplyCodexHeaders_EmptyAPIKey_OmitsAuthorizationAndOAuthHeaders(t *testing.T) {
+	req, err := http.NewRequest(http.MethodPost, "https://example.com/responses", nil)
+	if err != nil {
+		t.Fatalf("NewRequest() error = %v", err)
+	}
+	auth := &cliproxyauth.Auth{
+		Provider: "codex",
+		Attributes: map[string]string{
+			"auth_kind": "apikey",
+			"base_url":  "https://custom-codex.example.com",
+		},
+		Metadata: map[string]any{
+			"account_id": "acc-12345",
+		},
+	}
+	cfg := &config.Config{
+		Codex: config.CodexConfig{
+			DisableCodexCloaking: true,
+		},
+		CodexHeaderDefaults: config.CodexHeaderDefaults{
+			UserAgent: "oauth-default-ua",
+		},
+	}
+	applyCodexHeaders(req, auth, "", false, cfg)
+
+	if got := req.Header.Get("Authorization"); got != "" {
+		t.Fatalf("Authorization = %q, want empty for empty API key", got)
+	}
+	if got := req.Header.Get("Chatgpt-Account-Id"); got != "" {
+		t.Fatalf("Chatgpt-Account-Id = %q, want empty for API key auth_kind", got)
+	}
+	if got := req.Header.Get("Originator"); got != "" {
+		t.Fatalf("Originator = %q, want empty for API key auth_kind when client originator omitted", got)
+	}
+	if got := req.Header.Get("User-Agent"); got == "oauth-default-ua" {
+		t.Fatalf("User-Agent unexpectedly used OAuth default UA %q for API key auth_kind", got)
+	}
+}
+
+func TestApplyCodexWebsocketHeaders_EmptyAPIKey_OmitsAuthorizationAndOAuthHeaders(t *testing.T) {
+	auth := &cliproxyauth.Auth{
+		Provider: "codex",
+		Attributes: map[string]string{
+			"auth_kind": "apikey",
+			"base_url":  "https://custom-codex.example.com",
+		},
+		Metadata: map[string]any{
+			"account_id": "acc-ws-123",
+		},
+	}
+	cfg := &config.Config{
+		Codex: config.CodexConfig{
+			DisableCodexCloaking: true,
+		},
+		CodexHeaderDefaults: config.CodexHeaderDefaults{
+			UserAgent:    "oauth-default-ua",
+			BetaFeatures: "oauth-beta",
+		},
+	}
+	headers := applyCodexWebsocketHeaders(context.Background(), nil, auth, "", cfg)
+	if got := headers.Get("Authorization"); got != "" {
+		t.Fatalf("Authorization = %q, want empty for empty API key", got)
+	}
+	if got := headers.Get("ChatGPT-Account-ID"); got != "" {
+		t.Fatalf("ChatGPT-Account-ID = %q, want empty for API key auth_kind", got)
+	}
+	if got := headers.Get("Originator"); got != "" {
+		t.Fatalf("Originator = %q, want empty for API key auth_kind", got)
+	}
+	if got := headers.Get("x-codex-beta-features"); got != "" {
+		t.Fatalf("x-codex-beta-features = %q, want empty for API key auth_kind", got)
+	}
+	if got := headers.Get("User-Agent"); got == "oauth-default-ua" {
+		t.Fatalf("User-Agent unexpectedly used OAuth default UA %q for API key auth_kind", got)
 	}
 }
 
@@ -1614,7 +1869,8 @@ func TestApplyCodexHeadersPassesThroughClientIdentityHeaders(t *testing.T) {
 		"X-Client-Request-Id":   "019d2233-e240-7162-992d-38df0a2a0e0d",
 	}))
 
-	applyCodexHeaders(req, auth, "oauth-token", true, nil)
+	cfg := &config.Config{Codex: config.CodexConfig{DisableCodexCloaking: true}}
+	applyCodexHeaders(req, auth, "oauth-token", true, cfg)
 
 	if got := req.Header.Get("Originator"); got != "Codex Desktop" {
 		t.Fatalf("Originator = %s, want %s", got, "Codex Desktop")

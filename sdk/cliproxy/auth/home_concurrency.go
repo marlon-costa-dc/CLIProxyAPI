@@ -242,7 +242,8 @@ func decodeHomeDispatchError(raw []byte) error {
 	case "credential_concurrency_exceeded", "credential_model_concurrency_exceeded":
 		result.HTTPStatus = http.StatusTooManyRequests
 		return newHomeConcurrencyBusyError(result, time.Duration(detail.RetryAfterMS)*time.Millisecond)
-	case "concurrency_protocol_required", "concurrency_tracker_unavailable", "concurrency_node_unavailable":
+	case "auth_not_found", "auth_unavailable", "refresh_temporarily_unavailable", "home_unavailable",
+		"concurrency_protocol_required", "concurrency_tracker_unavailable", "concurrency_node_unavailable":
 		result.HTTPStatus = http.StatusServiceUnavailable
 	}
 	return result
@@ -264,6 +265,13 @@ func verifyAccountedHomeConcurrencyIdentity(tuple homeConcurrencyTuple, auth *Au
 
 // SafeResponseHeaders returns trusted response headers only for CPA's concrete Home busy error.
 func SafeResponseHeaders(err error) http.Header {
+	if err == nil {
+		return nil
+	}
+	var carrier interface{ SafeResponseHeaders() http.Header }
+	if errors.As(err, &carrier) && carrier != nil {
+		return carrier.SafeResponseHeaders()
+	}
 	var busy *HomeConcurrencyBusyError
 	if !errors.As(err, &busy) || busy == nil {
 		return nil

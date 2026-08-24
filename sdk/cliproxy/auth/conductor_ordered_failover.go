@@ -6,7 +6,9 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/clienterror"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	log "github.com/sirupsen/logrus"
 )
 
 // Ordered failover implements ai-hub-ollw AC#2-#4: iterate an ordered candidate
@@ -28,11 +30,11 @@ func permanentOrderedStopError(err error) bool {
 	if err == nil {
 		return false
 	}
-	if isRequestInvalidError(err) {
-		return true
-	}
 	var authErr *Error
 	if errors.As(err, &authErr) && authErr != nil && authErr.Code == "model_excluded" {
+		return true
+	}
+	if isInvalidGrantError(err) {
 		return true
 	}
 	status := statusCodeFromError(err)
@@ -48,12 +50,48 @@ func permanentOrderedStopError(err error) bool {
 		// does not exist at all on this provider), the error is permanent.
 		// We rely on isRequestInvalidError above to catch the shape variants.
 	}
-	if isInvalidGrantError(err) {
-		// Invalid grant is auth-level; stop the chain rather than burning the
-		// next candidate on an auth refresh loop that already failed.
+	if status == http.StatusBadRequest && !isRequestShapeFaultError(err) {
+		// A generic 400 is neither a permanent-stop taxonomy member nor
+		// retryable pre-first-byte: the chain stops at this candidate and the
+		// error is returned verbatim (no fallback trace annotation), because
+		// only identified request-shape faults prove the request is broken
+		// across every candidate.
+		return false
+	}
+	if isRequestInvalidError(err) {
 		return true
 	}
 	return false
+}
+
+// isRequestShapeFaultError reports whether err carries an identified
+// request-shape fault: either a prefixed plain-text translation/cloaking
+// failure or a structured upstream request-fault body. A bare status match
+// does not qualify — providers disagree on payload validation.
+func isRequestShapeFaultError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if isRequestScopedError(err) {
+		return true
+	}
+	message := ""
+	var authErr *Error
+	if errors.As(err, &authErr) && authErr != nil {
+		message = authErr.Message
+	} else {
+		message = err.Error()
+	}
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return false
+	}
+	if strings.HasPrefix(message, "invalid_request_error:") {
+		return true
+	}
+	// Body-only classification: JSON request-fault codes/types qualify, plain
+	// text does not.
+	return clienterror.HasRequestFaultBodyString(message)
 }
 
 // retryablePreFirstByteError reports whether err is safe to retry by advancing
@@ -114,16 +152,19 @@ func (m *Manager) executeWithOrderedFailover(ctx context.Context, providers []st
 	}
 	_, maxRetryCredentials, _ := m.retrySettings()
 	chain := m.orderedCandidateChainForRequest(providers, req, opts)
+	tracker := newRouteAttemptTracker()
 	if len(chain) <= 1 {
 		// No ordered pool: preserve legacy behavior exactly.
-		return m.executeMixedOnce(ctx, providers, req, opts, maxRetryCredentials)
+		tried := make(map[string]struct{})
+		return m.executeMixedOnce(ctx, providers, req, opts, maxRetryCredentials, tracker, tried)
 	}
 	var lastErr error
 	for idx, candidate := range chain {
 		candidateReq := req
 		candidateReq.Model = candidate.UpstreamModel
 		candidateOpts := withOrderedCandidateMetadata(opts, idx, candidate)
-		resp, err := m.executeMixedOnce(ctx, providers, candidateReq, candidateOpts, maxRetryCredentials)
+		tried := make(map[string]struct{})
+		resp, err := m.executeMixedOnce(ctx, providers, candidateReq, candidateOpts, maxRetryCredentials, tracker, tried)
 		if err == nil {
 			return resp, nil
 		}
@@ -137,7 +178,7 @@ func (m *Manager) executeWithOrderedFailover(ctx context.Context, providers []st
 			// verbatim; do not fabricate a fallback trace.
 			return resp, err
 		}
-		// Pre-first-byte retryable: advance to the next candidate.
+		logOrderedFailoverAdvance(ctx, chain, idx, err)
 		continue
 	}
 	if lastErr != nil {
@@ -154,15 +195,18 @@ func (m *Manager) executeCountWithOrderedFailover(ctx context.Context, providers
 	}
 	_, maxRetryCredentials, _ := m.retrySettings()
 	chain := m.orderedCandidateChainForRequest(providers, req, opts)
+	tracker := newRouteAttemptTracker()
 	if len(chain) <= 1 {
-		return m.executeCountMixedOnce(ctx, providers, req, opts, maxRetryCredentials)
+		tried := make(map[string]struct{})
+		return m.executeCountMixedOnce(ctx, providers, req, opts, maxRetryCredentials, tracker, tried)
 	}
 	var lastErr error
 	for idx, candidate := range chain {
 		candidateReq := req
 		candidateReq.Model = candidate.UpstreamModel
 		candidateOpts := withOrderedCandidateMetadata(opts, idx, candidate)
-		resp, err := m.executeCountMixedOnce(ctx, providers, candidateReq, candidateOpts, maxRetryCredentials)
+		tried := make(map[string]struct{})
+		resp, err := m.executeCountMixedOnce(ctx, providers, candidateReq, candidateOpts, maxRetryCredentials, tracker, tried)
 		if err == nil {
 			return resp, nil
 		}
@@ -173,6 +217,7 @@ func (m *Manager) executeCountWithOrderedFailover(ctx context.Context, providers
 		if !retryablePreFirstByteError(err) {
 			return resp, err
 		}
+		logOrderedFailoverAdvance(ctx, chain, idx, err)
 		continue
 	}
 	if lastErr != nil {
@@ -192,15 +237,18 @@ func (m *Manager) executeStreamWithOrderedFailover(ctx context.Context, provider
 	}
 	_, maxRetryCredentials, _ := m.retrySettings()
 	chain := m.orderedCandidateChainForRequest(providers, req, opts)
+	tracker := newRouteAttemptTracker()
 	if len(chain) <= 1 {
-		return m.executeStreamMixedOnce(ctx, providers, req, opts, maxRetryCredentials)
+		tried := make(map[string]struct{})
+		return m.executeStreamMixedOnce(ctx, providers, req, opts, maxRetryCredentials, tracker, tried)
 	}
 	var lastErr error
 	for idx, candidate := range chain {
 		candidateReq := req
 		candidateReq.Model = candidate.UpstreamModel
 		candidateOpts := withOrderedCandidateMetadata(opts, idx, candidate)
-		streamResult, err := m.executeStreamMixedOnce(ctx, providers, candidateReq, candidateOpts, maxRetryCredentials)
+		tried := make(map[string]struct{})
+		streamResult, err := m.executeStreamMixedOnce(ctx, providers, candidateReq, candidateOpts, maxRetryCredentials, tracker, tried)
 		if err == nil {
 			// Bytes are flowing from this candidate. No further fallback is
 			// permitted after this point — the client already received bytes.
@@ -213,13 +261,32 @@ func (m *Manager) executeStreamWithOrderedFailover(ctx context.Context, provider
 		if !retryablePreFirstByteError(err) {
 			return nil, err
 		}
-		// Pre-first-byte retryable: advance to the next candidate.
+		logOrderedFailoverAdvance(ctx, chain, idx, err)
 		continue
 	}
 	if lastErr != nil {
 		return nil, annotateOrderedError(lastErr, chain, len(chain)-1, "exhausted")
 	}
 	return nil, &Error{Code: "auth_not_found", Message: "no auth available"}
+}
+
+func logOrderedFailoverAdvance(ctx context.Context, chain []OrderedCandidate, idx int, err error) {
+	from := ""
+	to := ""
+	if idx >= 0 && idx < len(chain) {
+		from = chain[idx].UpstreamModel
+	}
+	if idx+1 < len(chain) {
+		to = chain[idx+1].UpstreamModel
+	}
+	logEntryWithRequestID(ctx).WithFields(log.Fields{
+		"from":        from,
+		"to":          to,
+		"reason":      "retryable",
+		"status":      statusCodeFromError(err),
+		"chain_index": idx,
+		"chain_len":   len(chain),
+	}).Debug("ordered failover advanced")
 }
 
 // orderedCandidateChainForRequest resolves the ordered candidate pool from the
@@ -314,6 +381,22 @@ func annotateOrderedError(err error, chain []OrderedCandidate, idx int, reason s
 		chainIndex:  idx,
 		chainLength: len(chain),
 	}
+}
+
+// orderedFailoverShouldFallThrough reports whether a failed ordered chain
+// result should be retried by the legacy executeMixedOnce loop. Exhausted
+// chains (all candidates retried pre-first-byte) fall through so cooldown and
+// credential rotation over the full pool stay in effect. Permanent stops are
+// terminal for the request.
+func (m *Manager) orderedFailoverShouldFallThrough(err error) bool {
+	if err == nil {
+		return false
+	}
+	var ordered *orderedFailoverError
+	if !errors.As(err, &ordered) || ordered == nil {
+		return false
+	}
+	return ordered.reason == "exhausted"
 }
 
 // orderedFailoverError wraps an upstream error with secret-safe structured

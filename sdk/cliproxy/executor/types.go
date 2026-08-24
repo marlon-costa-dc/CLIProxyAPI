@@ -48,6 +48,19 @@ const (
 	DerivedSessionIDMetadataKey = "derived_session_id"
 	// CallerScopeMetadataKey isolates inferred session identities between downstream callers.
 	CallerScopeMetadataKey = "caller_scope"
+	// ExcludedAuthIDsMetadataKey carries the set of auth IDs that already failed
+	// (429/5xx/empty) within the current request and must never be re-selected
+	// for the remainder of that request. Value is map[string]struct{} or []string.
+	ExcludedAuthIDsMetadataKey = "request_excluded_auth_ids"
+	// SessionAffinityProviderMetadataKey carries the affinity selection namespace
+	// (provider string, e.g. the literal "mixed" pool key) used by SessionAffinitySelector.Pick,
+	// so OnResult keys the session cache identically to how selection read it.
+	SessionAffinityProviderMetadataKey = "session_affinity_provider"
+	// SessionAffinityModelMetadataKey carries the normalized model argument used by
+	// SessionAffinitySelector.Pick to build the session cache key, before any
+	// executor/model-pool/home upstream rewrite, so OnResult keys the session cache
+	// identically to how selection read it.
+	SessionAffinityModelMetadataKey = "session_affinity_model"
 )
 
 // Request encapsulates the translated payload that will be sent to a provider executor.
@@ -108,6 +121,9 @@ type RequestTerminatedError struct {
 	HTTPStatus int
 	Header     http.Header
 	Body       []byte
+	// Trusted reports that the termination originated locally (plugin/interceptor)
+	// rather than from an untrusted upstream. Zero value false is the safe default.
+	Trusted bool
 }
 
 func (e *RequestTerminatedError) Error() string {
@@ -161,6 +177,14 @@ type Options struct {
 	RequestAfterAuthInterceptor RequestAfterAuthInterceptor
 	// ExecutionLifecycle owns Home-dispatched execution resources. Executors must not add it to request metadata.
 	ExecutionLifecycle ExecutionLifecycle
+}
+
+// EnsureMetadata initializes and returns Metadata, ensuring it is non-nil.
+func (o *Options) EnsureMetadata() map[string]any {
+	if o.Metadata == nil {
+		o.Metadata = make(map[string]any)
+	}
+	return o.Metadata
 }
 
 // ResponseFormatOrSource returns the response target format for an execution.

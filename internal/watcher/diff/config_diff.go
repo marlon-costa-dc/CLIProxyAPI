@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/url"
 	"reflect"
+	"strconv"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
@@ -104,9 +105,15 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 	if oldCfg.QuotaExceeded.AntigravityCredits != newCfg.QuotaExceeded.AntigravityCredits {
 		changes = append(changes, fmt.Sprintf("quota-exceeded.antigravity-credits: %t -> %t", oldCfg.QuotaExceeded.AntigravityCredits, newCfg.QuotaExceeded.AntigravityCredits))
 	}
+	if !reflect.DeepEqual(oldCfg.Antigravity.SensitiveWords, newCfg.Antigravity.SensitiveWords) {
+		changes = append(changes, fmt.Sprintf("antigravity.sensitive-words: %d -> %d", len(oldCfg.Antigravity.SensitiveWords), len(newCfg.Antigravity.SensitiveWords)))
+	}
 
 	if oldCfg.Codex.IdentityConfuse != newCfg.Codex.IdentityConfuse {
 		changes = append(changes, fmt.Sprintf("codex.identity-confuse: %t -> %t", oldCfg.Codex.IdentityConfuse, newCfg.Codex.IdentityConfuse))
+	}
+	if oldCfg.Codex.DisableCodexCloaking != newCfg.Codex.DisableCodexCloaking {
+		changes = append(changes, fmt.Sprintf("codex.disable-codex-cloaking: %t -> %t", oldCfg.Codex.DisableCodexCloaking, newCfg.Codex.DisableCodexCloaking))
 	}
 	if oldCfg.Codex.OptimizeMultiAgentV2 != newCfg.Codex.OptimizeMultiAgentV2 {
 		changes = append(changes, fmt.Sprintf("codex.optimize-multi-agent-v2: %t -> %t", oldCfg.Codex.OptimizeMultiAgentV2, newCfg.Codex.OptimizeMultiAgentV2))
@@ -166,6 +173,7 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 			if strings.TrimSpace(o.Prefix) != strings.TrimSpace(n.Prefix) {
 				changes = append(changes, fmt.Sprintf("gemini[%d].prefix: %s -> %s", i, strings.TrimSpace(o.Prefix), strings.TrimSpace(n.Prefix)))
 			}
+			changes = appendOptionalBoolChange(changes, fmt.Sprintf("gemini[%d].disable-cooling", i), o.DisableCooling, n.DisableCooling)
 			if strings.TrimSpace(o.APIKey) != strings.TrimSpace(n.APIKey) {
 				changes = append(changes, fmt.Sprintf("gemini[%d].api-key: updated", i))
 			}
@@ -182,6 +190,7 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 			if oldExcluded.hash != newExcluded.hash {
 				changes = append(changes, fmt.Sprintf("gemini[%d].excluded-models: updated (%d -> %d entries)", i, oldExcluded.count, newExcluded.count))
 			}
+			changes = appendOptionalIntChange(changes, fmt.Sprintf("gemini[%d].request-retry", i), o.RequestRetry, n.RequestRetry)
 		}
 	}
 	if len(oldCfg.InteractionsKey) != len(newCfg.InteractionsKey) {
@@ -199,6 +208,7 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 			if strings.TrimSpace(o.Prefix) != strings.TrimSpace(n.Prefix) {
 				changes = append(changes, fmt.Sprintf("interactions[%d].prefix: %s -> %s", i, strings.TrimSpace(o.Prefix), strings.TrimSpace(n.Prefix)))
 			}
+			changes = appendOptionalBoolChange(changes, fmt.Sprintf("interactions[%d].disable-cooling", i), o.DisableCooling, n.DisableCooling)
 			if strings.TrimSpace(o.APIKey) != strings.TrimSpace(n.APIKey) {
 				changes = append(changes, fmt.Sprintf("interactions[%d].api-key: updated", i))
 			}
@@ -215,6 +225,7 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 			if oldExcluded.hash != newExcluded.hash {
 				changes = append(changes, fmt.Sprintf("interactions[%d].excluded-models: updated (%d -> %d entries)", i, oldExcluded.count, newExcluded.count))
 			}
+			changes = appendOptionalIntChange(changes, fmt.Sprintf("interactions[%d].request-retry", i), o.RequestRetry, n.RequestRetry)
 		}
 	}
 
@@ -234,6 +245,7 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 			if strings.TrimSpace(o.Prefix) != strings.TrimSpace(n.Prefix) {
 				changes = append(changes, fmt.Sprintf("claude[%d].prefix: %s -> %s", i, strings.TrimSpace(o.Prefix), strings.TrimSpace(n.Prefix)))
 			}
+			changes = appendOptionalBoolChange(changes, fmt.Sprintf("claude[%d].disable-cooling", i), o.DisableCooling, n.DisableCooling)
 			if strings.TrimSpace(o.APIKey) != strings.TrimSpace(n.APIKey) {
 				changes = append(changes, fmt.Sprintf("claude[%d].api-key: updated", i))
 			}
@@ -253,6 +265,10 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 			if o.RebuildMidSystemMessage != n.RebuildMidSystemMessage {
 				changes = append(changes, fmt.Sprintf("claude[%d].rebuild-mid-system-message: %t -> %t", i, o.RebuildMidSystemMessage, n.RebuildMidSystemMessage))
 			}
+			if strings.TrimSpace(o.FingerprintProfile) != strings.TrimSpace(n.FingerprintProfile) {
+				changes = append(changes, fmt.Sprintf("claude[%d].fingerprint-profile: %s -> %s", i, strings.TrimSpace(o.FingerprintProfile), strings.TrimSpace(n.FingerprintProfile)))
+			}
+			changes = appendOptionalIntChange(changes, fmt.Sprintf("claude[%d].request-retry", i), o.RequestRetry, n.RequestRetry)
 			if o.Cloak != nil && n.Cloak != nil {
 				if strings.TrimSpace(o.Cloak.Mode) != strings.TrimSpace(n.Cloak.Mode) {
 					changes = append(changes, fmt.Sprintf("claude[%d].cloak.mode: %s -> %s", i, o.Cloak.Mode, n.Cloak.Mode))
@@ -286,6 +302,10 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 			if o.Websockets != n.Websockets {
 				changes = append(changes, fmt.Sprintf("codex[%d].websockets: %t -> %t", i, o.Websockets, n.Websockets))
 			}
+			if o.AlphaSearch != n.AlphaSearch {
+				changes = append(changes, fmt.Sprintf("codex[%d].alpha-search: %t -> %t", i, o.AlphaSearch, n.AlphaSearch))
+			}
+			changes = appendOptionalBoolChange(changes, fmt.Sprintf("codex[%d].disable-cooling", i), o.DisableCooling, n.DisableCooling)
 			if strings.TrimSpace(o.APIKey) != strings.TrimSpace(n.APIKey) {
 				changes = append(changes, fmt.Sprintf("codex[%d].api-key: updated", i))
 			}
@@ -302,6 +322,7 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 			if oldExcluded.hash != newExcluded.hash {
 				changes = append(changes, fmt.Sprintf("codex[%d].excluded-models: updated (%d -> %d entries)", i, oldExcluded.count, newExcluded.count))
 			}
+			changes = appendOptionalIntChange(changes, fmt.Sprintf("codex[%d].request-retry", i), o.RequestRetry, n.RequestRetry)
 		}
 	}
 
@@ -327,9 +348,8 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 			if o.Websockets != n.Websockets {
 				changes = append(changes, fmt.Sprintf("xai[%d].websockets: %t -> %t", i, o.Websockets, n.Websockets))
 			}
-			if o.DisableCooling != n.DisableCooling {
-				changes = append(changes, fmt.Sprintf("xai[%d].disable-cooling: %t -> %t", i, o.DisableCooling, n.DisableCooling))
-			}
+			changes = appendOptionalBoolChange(changes, fmt.Sprintf("xai[%d].disable-cooling", i), o.DisableCooling, n.DisableCooling)
+			changes = appendOptionalIntChange(changes, fmt.Sprintf("xai[%d].request-retry", i), o.RequestRetry, n.RequestRetry)
 			if strings.TrimSpace(o.APIKey) != strings.TrimSpace(n.APIKey) {
 				changes = append(changes, fmt.Sprintf("xai[%d].api-key: updated", i))
 			}
@@ -349,10 +369,142 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 		}
 	}
 
+	// OpenCode keys (do not print key material)
+	if len(oldCfg.OpenCodeKey) != len(newCfg.OpenCodeKey) {
+		changes = append(changes, fmt.Sprintf("opencode-api-key count: %d -> %d", len(oldCfg.OpenCodeKey), len(newCfg.OpenCodeKey)))
+	} else {
+		for i := range oldCfg.OpenCodeKey {
+			o := oldCfg.OpenCodeKey[i]
+			n := newCfg.OpenCodeKey[i]
+			if strings.TrimSpace(o.BaseURL) != strings.TrimSpace(n.BaseURL) {
+				changes = append(changes, fmt.Sprintf("opencode[%d].base-url: %s -> %s", i, formatURL(o.BaseURL), formatURL(n.BaseURL)))
+			}
+			if strings.TrimSpace(o.ProxyURL) != strings.TrimSpace(n.ProxyURL) {
+				changes = append(changes, fmt.Sprintf("opencode[%d].proxy-url: %s -> %s", i, formatProxyURL(o.ProxyURL), formatProxyURL(n.ProxyURL)))
+			}
+			if strings.TrimSpace(o.Prefix) != strings.TrimSpace(n.Prefix) {
+				changes = append(changes, fmt.Sprintf("opencode[%d].prefix: %s -> %s", i, strings.TrimSpace(o.Prefix), strings.TrimSpace(n.Prefix)))
+			}
+			if o.Priority != n.Priority {
+				changes = append(changes, fmt.Sprintf("opencode[%d].priority: %d -> %d", i, o.Priority, n.Priority))
+			}
+			if o.Websockets != n.Websockets {
+				changes = append(changes, fmt.Sprintf("opencode[%d].websockets: %t -> %t", i, o.Websockets, n.Websockets))
+			}
+			changes = appendOptionalBoolChange(changes, fmt.Sprintf("opencode[%d].disable-cooling", i), o.DisableCooling, n.DisableCooling)
+			changes = appendOptionalIntChange(changes, fmt.Sprintf("opencode[%d].request-retry", i), o.RequestRetry, n.RequestRetry)
+			if strings.TrimSpace(o.APIKey) != strings.TrimSpace(n.APIKey) {
+				changes = append(changes, fmt.Sprintf("opencode[%d].api-key: updated", i))
+			}
+			if !equalStringMap(o.Headers, n.Headers) {
+				changes = append(changes, fmt.Sprintf("opencode[%d].headers: updated", i))
+			}
+			oldModels := SummarizeCodexModels(o.Models)
+			newModels := SummarizeCodexModels(n.Models)
+			if oldModels.hash != newModels.hash {
+				changes = append(changes, fmt.Sprintf("opencode[%d].models: updated (%d -> %d entries)", i, oldModels.count, newModels.count))
+			}
+			oldExcluded := SummarizeExcludedModels(o.ExcludedModels)
+			newExcluded := SummarizeExcludedModels(n.ExcludedModels)
+			if oldExcluded.hash != newExcluded.hash {
+				changes = append(changes, fmt.Sprintf("opencode[%d].excluded-models: updated (%d -> %d entries)", i, oldExcluded.count, newExcluded.count))
+			}
+		}
+	}
+
+	// OpenCode Go keys (do not print key material)
+	if len(oldCfg.OpenCodeGoKey) != len(newCfg.OpenCodeGoKey) {
+		changes = append(changes, fmt.Sprintf("opencode-go-api-key count: %d -> %d", len(oldCfg.OpenCodeGoKey), len(newCfg.OpenCodeGoKey)))
+	} else {
+		for i := range oldCfg.OpenCodeGoKey {
+			o := oldCfg.OpenCodeGoKey[i]
+			n := newCfg.OpenCodeGoKey[i]
+			if strings.TrimSpace(o.BaseURL) != strings.TrimSpace(n.BaseURL) {
+				changes = append(changes, fmt.Sprintf("opencode-go[%d].base-url: %s -> %s", i, formatURL(o.BaseURL), formatURL(n.BaseURL)))
+			}
+			if strings.TrimSpace(o.ProxyURL) != strings.TrimSpace(n.ProxyURL) {
+				changes = append(changes, fmt.Sprintf("opencode-go[%d].proxy-url: %s -> %s", i, formatProxyURL(o.ProxyURL), formatProxyURL(n.ProxyURL)))
+			}
+			if strings.TrimSpace(o.Prefix) != strings.TrimSpace(n.Prefix) {
+				changes = append(changes, fmt.Sprintf("opencode-go[%d].prefix: %s -> %s", i, strings.TrimSpace(o.Prefix), strings.TrimSpace(n.Prefix)))
+			}
+			if o.Priority != n.Priority {
+				changes = append(changes, fmt.Sprintf("opencode-go[%d].priority: %d -> %d", i, o.Priority, n.Priority))
+			}
+			if o.Websockets != n.Websockets {
+				changes = append(changes, fmt.Sprintf("opencode-go[%d].websockets: %t -> %t", i, o.Websockets, n.Websockets))
+			}
+			changes = appendOptionalBoolChange(changes, fmt.Sprintf("opencode-go[%d].disable-cooling", i), o.DisableCooling, n.DisableCooling)
+			changes = appendOptionalIntChange(changes, fmt.Sprintf("opencode-go[%d].request-retry", i), o.RequestRetry, n.RequestRetry)
+			if strings.TrimSpace(o.APIKey) != strings.TrimSpace(n.APIKey) {
+				changes = append(changes, fmt.Sprintf("opencode-go[%d].api-key: updated", i))
+			}
+			if !equalStringMap(o.Headers, n.Headers) {
+				changes = append(changes, fmt.Sprintf("opencode-go[%d].headers: updated", i))
+			}
+			oldModels := SummarizeCodexModels(o.Models)
+			newModels := SummarizeCodexModels(n.Models)
+			if oldModels.hash != newModels.hash {
+				changes = append(changes, fmt.Sprintf("opencode-go[%d].models: updated (%d -> %d entries)", i, oldModels.count, newModels.count))
+			}
+			oldExcluded := SummarizeExcludedModels(o.ExcludedModels)
+			newExcluded := SummarizeExcludedModels(n.ExcludedModels)
+			if oldExcluded.hash != newExcluded.hash {
+				changes = append(changes, fmt.Sprintf("opencode-go[%d].excluded-models: updated (%d -> %d entries)", i, oldExcluded.count, newExcluded.count))
+			}
+		}
+	}
+
+	// Poolside keys (do not print key material)
+	if len(oldCfg.PoolsideKey) != len(newCfg.PoolsideKey) {
+		changes = append(changes, fmt.Sprintf("poolside-api-key count: %d -> %d", len(oldCfg.PoolsideKey), len(newCfg.PoolsideKey)))
+	} else {
+		for i := range oldCfg.PoolsideKey {
+			o := oldCfg.PoolsideKey[i]
+			n := newCfg.PoolsideKey[i]
+			if strings.TrimSpace(o.BaseURL) != strings.TrimSpace(n.BaseURL) {
+				changes = append(changes, fmt.Sprintf("poolside[%d].base-url: %s -> %s", i, formatURL(o.BaseURL), formatURL(n.BaseURL)))
+			}
+			if strings.TrimSpace(o.ProxyURL) != strings.TrimSpace(n.ProxyURL) {
+				changes = append(changes, fmt.Sprintf("poolside[%d].proxy-url: %s -> %s", i, formatProxyURL(o.ProxyURL), formatProxyURL(n.ProxyURL)))
+			}
+			if strings.TrimSpace(o.Prefix) != strings.TrimSpace(n.Prefix) {
+				changes = append(changes, fmt.Sprintf("poolside[%d].prefix: %s -> %s", i, strings.TrimSpace(o.Prefix), strings.TrimSpace(n.Prefix)))
+			}
+			if o.Priority != n.Priority {
+				changes = append(changes, fmt.Sprintf("poolside[%d].priority: %d -> %d", i, o.Priority, n.Priority))
+			}
+			if o.Websockets != n.Websockets {
+				changes = append(changes, fmt.Sprintf("poolside[%d].websockets: %t -> %t", i, o.Websockets, n.Websockets))
+			}
+			changes = appendOptionalBoolChange(changes, fmt.Sprintf("poolside[%d].disable-cooling", i), o.DisableCooling, n.DisableCooling)
+			changes = appendOptionalIntChange(changes, fmt.Sprintf("poolside[%d].request-retry", i), o.RequestRetry, n.RequestRetry)
+			if strings.TrimSpace(o.APIKey) != strings.TrimSpace(n.APIKey) {
+				changes = append(changes, fmt.Sprintf("poolside[%d].api-key: updated", i))
+			}
+			if !equalStringMap(o.Headers, n.Headers) {
+				changes = append(changes, fmt.Sprintf("poolside[%d].headers: updated", i))
+			}
+			oldModels := SummarizeCodexModels(o.Models)
+			newModels := SummarizeCodexModels(n.Models)
+			if oldModels.hash != newModels.hash {
+				changes = append(changes, fmt.Sprintf("poolside[%d].models: updated (%d -> %d entries)", i, oldModels.count, newModels.count))
+			}
+			oldExcluded := SummarizeExcludedModels(o.ExcludedModels)
+			newExcluded := SummarizeExcludedModels(n.ExcludedModels)
+			if oldExcluded.hash != newExcluded.hash {
+				changes = append(changes, fmt.Sprintf("poolside[%d].excluded-models: updated (%d -> %d entries)", i, oldExcluded.count, newExcluded.count))
+			}
+		}
+	}
+
 	if entries, _ := DiffOAuthExcludedModelChanges(oldCfg.OAuthExcludedModels, newCfg.OAuthExcludedModels); len(entries) > 0 {
 		changes = append(changes, entries...)
 	}
 	if entries, _ := DiffOAuthModelAliasChanges(oldCfg.OAuthModelAlias, newCfg.OAuthModelAlias); len(entries) > 0 {
+		changes = append(changes, entries...)
+	}
+	if entries, _ := DiffOAuthRequestScopedErrorsChanges(oldCfg.OAuthRequestScopedErrors, newCfg.OAuthRequestScopedErrors); len(entries) > 0 {
 		changes = append(changes, entries...)
 	}
 
@@ -406,6 +558,7 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 			if strings.TrimSpace(o.Prefix) != strings.TrimSpace(n.Prefix) {
 				changes = append(changes, fmt.Sprintf("vertex[%d].prefix: %s -> %s", i, strings.TrimSpace(o.Prefix), strings.TrimSpace(n.Prefix)))
 			}
+			changes = appendOptionalBoolChange(changes, fmt.Sprintf("vertex[%d].disable-cooling", i), o.DisableCooling, n.DisableCooling)
 			if strings.TrimSpace(o.APIKey) != strings.TrimSpace(n.APIKey) {
 				changes = append(changes, fmt.Sprintf("vertex[%d].api-key: updated", i))
 			}
@@ -422,6 +575,7 @@ func BuildConfigChangeDetails(oldCfg, newCfg *config.Config) []string {
 			if !equalStringMap(o.Headers, n.Headers) {
 				changes = append(changes, fmt.Sprintf("vertex[%d].headers: updated", i))
 			}
+			changes = appendOptionalIntChange(changes, fmt.Sprintf("vertex[%d].request-retry", i), o.RequestRetry, n.RequestRetry)
 		}
 	}
 
@@ -457,6 +611,54 @@ func appendPayloadFilterRuleChanges(changes []string, section string, oldRules, 
 		return changes
 	}
 	return append(changes, fmt.Sprintf("payload.%s: updated (%d -> %d rules)", section, len(oldRules), len(newRules)))
+}
+
+func appendOptionalIntChange(changes []string, field string, oldVal, newVal *int) []string {
+	if optionalIntEqual(oldVal, newVal) {
+		return changes
+	}
+	return append(changes, fmt.Sprintf("%s: %s -> %s", field, formatOptionalInt(oldVal), formatOptionalInt(newVal)))
+}
+
+func appendOptionalBoolChange(changes []string, field string, oldVal, newVal *bool) []string {
+	if optionalBoolEqual(oldVal, newVal) {
+		return changes
+	}
+	return append(changes, fmt.Sprintf("%s: %s -> %s", field, formatOptionalBool(oldVal), formatOptionalBool(newVal)))
+}
+
+func optionalBoolEqual(a, b *bool) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return *a == *b
+}
+
+func formatOptionalBool(value *bool) string {
+	if value == nil {
+		return "inherit"
+	}
+	return fmt.Sprintf("%t", *value)
+}
+
+func optionalIntEqual(a, b *int) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return *a == *b
+}
+
+func formatOptionalInt(v *int) string {
+	if v == nil {
+		return "<unset>"
+	}
+	return strconv.Itoa(*v)
 }
 
 func equalStringMap(a, b map[string]string) bool {

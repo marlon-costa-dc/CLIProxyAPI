@@ -1,6 +1,7 @@
 package config
 
 import (
+	"sort"
 	"strings"
 
 	sdkpluginstore "github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginstore"
@@ -54,22 +55,44 @@ func (cfg *Config) SanitizeClaudeHeaderDefaults() {
 	cfg.ClaudeHeaderDefaults.OS = strings.TrimSpace(cfg.ClaudeHeaderDefaults.OS)
 	cfg.ClaudeHeaderDefaults.Arch = strings.TrimSpace(cfg.ClaudeHeaderDefaults.Arch)
 	cfg.ClaudeHeaderDefaults.Timeout = strings.TrimSpace(cfg.ClaudeHeaderDefaults.Timeout)
+	cfg.ClaudeHeaderDefaults.Timezone = strings.TrimSpace(cfg.ClaudeHeaderDefaults.Timezone)
 }
 
 // SanitizeOAuthModelAlias normalizes and deduplicates global OAuth model name aliases.
 // It trims whitespace, normalizes channel keys to lower-case, drops empty entries,
 // allows multiple aliases per upstream name, and ensures aliases are unique within each channel.
 func (cfg *Config) SanitizeOAuthModelAlias() {
-	if cfg == nil || len(cfg.OAuthModelAlias) == 0 {
+	if cfg == nil {
 		return
+	}
+	if cfg.OAuthModelAlias == nil {
+		cfg.OAuthModelAlias = make(map[string][]OAuthModelAlias)
+	}
+	hasChannel := func(channel string) bool {
+		for key := range cfg.OAuthModelAlias {
+			if strings.EqualFold(strings.TrimSpace(key), channel) {
+				return true
+			}
+		}
+		return false
+	}
+	if !hasChannel("kiro") {
+		cfg.OAuthModelAlias["kiro"] = defaultKiroAliases()
+	}
+	if !hasChannel("github-copilot") {
+		cfg.OAuthModelAlias["github-copilot"] = defaultGitHubCopilotAliases()
 	}
 	out := make(map[string][]OAuthModelAlias, len(cfg.OAuthModelAlias))
 	for rawChannel, aliases := range cfg.OAuthModelAlias {
 		channel := strings.ToLower(strings.TrimSpace(rawChannel))
-		if channel == "" || len(aliases) == 0 {
+		if channel == "" {
 			continue
 		}
-		seenAlias := make(map[string]struct{}, len(aliases))
+		if len(aliases) == 0 {
+			out[channel] = nil
+			continue
+		}
+		seenEntry := make(map[string]struct{}, len(aliases))
 		clean := make([]OAuthModelAlias, 0, len(aliases))
 		for _, entry := range aliases {
 			name := strings.TrimSpace(entry.Name)
@@ -80,11 +103,14 @@ func (cfg *Config) SanitizeOAuthModelAlias() {
 			if strings.EqualFold(name, alias) {
 				continue
 			}
-			aliasKey := strings.ToLower(alias)
-			if _, ok := seenAlias[aliasKey]; ok {
+			// Ordered pools allow the same alias to map to multiple upstream
+			// models for sequential failover; only fully identical entries
+			// (same name+alias pair) are duplicates.
+			entryKey := strings.ToLower(name) + "\x00" + strings.ToLower(alias)
+			if _, ok := seenEntry[entryKey]; ok {
 				continue
 			}
-			seenAlias[aliasKey] = struct{}{}
+			seenEntry[entryKey] = struct{}{}
 			clean = append(clean, OAuthModelAlias{
 				Name:         name,
 				Alias:        alias,
@@ -98,6 +124,54 @@ func (cfg *Config) SanitizeOAuthModelAlias() {
 		}
 	}
 	cfg.OAuthModelAlias = out
+}
+
+// SanitizeOAuthRequestScopedErrors normalizes and validates global OAuth request-scoped error rules.
+// It trims whitespace, normalizes channel keys to lower-case, validates status/action, and drops invalid rules.
+func (cfg *Config) SanitizeOAuthRequestScopedErrors() {
+	if cfg == nil || len(cfg.OAuthRequestScopedErrors) == 0 {
+		return
+	}
+	out := make(map[string][]RequestScopedErrorRule, len(cfg.OAuthRequestScopedErrors))
+	for rawChannel, rules := range cfg.OAuthRequestScopedErrors {
+		channel := strings.ToLower(strings.TrimSpace(rawChannel))
+		if channel == "" || len(rules) == 0 {
+			continue
+		}
+		clean := make([]RequestScopedErrorRule, 0, len(rules))
+		for _, r := range rules {
+			action := strings.ToLower(strings.TrimSpace(r.Action))
+			match := make([]string, 0, len(r.Match))
+			for _, m := range r.Match {
+				if tm := strings.TrimSpace(m); tm != "" {
+					match = append(match, tm)
+				}
+			}
+			matchRegexr := make([]string, 0, len(r.MatchRegexr))
+			for _, re := range r.MatchRegexr {
+				if tre := strings.TrimSpace(re); tre != "" {
+					matchRegexr = append(matchRegexr, tre)
+				}
+			}
+			if r.Status <= 0 || (len(match) == 0 && len(matchRegexr) == 0) || action == "" {
+				continue
+			}
+			clean = append(clean, RequestScopedErrorRule{
+				Status:      r.Status,
+				Match:       match,
+				MatchRegexr: matchRegexr,
+				Action:      action,
+			})
+		}
+		if len(clean) > 0 {
+			out[channel] = clean
+		}
+	}
+	if len(out) == 0 {
+		cfg.OAuthRequestScopedErrors = nil
+		return
+	}
+	cfg.OAuthRequestScopedErrors = out
 }
 
 // SanitizeOpenAICompatibility removes OpenAI-compatibility provider entries that are
@@ -132,6 +206,41 @@ func (cfg *Config) SanitizeCodexKeys() {
 	cfg.CodexKey = sanitizeCodexKeyEntries(cfg.CodexKey)
 }
 
+// SanitizeOpenCodeKeys normalizes OpenCode (Zen) key entries. Unlike Codex,
+// OpenCode entries are NOT removed when BaseURL is empty: the OpenCode executor
+// applies a gateway default base-url (https://opencode.ai/zen), so an empty
+// BaseURL is valid and must survive config load. Dropping it here was the root
+// cause of OpenCode models being absent from /v1/models.
+func (cfg *Config) SanitizeOpenCodeKeys() {
+	if cfg == nil {
+		return
+	}
+	cfg.OpenCodeKey = normalizeCodexKeyEntries(cfg.OpenCodeKey, false)
+}
+
+// SanitizeOpenCodeGoKeys normalizes OpenCode Go key entries. It does not drop
+// entries without a BaseURL because the OpenCode Go executor defaults the
+// base-url to https://opencode.ai/zen/go. See SanitizeOpenCodeKeys.
+func (cfg *Config) SanitizeOpenCodeGoKeys() {
+	if cfg == nil {
+		return
+	}
+	cfg.OpenCodeGoKey = normalizeCodexKeyEntries(cfg.OpenCodeGoKey, false)
+}
+
+// SanitizePoolsideKeys normalizes Poolside key entries. Entries are NOT removed
+// when BaseURL is empty: the Poolside executor supplies a gateway default
+// base-url (https://inference.poolside.ai, the bare host — ClaudeExecutor
+// appends /v1/messages), so an empty BaseURL is valid and must survive config
+// load — same rule as OpenCode. Dropping it here was the root cause of Poolside
+// keys silently disappearing from the proxy.
+func (cfg *Config) SanitizePoolsideKeys() {
+	if cfg == nil {
+		return
+	}
+	cfg.PoolsideKey = normalizeCodexKeyEntries(cfg.PoolsideKey, false)
+}
+
 // SanitizeXAIKeys removes xAI API key entries missing a BaseURL.
 // It applies the same normalization rules as codex-api-key.
 func (cfg *Config) SanitizeXAIKeys() {
@@ -139,9 +248,12 @@ func (cfg *Config) SanitizeXAIKeys() {
 		return
 	}
 	cfg.XAIKey = sanitizeCodexKeyEntries(cfg.XAIKey)
+	for i := range cfg.XAIKey {
+		cfg.XAIKey[i].AlphaSearch = false
+	}
 }
 
-func sanitizeCodexKeyEntries(entries []CodexKey) []CodexKey {
+func normalizeCodexKeyEntries(entries []CodexKey, dropEmptyBaseURL bool) []CodexKey {
 	if len(entries) == 0 {
 		return entries
 	}
@@ -152,12 +264,21 @@ func sanitizeCodexKeyEntries(entries []CodexKey) []CodexKey {
 		e.BaseURL = strings.TrimSpace(e.BaseURL)
 		e.Headers = NormalizeHeaders(e.Headers)
 		e.ExcludedModels = NormalizeExcludedModels(e.ExcludedModels)
-		if e.BaseURL == "" {
+		if dropEmptyBaseURL && e.BaseURL == "" {
+			// Skip providers with no base-url; treated as removed
 			continue
 		}
 		out = append(out, e)
 	}
 	return out
+}
+
+// sanitizeCodexKeyEntries drops Codex-compatible entries missing a BaseURL
+// (Codex, Poolside, XAI). Providers whose executor supplies a default BaseURL
+// (e.g. OpenCode/OpenCodeGo) must call normalizeCodexKeyEntries with
+// dropEmptyBaseURL=false instead.
+func sanitizeCodexKeyEntries(entries []CodexKey) []CodexKey {
+	return normalizeCodexKeyEntries(entries, true)
 }
 
 // SanitizeClaudeKeys normalizes headers for Claude credentials.
@@ -170,6 +291,14 @@ func (cfg *Config) SanitizeClaudeKeys() {
 		entry.Prefix = normalizeModelPrefix(entry.Prefix)
 		entry.Headers = NormalizeHeaders(entry.Headers)
 		entry.ExcludedModels = NormalizeExcludedModels(entry.ExcludedModels)
+		// Only a recognized value is rewritten. An unrecognized one is preserved as
+		// written so sanitizing a config file never destroys operator input; the
+		// request path falls back to the default profile and reports it once.
+		if normalized, ok := NormalizeClaudeFingerprintProfile(entry.FingerprintProfile); ok {
+			entry.FingerprintProfile = normalized
+		} else {
+			entry.FingerprintProfile = strings.TrimSpace(entry.FingerprintProfile)
+		}
 	}
 }
 
@@ -179,15 +308,15 @@ func sanitizeGeminiKeyEntries(entries []GeminiKey) []GeminiKey {
 	for i := range entries {
 		entry := entries[i]
 		entry.APIKey = strings.TrimSpace(entry.APIKey)
-		if entry.APIKey == "" {
+		entry.BaseURL = strings.TrimSpace(entry.BaseURL)
+		if entry.APIKey == "" && entry.BaseURL == "" {
 			continue
 		}
 		entry.Prefix = normalizeModelPrefix(entry.Prefix)
-		entry.BaseURL = strings.TrimSpace(entry.BaseURL)
 		entry.ProxyURL = strings.TrimSpace(entry.ProxyURL)
 		entry.Headers = NormalizeHeaders(entry.Headers)
 		entry.ExcludedModels = NormalizeExcludedModels(entry.ExcludedModels)
-		uniqueKey := entry.APIKey + "|" + entry.BaseURL
+		uniqueKey := formatGeminiKeyDedupID(entry)
 		if _, exists := seen[uniqueKey]; exists {
 			continue
 		}
@@ -197,8 +326,42 @@ func sanitizeGeminiKeyEntries(entries []GeminiKey) []GeminiKey {
 	return out
 }
 
+func formatGeminiKeyDedupID(entry GeminiKey) string {
+	var b strings.Builder
+	b.WriteString(entry.APIKey)
+	b.WriteByte(0)
+	b.WriteString(entry.BaseURL)
+	b.WriteByte(0)
+	b.WriteString(entry.ProxyURL)
+	b.WriteByte(0)
+	b.WriteString(entry.Prefix)
+	b.WriteByte(0)
+	b.WriteString(FormatSortedHeaders(entry.Headers))
+	return b.String()
+}
+
+// FormatSortedHeaders serializes headers deterministically with null byte separators.
+func FormatSortedHeaders(headers map[string]string) string {
+	if len(headers) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(headers))
+	for k := range headers {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	for _, k := range keys {
+		b.WriteString(k)
+		b.WriteByte(0)
+		b.WriteString(headers[k])
+		b.WriteByte(0)
+	}
+	return b.String()
+}
+
 // SanitizeGeminiKeys deduplicates and normalizes Gemini credentials.
-// It uses API key + base URL as the uniqueness key.
+// It uses API key, base URL, proxy URL, prefix, and custom headers as the uniqueness key.
 func (cfg *Config) SanitizeGeminiKeys() {
 	if cfg == nil {
 		return
@@ -206,8 +369,27 @@ func (cfg *Config) SanitizeGeminiKeys() {
 	cfg.GeminiKey = sanitizeGeminiKeyEntries(cfg.GeminiKey)
 }
 
+// SanitizeKiroKeys normalizes Kiro credential fields.
+func (cfg *Config) SanitizeKiroKeys() {
+	if cfg == nil {
+		return
+	}
+	for i := range cfg.KiroKey {
+		entry := &cfg.KiroKey[i]
+		entry.TokenFile = strings.TrimSpace(entry.TokenFile)
+		entry.AccessToken = strings.TrimSpace(entry.AccessToken)
+		entry.RefreshToken = strings.TrimSpace(entry.RefreshToken)
+		entry.ProfileArn = strings.TrimSpace(entry.ProfileArn)
+		entry.Region = strings.TrimSpace(entry.Region)
+		entry.StartURL = strings.TrimSpace(entry.StartURL)
+		entry.ProxyURL = strings.TrimSpace(entry.ProxyURL)
+		entry.AgentTaskType = strings.TrimSpace(entry.AgentTaskType)
+		entry.PreferredEndpoint = strings.TrimSpace(entry.PreferredEndpoint)
+	}
+}
+
 // SanitizeInteractionsKeys deduplicates and normalizes native Interactions credentials.
-// It uses API key + base URL as the uniqueness key.
+// It uses API key, base URL, proxy URL, prefix, and custom headers as the uniqueness key.
 func (cfg *Config) SanitizeInteractionsKeys() {
 	if cfg == nil {
 		return

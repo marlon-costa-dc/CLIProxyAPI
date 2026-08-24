@@ -1,17 +1,21 @@
 package handlers
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/clienterror"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 )
 
@@ -207,5 +211,135 @@ func TestEnrichAuthSelectionError_IgnoresOtherErrors(t *testing.T) {
 	out := enrichAuthSelectionError(in, []string{"claude"}, "claude-sonnet-4-6")
 	if out != in {
 		t.Fatalf("expected original error to be returned unchanged")
+	}
+}
+
+func TestExecutionErrorMessageMapsContextStatuses(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want int
+	}{
+		{name: "canceled", err: context.Canceled, want: clienterror.StatusClientClosedRequest},
+		{name: "deadline", err: context.DeadlineExceeded, want: http.StatusGatewayTimeout},
+		{
+			name: "url error wraps canceled",
+			err:  &url.Error{Op: "Post", URL: "https://example.com", Err: context.Canceled},
+			want: clienterror.StatusClientClosedRequest,
+		},
+		{name: "plain error defaults to 500", err: errors.New("boom"), want: http.StatusInternalServerError},
+		{
+			name: "explicit status wins",
+			err:  &coreauth.Error{Code: "rate_limited", Message: "slow down", HTTPStatus: http.StatusTooManyRequests},
+			want: http.StatusTooManyRequests,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			msg := executionErrorMessage(tc.err)
+			if msg == nil {
+				t.Fatalf("executionErrorMessage() returned nil")
+			}
+			if msg.StatusCode != tc.want {
+				t.Fatalf("StatusCode = %d, want %d", msg.StatusCode, tc.want)
+			}
+			if msg.Error != tc.err {
+				t.Fatalf("Error = %v, want original %v", msg.Error, tc.err)
+			}
+		})
+	}
+}
+
+func TestExecutionErrorMessageMapsTerminatedTrustedProvenance(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		trusted bool
+	}{
+		{name: "trusted local termination", trusted: true},
+		{name: "untrusted upstream termination", trusted: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			terminated := &coreexecutor.RequestTerminatedError{
+				HTTPStatus: http.StatusTeapot,
+				Header:     http.Header{"X-Downstream": []string{"preserved"}},
+				Body:       []byte(`{"custom":"body"}`),
+				Trusted:    tc.trusted,
+			}
+			msg := executionErrorMessage(terminated)
+			if msg == nil {
+				t.Fatal("executionErrorMessage() returned nil")
+			}
+			if !msg.DirectResponse {
+				t.Fatal("DirectResponse must remain true for every RequestTerminatedError")
+			}
+			if msg.TrustedDirectResponse != tc.trusted {
+				t.Fatalf("TrustedDirectResponse = %t, want %t", msg.TrustedDirectResponse, tc.trusted)
+			}
+			if msg.Body == nil || string(msg.Body) != `{"custom":"body"}` {
+				t.Fatalf("Body = %q, want preserved body", msg.Body)
+			}
+			if got := msg.Headers.Get("X-Downstream"); got != "preserved" {
+				t.Fatalf("Headers = %v, want preserved headers", msg.Headers)
+			}
+		})
+	}
+}
+
+func TestDirectTerminationErrorMarksTrustedLocalResponse(t *testing.T) {
+	msg := directTerminationError(http.StatusTeapot, http.Header{"X-Local": []string{"yes"}}, []byte(`{"ok":true}`))
+	if msg == nil {
+		t.Fatal("directTerminationError() returned nil")
+	}
+	if !msg.DirectResponse {
+		t.Fatal("local direct termination must set DirectResponse=true")
+	}
+	if !msg.TrustedDirectResponse {
+		t.Fatal("local direct termination must set TrustedDirectResponse=true")
+	}
+	if msg.StatusCode != http.StatusTeapot {
+		t.Fatalf("StatusCode = %d, want %d", msg.StatusCode, http.StatusTeapot)
+	}
+}
+
+func TestNonTerminatedErrorKeepsZeroValueTrustedDirectResponse(t *testing.T) {
+	msg := executionErrorMessage(errors.New("upstream boom"))
+	if msg == nil {
+		t.Fatal("executionErrorMessage() returned nil")
+	}
+	if msg.DirectResponse {
+		t.Fatal("plain upstream error must not be a DirectResponse")
+	}
+	if msg.TrustedDirectResponse {
+		t.Fatal("plain upstream error must have TrustedDirectResponse=false")
+	}
+}
+
+func TestStatusFromErrorMapsContextStatuses(t *testing.T) {
+	if got := statusFromError(context.Canceled); got != clienterror.StatusClientClosedRequest {
+		t.Fatalf("statusFromError(canceled) = %d, want %d", got, clienterror.StatusClientClosedRequest)
+	}
+	if got := statusFromError(context.DeadlineExceeded); got != http.StatusGatewayTimeout {
+		t.Fatalf("statusFromError(deadline) = %d, want %d", got, http.StatusGatewayTimeout)
+	}
+	if got := statusFromError(&url.Error{Op: "Post", URL: "https://example.com", Err: context.Canceled}); got != clienterror.StatusClientClosedRequest {
+		t.Fatalf("statusFromError(url canceled) = %d, want %d", got, clienterror.StatusClientClosedRequest)
+	}
+	if got := statusFromError(errors.New("boom")); got != 0 {
+		t.Fatalf("statusFromError(plain) = %d, want 0", got)
+	}
+}
+
+func TestWriteErrorResponse_ContextCanceledUses499(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	handler := NewBaseAPIHandlers(nil, nil)
+	handler.WriteErrorResponse(c, executionErrorMessage(context.Canceled))
+
+	if recorder.Code != clienterror.StatusClientClosedRequest {
+		t.Fatalf("status = %d, want %d", recorder.Code, clienterror.StatusClientClosedRequest)
 	}
 }
