@@ -164,7 +164,7 @@ func (m *Manager) executeWithOrderedFailover(ctx context.Context, providers []st
 		candidateReq.Model = candidate.UpstreamModel
 		candidateOpts := withOrderedCandidateMetadata(opts, idx, candidate)
 		tried := make(map[string]struct{})
-		resp, err := m.executeMixedOnce(ctx, providers, candidateReq, candidateOpts, maxRetryCredentials, tracker, tried)
+		resp, err := m.executeMixedOnce(ctx, []string{candidate.Channel}, candidateReq, candidateOpts, maxRetryCredentials, tracker, tried)
 		if err == nil {
 			return resp, nil
 		}
@@ -206,7 +206,7 @@ func (m *Manager) executeCountWithOrderedFailover(ctx context.Context, providers
 		candidateReq.Model = candidate.UpstreamModel
 		candidateOpts := withOrderedCandidateMetadata(opts, idx, candidate)
 		tried := make(map[string]struct{})
-		resp, err := m.executeCountMixedOnce(ctx, providers, candidateReq, candidateOpts, maxRetryCredentials, tracker, tried)
+		resp, err := m.executeCountMixedOnce(ctx, []string{candidate.Channel}, candidateReq, candidateOpts, maxRetryCredentials, tracker, tried)
 		if err == nil {
 			return resp, nil
 		}
@@ -248,7 +248,7 @@ func (m *Manager) executeStreamWithOrderedFailover(ctx context.Context, provider
 		candidateReq.Model = candidate.UpstreamModel
 		candidateOpts := withOrderedCandidateMetadata(opts, idx, candidate)
 		tried := make(map[string]struct{})
-		streamResult, err := m.executeStreamMixedOnce(ctx, providers, candidateReq, candidateOpts, maxRetryCredentials, tracker, tried)
+		streamResult, err := m.executeStreamMixedOnce(ctx, []string{candidate.Channel}, candidateReq, candidateOpts, maxRetryCredentials, tracker, tried)
 		if err == nil {
 			// Bytes are flowing from this candidate. No further fallback is
 			// permitted after this point — the client already received bytes.
@@ -303,6 +303,9 @@ func (m *Manager) orderedCandidateChainForRequest(providers []string, req clipro
 	requestedModel := strings.TrimSpace(authSelectionModelFromOptions(opts, req.Model))
 	if requestedModel == "" {
 		return nil
+	}
+	if chain := m.resolveGlobalOrderedCandidates(requestedModel); len(chain) > 0 {
+		return chain
 	}
 	// The chain is channel-scoped. Use the first provider's channel mapping —
 	// cross-channel ordered pools are not part of ai-hub-ollw's contract.

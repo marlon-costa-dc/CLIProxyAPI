@@ -115,6 +115,7 @@ func (cfg *Config) SanitizeOAuthModelAlias() {
 				Name:         name,
 				Alias:        alias,
 				Fork:         entry.Fork,
+				Order:        entry.Order,
 				DisplayName:  strings.TrimSpace(entry.DisplayName),
 				ForceMapping: entry.ForceMapping,
 			})

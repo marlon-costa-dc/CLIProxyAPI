@@ -315,6 +315,9 @@ type OAuthModelAlias struct {
 	Name  string `yaml:"name" json:"name"`
 	Alias string `yaml:"alias" json:"alias"`
 	Fork  bool   `yaml:"fork,omitempty" json:"fork,omitempty"`
+	// Order declares this entry's position in a cross-channel alias pool.
+	// Nil keeps the legacy channel-scoped alias behavior.
+	Order *int `yaml:"order,omitempty" json:"order,omitempty"`
 
 	// DisplayName is the optional human-readable name shown in model catalogs.
 	DisplayName string `yaml:"display-name,omitempty" json:"display-name,omitempty"`
@@ -807,6 +810,13 @@ type OpenAICompatibilityModel struct {
 
 	// Pricing is source-attributed USD cost per million tokens.
 	Pricing *registry.ModelPricing `yaml:"pricing,omitempty" json:"pricing,omitempty"`
+}
+
+// ModelPricingEntry binds canonical pricing metadata to one exact channel/model route.
+type ModelPricingEntry struct {
+	Channel               string `yaml:"channel" json:"channel"`
+	Model                 string `yaml:"model" json:"model"`
+	registry.ModelPricing `yaml:",inline" json:",inline"`
 }
 
 func (m OpenAICompatibilityModel) GetName() string { return m.Name }

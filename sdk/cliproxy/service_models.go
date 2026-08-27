@@ -1098,6 +1098,7 @@ func applyOAuthModelAliasEntries(aliases []config.OAuthModelAlias, models []*Mod
 			seen[aliasKey] = struct{}{}
 			clone := *model
 			clone.ID = mappedID
+			clone.CanonicalModelID = id
 			if entry.displayName != "" {
 				clone.DisplayName = entry.displayName
 			}

@@ -94,6 +94,33 @@ func (m *Manager) resolveOrderedCandidates(channel, requestedModel string) []Ord
 	return nil
 }
 
+func (m *Manager) resolveGlobalOrderedCandidates(requestedModel string) []OrderedCandidate {
+	if m == nil {
+		return nil
+	}
+	rawTable := m.oauthModelAlias.Load()
+	table, _ := rawTable.(*oauthModelAliasTable)
+	if table == nil || table.globalOrdered == nil {
+		return nil
+	}
+	requestResult := thinking.ParseSuffix(strings.TrimSpace(requestedModel))
+	entries := table.globalOrdered[strings.ToLower(requestResult.ModelName)]
+	out := make([]OrderedCandidate, 0, len(entries))
+	for _, entry := range entries {
+		upstream := resolveCandidateUpstreamModel(entry.upstreamModel, requestResult)
+		if upstream == "" {
+			continue
+		}
+		out = append(out, OrderedCandidate{
+			Channel:       entry.channel,
+			UpstreamModel: upstream,
+			ConfigAlias:   entry.configAlias,
+			ForceMapping:  entry.forceMapping,
+		})
+	}
+	return out
+}
+
 func resolveCandidateUpstreamModel(upstream string, requestResult thinking.SuffixResult) string {
 	upstream = strings.TrimSpace(upstream)
 	if upstream == "" {

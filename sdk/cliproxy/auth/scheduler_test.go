@@ -1683,8 +1683,8 @@ func TestManager_SchedulerSharesThinkingSuffixCooldownAndRegistryState(t *testin
 	if len(auth.ModelStates) != 1 || auth.ModelStates[baseModel] == nil {
 		t.Fatalf("ModelStates = %+v, want only canonical key %q", auth.ModelStates, baseModel)
 	}
-	if count := reg.GetModelCount(baseModel); count != 0 {
-		t.Fatalf("registry model count during cooldown = %d, want 0", count)
+	if count := reg.GetModelCount(baseModel); count != 1 {
+		t.Fatalf("registry selectable route count during cooldown = %d, want 1", count)
 	}
 	for _, model := range []string{baseModel, baseModel + "(medium)", baseModel + "(low)"} {
 		got, errPick := manager.scheduler.pickSingle(context.Background(), "gemini", model, cliproxyexecutor.Options{}, nil)
