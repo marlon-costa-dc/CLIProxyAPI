@@ -429,6 +429,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 		if executionModel == "" {
 			execReq = attachResolvedAPIKeyModelInfo(routing, execReq, auth, routeModel, execModel)
 		}
+		ctx = WithResolvedModelPricing(ctx, execReq)
 		if errCtx := ctx.Err(); errCtx != nil {
 			return nil, errCtx
 		}

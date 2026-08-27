@@ -804,6 +804,9 @@ type OpenAICompatibilityModel struct {
 	// Thinking configures the thinking/reasoning capability for this model.
 	// If nil, the model defaults to level-based reasoning with levels ["low", "medium", "high"].
 	Thinking *registry.ThinkingSupport `yaml:"thinking,omitempty" json:"thinking,omitempty"`
+
+	// Pricing is source-attributed USD cost per million tokens.
+	Pricing *registry.ModelPricing `yaml:"pricing,omitempty" json:"pricing,omitempty"`
 }
 
 func (m OpenAICompatibilityModel) GetName() string { return m.Name }
@@ -816,3 +819,5 @@ func (m OpenAICompatibilityModel) GetForceMapping() bool    { return m.ForceMapp
 func (m OpenAICompatibilityModel) GetIsCompat() bool        { return m.IsCompat }
 
 func (m OpenAICompatibilityModel) GetThinking() *registry.ThinkingSupport { return m.Thinking }
+
+func (m OpenAICompatibilityModel) GetPricing() *registry.ModelPricing { return m.Pricing }

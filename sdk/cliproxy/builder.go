@@ -9,6 +9,7 @@ import (
 
 	configaccess "github.com/router-for-me/CLIProxyAPI/v7/internal/access/config_access"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api"
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
@@ -194,8 +195,12 @@ func (b *Builder) Build() (*Service, error) {
 	if b.configPath == "" {
 		return nil, fmt.Errorf("cliproxy: configuration path is required")
 	}
-	if errValidate := b.cfg.ValidateCredentialWeights(); errValidate != nil {
-		return nil, fmt.Errorf("cliproxy: validate credential weights: %w", errValidate)
+	if errValidate := b.cfg.ValidateRuntimeConfig(); errValidate != nil {
+		return nil, fmt.Errorf(
+			"cliproxy: validate %s: %w",
+			internalconfig.RuntimeConfigValidationDomain(errValidate),
+			errValidate,
+		)
 	}
 	b.cfg.NormalizePluginsConfig()
 	if errResolvePluginsDir := b.cfg.ResolvePluginsDir(); errResolvePluginsDir != nil && b.cfg.Plugins.Enabled {

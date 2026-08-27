@@ -14,6 +14,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/clienterror"
 	internallogging "github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
@@ -44,6 +45,7 @@ type UsageReporter struct {
 	once            sync.Once
 	authMu          sync.RWMutex
 	accessTokenHash string
+	pricing         *registry.ModelPricing
 }
 
 type usageExecutor interface {
@@ -85,6 +87,9 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
 		reasoning:   usage.ReasoningEffortFromContext(ctx),
 		serviceTier: usage.ServiceTierFromContext(ctx),
 		generate:    usage.GenerateFromContext(ctx),
+	}
+	if pricing, ok := cliproxyauth.ResolvedModelPricingFromContext(ctx); ok {
+		reporter.pricing = pricing
 	}
 	if auth != nil {
 		reporter.authID = auth.ID
@@ -210,6 +215,7 @@ func (r *UsageReporter) buildAdditionalModelRecord(model string, detail usage.De
 		return usage.Record{}, false
 	}
 	detail = normalizeUsageDetailTotal(detail, r.provider, r.executorType)
+	detail = r.applyCost(detail)
 	if !hasNonZeroTokenUsage(detail) {
 		return usage.Record{}, false
 	}
@@ -238,6 +244,7 @@ func (r *UsageReporter) publishWithOutcome(ctx context.Context, detail usage.Det
 		return
 	}
 	detail = normalizeUsageDetailTotal(detail, r.provider, r.executorType)
+	detail = r.applyCost(detail)
 	r.once.Do(func() {
 		r.publishRecord(ctx, r.buildRecord(detail, failed, fail))
 	})
@@ -245,6 +252,22 @@ func (r *UsageReporter) publishWithOutcome(ctx context.Context, detail usage.Det
 
 func normalizeUsageDetailTotal(detail usage.Detail, provider, executorType string) usage.Detail {
 	return usage.EnsureTokenBreakdownForProvider(detail, provider, executorType)
+}
+
+func (r *UsageReporter) applyCost(detail usage.Detail) usage.Detail {
+	if r == nil || r.pricing == nil || r.pricing.InputPerMillion == nil || r.pricing.OutputPerMillion == nil {
+		detail.Cost = usage.CostBreakdown{Quality: usage.CostQualityUnavailable}
+		return detail
+	}
+	detail.Cost = usage.CalculateCost(
+		detail.TokenBreakdown,
+		*r.pricing.InputPerMillion,
+		*r.pricing.OutputPerMillion,
+		r.pricing.CacheReadPerMillion,
+		r.pricing.Source,
+		r.pricing.SourceDigest,
+	)
+	return detail
 }
 
 func hasNonZeroTokenUsage(detail usage.Detail) bool {

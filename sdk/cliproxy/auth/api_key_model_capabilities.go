@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"maps"
 	"strings"
 
@@ -12,6 +13,8 @@ import (
 )
 
 const resolvedAPIKeyModelInfoMetadataKey = "cliproxy.resolved_api_key_model_info"
+
+type resolvedModelPricingContextKey struct{}
 
 type apiKeyModelCapabilityRoute struct {
 	upstreamModel string
@@ -55,6 +58,24 @@ func ResolvedAPIKeyModelInfo(req cliproxyexecutor.Request) (*registry.ModelInfo,
 		return nil, false
 	}
 	return modelInfo, true
+}
+
+// WithResolvedModelPricing binds the exact selected model's pricing to an execution attempt.
+func WithResolvedModelPricing(ctx context.Context, req cliproxyexecutor.Request) context.Context {
+	modelInfo, ok := ResolvedAPIKeyModelInfo(req)
+	if !ok {
+		return context.WithValue(ctx, resolvedModelPricingContextKey{}, (*registry.ModelPricing)(nil))
+	}
+	return context.WithValue(ctx, resolvedModelPricingContextKey{}, modelInfo.Pricing)
+}
+
+// ResolvedModelPricingFromContext returns the selected model pricing snapshot.
+func ResolvedModelPricingFromContext(ctx context.Context) (*registry.ModelPricing, bool) {
+	if ctx == nil {
+		return nil, false
+	}
+	pricing, ok := ctx.Value(resolvedModelPricingContextKey{}).(*registry.ModelPricing)
+	return pricing, ok && pricing != nil
 }
 
 // CodexAPIKeyModelIsCompat reports whether the selected codex-api-key model has
@@ -134,14 +155,14 @@ func lookupAPIKeyModelCapability(routing *apiKeyModelRoutingSnapshot, auth *Auth
 		}
 	}
 	for _, route := range routes {
-		if configuredUpstreamFallbackMatches(route.upstreamModel, selected) {
+		if sameModelIdentityIgnoringThinkingAnnotation(route.upstreamModel, selected) {
 			return route.modelInfo, route.modelInfo != nil
 		}
 	}
 	return nil, false
 }
 
-func configuredUpstreamFallbackMatches(configured, selected string) bool {
+func sameModelIdentityIgnoringThinkingAnnotation(configured, selected string) bool {
 	configuredResult := thinking.ParseSuffix(strings.TrimSpace(configured))
 	if configuredResult.HasSuffix {
 		return false

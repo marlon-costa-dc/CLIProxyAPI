@@ -40,7 +40,7 @@ func (s *ConfigSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth,
 	if ctx == nil || ctx.Config == nil {
 		return out, nil
 	}
-	if errValidate := ctx.Config.ValidateCredentialWeights(); errValidate != nil {
+	if errValidate := ctx.Config.ValidateRuntimeConfig(); errValidate != nil {
 		return nil, fmt.Errorf("synthesize config API key auths: %w", errValidate)
 	}
 

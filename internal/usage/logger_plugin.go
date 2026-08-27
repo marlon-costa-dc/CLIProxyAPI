@@ -103,12 +103,13 @@ type modelStats struct {
 
 // RequestDetail stores the timestamp, latency, and token usage for a single request.
 type RequestDetail struct {
-	Timestamp time.Time  `json:"timestamp"`
-	LatencyMs int64      `json:"latency_ms"`
-	Source    string     `json:"source"`
-	AuthIndex string     `json:"auth_index"`
-	Tokens    TokenStats `json:"tokens"`
-	Failed    bool       `json:"failed"`
+	Timestamp time.Time               `json:"timestamp"`
+	LatencyMs int64                   `json:"latency_ms"`
+	Source    string                  `json:"source"`
+	AuthIndex string                  `json:"auth_index"`
+	Tokens    TokenStats              `json:"tokens"`
+	Cost      coreusage.CostBreakdown `json:"cost"`
+	Failed    bool                    `json:"failed"`
 }
 
 // TokenStats captures the token usage breakdown for a request.
@@ -217,6 +218,7 @@ func (s *RequestStatistics) Record(ctx context.Context, record coreusage.Record)
 		Source:    sanitizeUsageDetailSource(record.Source),
 		AuthIndex: sanitizeUsageDetailAuthIndex(record.AuthIndex),
 		Tokens:    detail,
+		Cost:      record.Detail.Cost,
 		Failed:    failed,
 	})
 
