@@ -83,6 +83,22 @@ type ModelInfo struct {
 	// IsCompat enables compatibility handling for this configured API-key model.
 	// It is internal metadata and is not exposed in model listings.
 	IsCompat bool `json:"-"`
+
+	// Pricing is the source-attributed USD cost per million tokens.
+	Pricing *ModelPricing `json:"pricing,omitempty"`
+}
+
+// ModelPricing preserves the external pricing record used to configure a model.
+// Nil component pointers mean the source did not publish that price; zero is a
+// real, explicitly free price.
+type ModelPricing struct {
+	InputPerMillion     *float64  `json:"input_per_million" yaml:"input-per-million"`
+	OutputPerMillion    *float64  `json:"output_per_million" yaml:"output-per-million"`
+	CacheReadPerMillion *float64  `json:"cache_read_per_million,omitempty" yaml:"cache-read-per-million,omitempty"`
+	Currency            string    `json:"currency" yaml:"currency"`
+	Source              string    `json:"source" yaml:"source"`
+	SourceDigest        string    `json:"source_digest" yaml:"source-digest"`
+	FetchedAt           time.Time `json:"fetched_at" yaml:"fetched-at"`
 }
 
 // ModelConfig holds optional runtime overrides for a model definition.
@@ -604,6 +620,22 @@ func cloneModelInfo(model *ModelInfo) *ModelInfo {
 			copyThinking.Levels = append([]string(nil), model.Thinking.Levels...)
 		}
 		copyModel.Thinking = &copyThinking
+	}
+	if model.Pricing != nil {
+		copyPricing := *model.Pricing
+		if model.Pricing.InputPerMillion != nil {
+			value := *model.Pricing.InputPerMillion
+			copyPricing.InputPerMillion = &value
+		}
+		if model.Pricing.OutputPerMillion != nil {
+			value := *model.Pricing.OutputPerMillion
+			copyPricing.OutputPerMillion = &value
+		}
+		if model.Pricing.CacheReadPerMillion != nil {
+			value := *model.Pricing.CacheReadPerMillion
+			copyPricing.CacheReadPerMillion = &value
+		}
+		copyModel.Pricing = &copyPricing
 	}
 	if model.Config != nil {
 		copyConfig := *model.Config
@@ -1288,6 +1320,9 @@ func (r *ModelRegistry) convertModelToMap(model *ModelInfo, handlerType string) 
 		if len(model.SupportedEndpoints) > 0 {
 			result["supported_endpoints"] = model.SupportedEndpoints
 		}
+		if pricing := modelPricingMap(model.Pricing); pricing != nil {
+			result["pricing"] = pricing
+		}
 		return result
 
 	case "claude", "kiro", "antigravity":
@@ -1391,6 +1426,28 @@ func (r *ModelRegistry) convertModelToMap(model *ModelInfo, handlerType string) 
 		}
 		return result
 	}
+}
+
+func modelPricingMap(pricing *ModelPricing) map[string]any {
+	if pricing == nil {
+		return nil
+	}
+	result := map[string]any{
+		"currency":      pricing.Currency,
+		"source":        pricing.Source,
+		"source_digest": pricing.SourceDigest,
+		"fetched_at":    pricing.FetchedAt.UTC().Format(time.RFC3339),
+	}
+	if pricing.InputPerMillion != nil {
+		result["input_per_million"] = *pricing.InputPerMillion
+	}
+	if pricing.OutputPerMillion != nil {
+		result["output_per_million"] = *pricing.OutputPerMillion
+	}
+	if pricing.CacheReadPerMillion != nil {
+		result["cache_read_per_million"] = *pricing.CacheReadPerMillion
+	}
+	return result
 }
 
 // CleanupExpiredQuotas removes expired quota tracking entries

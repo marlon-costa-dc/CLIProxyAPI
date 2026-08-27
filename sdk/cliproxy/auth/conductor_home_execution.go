@@ -111,6 +111,7 @@ func (m *Manager) executeHome(ctx context.Context, providers []string, req clipr
 			if !restoreExecutionModel {
 				execReq = attachResolvedAPIKeyModelInfo(routing, execReq, preparedAuth, routeModel, upstreamModel)
 			}
+			execCtx = WithResolvedModelPricing(execCtx, execReq)
 			if errCtx := execCtx.Err(); errCtx != nil {
 				releaseAttempt()
 				selection.End("attempt_canceled")
