@@ -412,8 +412,8 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 		_, didRefreshOnUnauthorized = unauthorizedRefreshTried[auth.ID]
 	}
 	for idx, execModel := range execModels {
+		ctx = newUpstreamAttemptContext(ctx)
 		ttftTimeout := m.streamFirstChunkTimeout(opts)
-
 		resultModel := m.stateModelForExecution(auth, routeModel, execModel, pooled)
 		execReq := req
 		execReq.Model = execModel
@@ -459,7 +459,8 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 				scope.stop()
 				alreadyTried := didRefreshOnUnauthorized
 				willAttemptHomeRefresh := ephemeralResult && !alreadyTried && auth != nil && auth.AuthKind() == AuthKindOAuth && isUnauthorizedError(errStream)
-				refreshed, okRefresh, errRefresh := m.tryRefreshExecutionAuthAfterUnauthorized(ctx, executor, auth, errStream, alreadyTried, ephemeralResult)
+				refreshCtx := newUpstreamAttemptContext(ctx)
+				refreshed, okRefresh, errRefresh := m.tryRefreshExecutionAuthAfterUnauthorized(refreshCtx, executor, auth, errStream, alreadyTried, ephemeralResult)
 				if willAttemptHomeRefresh {
 					didRefreshOnUnauthorized = true
 					if unauthorizedRefreshTried != nil {
@@ -478,6 +479,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 					publishSelectedAuthMetadata(execOpts.Metadata, auth)
 					didRefreshOnUnauthorized = true
 					// Fresh TTFT budget and attempt context for the retry.
+					ctx = newUpstreamAttemptContext(ctx)
 					scope.release()
 					scope = newTTFTScope(ctx, ttftTimeout)
 					attemptCtx = scope.ctx
@@ -563,7 +565,8 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 				scope.stop()
 				alreadyTried := didRefreshOnUnauthorized
 				willAttemptHomeRefresh := ephemeralResult && !alreadyTried && auth != nil && auth.AuthKind() == AuthKindOAuth && isUnauthorizedError(bootstrapErr)
-				refreshed, okRefresh, errRefresh := m.tryRefreshExecutionAuthAfterUnauthorized(ctx, executor, auth, bootstrapErr, alreadyTried, ephemeralResult)
+				refreshCtx := newUpstreamAttemptContext(ctx)
+				refreshed, okRefresh, errRefresh := m.tryRefreshExecutionAuthAfterUnauthorized(refreshCtx, executor, auth, bootstrapErr, alreadyTried, ephemeralResult)
 				if willAttemptHomeRefresh {
 					didRefreshOnUnauthorized = true
 					if unauthorizedRefreshTried != nil {
@@ -582,6 +585,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 					publishSelectedAuthMetadata(execOpts.Metadata, auth)
 					didRefreshOnUnauthorized = true
 					// Fresh TTFT budget and attempt context for the retry.
+					ctx = newUpstreamAttemptContext(ctx)
 					scope.release()
 					scope = newTTFTScope(ctx, ttftTimeout)
 					attemptCtx = scope.ctx

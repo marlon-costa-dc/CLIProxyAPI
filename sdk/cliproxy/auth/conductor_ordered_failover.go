@@ -150,21 +150,20 @@ func (m *Manager) executeWithOrderedFailover(ctx context.Context, providers []st
 	if excludedErr := m.routeGuardExcludedModel(providers, req, opts); excludedErr != nil {
 		return cliproxyexecutor.Response{}, excludedErr
 	}
-	_, maxRetryCredentials, _ := m.retrySettings()
+	defaultRequestRetry, maxRetryCredentials, _ := m.retrySettings()
 	chain := m.orderedCandidateChainForRequest(providers, req, opts)
 	tracker := newRouteAttemptTracker()
 	if len(chain) <= 1 {
 		// No ordered pool: preserve legacy behavior exactly.
-		tried := make(map[string]struct{})
-		return m.executeMixedOnce(ctx, providers, req, opts, maxRetryCredentials, tracker, tried)
+		return m.executeMixedOnce(ctx, providers, req, opts, maxRetryCredentials, 0, defaultRequestRetry, newRouteExecutionState(opts, tracker))
 	}
 	var lastErr error
 	for idx, candidate := range chain {
 		candidateReq := req
 		candidateReq.Model = candidate.UpstreamModel
 		candidateOpts := withOrderedCandidateMetadata(opts, idx, candidate)
-		tried := make(map[string]struct{})
-		resp, err := m.executeMixedOnce(ctx, []string{candidate.Channel}, candidateReq, candidateOpts, maxRetryCredentials, tracker, tried)
+		state := newRouteExecutionState(candidateOpts, tracker)
+		resp, err := m.executeMixedOnce(ctx, []string{candidate.Channel}, candidateReq, candidateOpts, maxRetryCredentials, 0, defaultRequestRetry, state)
 		if err == nil {
 			return resp, nil
 		}
@@ -193,20 +192,19 @@ func (m *Manager) executeCountWithOrderedFailover(ctx context.Context, providers
 	if excludedErr := m.routeGuardExcludedModel(providers, req, opts); excludedErr != nil {
 		return cliproxyexecutor.Response{}, excludedErr
 	}
-	_, maxRetryCredentials, _ := m.retrySettings()
+	defaultRequestRetry, maxRetryCredentials, _ := m.retrySettings()
 	chain := m.orderedCandidateChainForRequest(providers, req, opts)
 	tracker := newRouteAttemptTracker()
 	if len(chain) <= 1 {
-		tried := make(map[string]struct{})
-		return m.executeCountMixedOnce(ctx, providers, req, opts, maxRetryCredentials, tracker, tried)
+		return m.executeCountMixedOnce(ctx, providers, req, opts, maxRetryCredentials, 0, defaultRequestRetry, newRouteExecutionState(opts, tracker))
 	}
 	var lastErr error
 	for idx, candidate := range chain {
 		candidateReq := req
 		candidateReq.Model = candidate.UpstreamModel
 		candidateOpts := withOrderedCandidateMetadata(opts, idx, candidate)
-		tried := make(map[string]struct{})
-		resp, err := m.executeCountMixedOnce(ctx, []string{candidate.Channel}, candidateReq, candidateOpts, maxRetryCredentials, tracker, tried)
+		state := newRouteExecutionState(candidateOpts, tracker)
+		resp, err := m.executeCountMixedOnce(ctx, []string{candidate.Channel}, candidateReq, candidateOpts, maxRetryCredentials, 0, defaultRequestRetry, state)
 		if err == nil {
 			return resp, nil
 		}
@@ -235,20 +233,20 @@ func (m *Manager) executeStreamWithOrderedFailover(ctx context.Context, provider
 	if excludedErr := m.routeGuardExcludedModel(providers, req, opts); excludedErr != nil {
 		return nil, excludedErr
 	}
-	_, maxRetryCredentials, _ := m.retrySettings()
+	defaultRequestRetry, maxRetryCredentials, _ := m.retrySettings()
 	chain := m.orderedCandidateChainForRequest(providers, req, opts)
 	tracker := newRouteAttemptTracker()
+	homeRetryLimit := -1
 	if len(chain) <= 1 {
-		tried := make(map[string]struct{})
-		return m.executeStreamMixedOnce(ctx, providers, req, opts, maxRetryCredentials, tracker, tried)
+		return m.executeStreamMixedOnce(ctx, providers, req, opts, maxRetryCredentials, &homeRetryLimit, 0, defaultRequestRetry, newRouteExecutionState(opts, tracker))
 	}
 	var lastErr error
 	for idx, candidate := range chain {
 		candidateReq := req
 		candidateReq.Model = candidate.UpstreamModel
 		candidateOpts := withOrderedCandidateMetadata(opts, idx, candidate)
-		tried := make(map[string]struct{})
-		streamResult, err := m.executeStreamMixedOnce(ctx, []string{candidate.Channel}, candidateReq, candidateOpts, maxRetryCredentials, tracker, tried)
+		state := newRouteExecutionState(candidateOpts, tracker)
+		streamResult, err := m.executeStreamMixedOnce(ctx, []string{candidate.Channel}, candidateReq, candidateOpts, maxRetryCredentials, &homeRetryLimit, 0, defaultRequestRetry, state)
 		if err == nil {
 			// Bytes are flowing from this candidate. No further fallback is
 			// permitted after this point — the client already received bytes.
