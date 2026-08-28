@@ -12,6 +12,7 @@ config.yaml
 # Generated content
 bin/*
 /logs
+.runtime/
 conv/*
 temp/*
 refs/*
