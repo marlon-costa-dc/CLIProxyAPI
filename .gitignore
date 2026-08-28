@@ -79,3 +79,4 @@ docker-compose.override.yml
 .beads-credential-key
 .beads/proxieddb/
 *.gate.lock*
+.runtime/
