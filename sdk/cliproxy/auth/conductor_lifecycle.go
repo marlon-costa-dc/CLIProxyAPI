@@ -69,15 +69,12 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 	if m == nil {
 		return nil, fmt.Errorf("register auth: manager is nil")
 	}
-<<<<<<< HEAD
 	if auth == nil {
 		return nil, fmt.Errorf("register auth: auth is nil")
 	}
 	m.mutationMu.Lock()
 	defer m.mutationMu.Unlock()
 	NormalizeCredentialMetadata(auth.Metadata)
-=======
->>>>>>> parent of be22c684 (merge: integrate upstream main into model pricing lane)
 	if errWeight := ValidateAuthWeight(auth); errWeight != nil {
 		return nil, fmt.Errorf("register auth: %w", errWeight)
 	}
@@ -118,7 +115,6 @@ func (m *Manager) Update(ctx context.Context, auth *Auth) (*Auth, error) {
 	if m == nil {
 		return nil, fmt.Errorf("update auth: manager is nil")
 	}
-<<<<<<< HEAD
 	if auth == nil {
 		return nil, fmt.Errorf("update auth: auth is nil")
 	}
@@ -128,8 +124,6 @@ func (m *Manager) Update(ctx context.Context, auth *Auth) (*Auth, error) {
 	m.mutationMu.Lock()
 	defer m.mutationMu.Unlock()
 	NormalizeCredentialMetadata(auth.Metadata)
-=======
->>>>>>> parent of be22c684 (merge: integrate upstream main into model pricing lane)
 	if errWeight := ValidateAuthWeight(auth); errWeight != nil {
 		return nil, fmt.Errorf("update auth: %w", errWeight)
 	}

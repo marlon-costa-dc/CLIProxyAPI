@@ -1362,7 +1362,6 @@ func TestConvertOpenAIResponsesRequestToClaude_ServiceTierToSpeed(t *testing.T) 
 		})
 	}
 }
-<<<<<<< HEAD
 
 func TestConvertOpenAIResponsesRequestToClaude_PreservesCallerSuppliedMetadataUserID(t *testing.T) {
 	testCases := []struct {
@@ -1530,5 +1529,3 @@ func TestConvertOpenAIResponsesRequestToClaudeWithCompat_FablePreservesAssistant
 		t.Fatalf("expected second message role = assistant, got %q", got)
 	}
 }
-=======
->>>>>>> parent of be22c684 (merge: integrate upstream main into model pricing lane)

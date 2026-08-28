@@ -36,7 +36,6 @@ func ClaudeHeadersIndicateUnifiedRateLimitRejection(headers http.Header) bool {
 		return false
 	}
 	status7dOI := strings.ToLower(strings.TrimSpace(getHeaderCaseInsensitive(headers, "Anthropic-Ratelimit-Unified-7d_oi-Status")))
-<<<<<<< HEAD
 	return !isFableOnlyRejection(status5h, status7d, status7dOI)
 }
 
@@ -46,10 +45,6 @@ func isClaudeWindowAllowed(status string) bool {
 
 func isFableOnlyRejection(status5h, status7d, status7dOI string) bool {
 	return isClaudeWindowAllowed(status5h) && isClaudeWindowAllowed(status7d) && status7dOI == "rejected"
-=======
-	fableOnlyRejection := status5h == "allowed" && status7d == "allowed" && status7dOI == "rejected"
-	return !fableOnlyRejection
->>>>>>> parent of be22c684 (merge: integrate upstream main into model pricing lane)
 }
 
 // ParseClaudeRateLimitReset inspects Anthropic response headers for shared and Fable-specific
@@ -124,13 +119,8 @@ func parseClaudeRateLimitResetWithFuzz(headers http.Header, now time.Time, minFu
 	}
 
 	// 5. Unified reset header:
-<<<<<<< HEAD
 	unifiedRejected := !fableOnlyRejection && (unifiedStatus == "rejected" || status5h == "rejected" || status7d == "rejected" || status7dOI == "rejected" ||
 		(unifiedStatus == "" && !isClaudeWindowAllowed(status5h) && !isClaudeWindowAllowed(status7d)))
-=======
-	unifiedRejected := unifiedStatus == "rejected" || status5h == "rejected" || status7d == "rejected" || status7dOI == "rejected" ||
-		(unifiedStatus == "" && status5h != "allowed" && status7d != "allowed")
->>>>>>> parent of be22c684 (merge: integrate upstream main into model pricing lane)
 
 	if unifiedRejected {
 		if raw := getHeaderCaseInsensitive(headers, "Anthropic-Ratelimit-Unified-Reset"); raw != "" {

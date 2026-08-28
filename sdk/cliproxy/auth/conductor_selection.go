@@ -58,12 +58,9 @@ type authSelectionEligibility struct {
 	requiredKind     string
 	credentialPolicy string
 	disallowFreeAuth bool
-<<<<<<< HEAD
 	excludedAuthIDs  map[string]struct{}
 	allowedAuthIDs   map[string]struct{}
 	hasAllowlist     bool
-=======
->>>>>>> parent of be22c684 (merge: integrate upstream main into model pricing lane)
 }
 
 func withRequiredAuthKind(ctx context.Context, requiredKind string) context.Context {
@@ -83,15 +80,11 @@ func credentialPolicyFromContext(ctx context.Context) string {
 }
 
 func authSelectionEligibilityForRequest(ctx context.Context, opts cliproxyexecutor.Options) authSelectionEligibility {
-<<<<<<< HEAD
 	eligibility := authSelectionEligibility{
 		disallowFreeAuth: disallowFreeAuthFromMetadata(opts.Metadata),
 		excludedAuthIDs:  extractExcludedAuthIDs(opts.Metadata),
 	}
 	eligibility.allowedAuthIDs, eligibility.hasAllowlist = allowedAuthIDsFromMetadata(opts.Metadata)
-=======
-	eligibility := authSelectionEligibility{disallowFreeAuth: disallowFreeAuthFromMetadata(opts.Metadata)}
->>>>>>> parent of be22c684 (merge: integrate upstream main into model pricing lane)
 	if ctx != nil {
 		eligibility.requiredKind, _ = ctx.Value(requiredAuthKindContextKey{}).(string)
 		eligibility.credentialPolicy, _ = ctx.Value(credentialPolicyContextKey{}).(string)
@@ -103,7 +96,6 @@ func (e authSelectionEligibility) allows(auth *Auth) bool {
 	if auth == nil {
 		return false
 	}
-<<<<<<< HEAD
 	if _, excluded := e.excludedAuthIDs[auth.ID]; excluded {
 		return false
 	}
@@ -112,8 +104,6 @@ func (e authSelectionEligibility) allows(auth *Auth) bool {
 			return false
 		}
 	}
-=======
->>>>>>> parent of be22c684 (merge: integrate upstream main into model pricing lane)
 	if e.requiredKind != "" && auth.AuthKind() != e.requiredKind {
 		return false
 	}
@@ -857,7 +847,6 @@ func (m *Manager) shouldRetryAfterError(err error, attempt int, providers []stri
 	if isRequestInvalidError(err) || isRequestStopError(err) {
 		return 0, false
 	}
-<<<<<<< HEAD
 	if m.HomeEnabled() && !isModelRoutingOptions(opts) {
 		var cooldownErr *homeDispatchRetryAfterError
 		if errors.As(err, &cooldownErr) && cooldownErr != nil {
@@ -898,9 +887,6 @@ func (m *Manager) shouldRetryAfterError(err error, attempt int, providers []stri
 		return 0, false
 	}
 	wait, found := m.closestCooldownWait(providers, model, attempt, eligibility, pinnedAuthID, defaultRequestRetry)
-=======
-	wait, found := m.closestCooldownWait(providers, model, attempt)
->>>>>>> parent of be22c684 (merge: integrate upstream main into model pricing lane)
 	if found {
 		if wait > maxWait {
 			return 0, false

@@ -956,7 +956,6 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) error {
 			}
 		}
 
-<<<<<<< HEAD
 		if !result.SkipQuotaObservation {
 			auth.Quota.ObserveResponseHeadersForProvider(result.Provider, responseHeaders, now)
 			if modelState != nil {
@@ -964,9 +963,6 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) error {
 			}
 		}
 
-=======
-		_ = m.persist(ctx, auth)
->>>>>>> parent of be22c684 (merge: integrate upstream main into model pricing lane)
 		authSnapshot = auth.Clone()
 		if trackCooldownState {
 			cooldownRecordsAfter := m.cooldownStateRecordsForAuthLocked(auth, now)

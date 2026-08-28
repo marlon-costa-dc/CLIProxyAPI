@@ -198,12 +198,8 @@ func (h *BaseAPIHandler) executeWithPluginExecutor(ctx context.Context, entryPro
 	}
 	rawResponseHeaders := cloneHeader(resp.Headers)
 	responseHeaders := downstreamHeadersFromExecutor(rawResponseHeaders, PassthroughHeadersEnabled(h.Cfg))
-<<<<<<< HEAD
 	body, responseHeaders := h.applyResponseInterceptors(execCtx, lifecycle.requestID(), responseProtocol, modelName, originalRequestedModel, opts, rawResponseHeaders, responseHeaders, opts.OriginalRequest, req.Payload, resp.Payload, http.StatusOK, execOptions.SkipInterceptorPluginID)
 	responseHeaders = mergeTrustedDownstreamHeaders(responseHeaders, resp.DownstreamHeaders)
-=======
-	body, responseHeaders := h.applyResponseInterceptors(ctx, lifecycle.requestID(), responseProtocol, modelName, originalRequestedModel, opts, rawResponseHeaders, responseHeaders, opts.OriginalRequest, req.Payload, resp.Payload, http.StatusOK, execOptions.SkipInterceptorPluginID)
->>>>>>> parent of be22c684 (merge: integrate upstream main into model pricing lane)
 	lifecycle.complete(pluginapi.RequestCompletionSucceeded, http.StatusOK, nil)
 	return body, responseHeaders, nil
 }

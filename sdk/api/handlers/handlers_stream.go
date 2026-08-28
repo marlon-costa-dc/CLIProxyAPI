@@ -145,15 +145,12 @@ func (h *BaseAPIHandler) streamWithPluginExecutor(ctx context.Context, entryProt
 		completionOutcome := pluginapi.RequestCompletionSucceeded
 		completionStatus := http.StatusOK
 		var completionErr error
-<<<<<<< HEAD
 		defer func() {
 			if streamResult.Complete != nil {
 				streamResult.Complete(completionErr)
 			}
 		}()
 		var streamUsage helps.StreamUsageBuffer
-=======
->>>>>>> parent of be22c684 (merge: integrate upstream main into model pricing lane)
 		defer func() {
 			lifecycle.complete(completionOutcome, completionStatus, completionErr)
 		}()

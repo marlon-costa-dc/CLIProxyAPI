@@ -22,7 +22,6 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-<<<<<<< HEAD
 func newUpstreamAttemptContext(ctx context.Context) context.Context {
 	return logging.WithFreshResponseHeadersHolder(ctx)
 }
@@ -36,8 +35,6 @@ func (m *Manager) requestAttemptContext(ctx context.Context, auth *Auth, opts cl
 	return newUpstreamAttemptContext(ctx)
 }
 
-=======
->>>>>>> parent of be22c684 (merge: integrate upstream main into model pricing lane)
 func claudeOAuthRequestCancellation(ctx context.Context, auth *Auth, err error) error {
 	if auth == nil || !strings.EqualFold(strings.TrimSpace(auth.Provider), "claude") || !strings.EqualFold(strings.TrimSpace(auth.Attributes["auth_kind"]), "oauth") {
 		return nil
@@ -402,13 +399,8 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		if homeMode {
 			pickOpts = withHomeAuthCount(opts, homeAuthCount)
 		}
-<<<<<<< HEAD
 		pickOpts = withExcludedAuthIDs(pickOpts, tried)
 		auth, executor, provider, errPick := m.pickNextMixed(selectionCtx, providers, routeModel, pickOpts, tried)
-=======
-		pickOpts = withExcludedAuthIDs(pickOpts, t)
-		auth, executor, provider, errPick := m.pickNextMixed(ctx, providers, routeModel, pickOpts, t)
->>>>>>> parent of be22c684 (merge: integrate upstream main into model pricing lane)
 		if errPick != nil {
 			if shouldReturnLastErrorOnPickFailure(homeMode, lastErr, errPick) {
 				return cliproxyexecutor.Response{}, lastErr
@@ -420,19 +412,9 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 		debugLogAuthSelection(entry, auth, provider, routeModel)
 		publishSelectedAuthMetadata(opts.Metadata, auth)
 
-<<<<<<< HEAD
 		tried[auth.ID] = struct{}{}
 		prepareCtx := m.requestAttemptContext(selectionCtx, auth, opts, routeModel)
 		execCtx := prepareCtx
-=======
-		t[auth.ID] = struct{}{}
-		execCtx := ctx
-		if rt := m.roundTripperFor(auth); rt != nil {
-			execCtx = context.WithValue(execCtx, roundTripperContextKey{}, rt)
-			execCtx = context.WithValue(execCtx, "cliproxy.roundtripper", rt)
-		}
-		execCtx = contextWithRequestedModelAlias(execCtx, opts, routeModel)
->>>>>>> parent of be22c684 (merge: integrate upstream main into model pricing lane)
 
 		models, pooled, aliasResult, routing := m.preparedExecutionModelsWithAlias(auth, routeModel)
 		if failFastRouting {
@@ -494,7 +476,6 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				if errCtx := execCtx.Err(); errCtx != nil {
 					return cliproxyexecutor.Response{}, errCtx
 				}
-<<<<<<< HEAD
 				refreshCtx := newUpstreamAttemptContext(execCtx)
 				if !failFastRouting {
 					if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(refreshCtx, auth, errExec, didRefreshOnUnauthorized); okRefresh {
@@ -509,18 +490,6 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 							if errCtx := execCtx.Err(); errCtx != nil {
 								return cliproxyexecutor.Response{}, errCtx
 							}
-=======
-				if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(execCtx, auth, errExec, didRefreshOnUnauthorized); okRefresh {
-					auth = refreshed
-					didRefreshOnUnauthorized = true
-					startRetry := time.Now()
-					resp, errExec = executor.Execute(execCtx, auth, execReq, execOpts)
-					durationRetry := time.Since(startRetry)
-					if errExec != nil {
-						warnLogUpstreamFailure(execCtx, entry, provider, upstreamModel, auth, durationRetry, errExec)
-						if errCtx := execCtx.Err(); errCtx != nil {
-							return cliproxyexecutor.Response{}, errCtx
->>>>>>> parent of be22c684 (merge: integrate upstream main into model pricing lane)
 						}
 					} else {
 						warnLogUpstreamFailure(execCtx, entry, provider, upstreamModel, auth, durationExec, errExec)
@@ -647,13 +616,8 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 		if homeMode {
 			pickOpts = withHomeAuthCount(opts, homeAuthCount)
 		}
-<<<<<<< HEAD
 		pickOpts = withExcludedAuthIDs(pickOpts, tried)
 		auth, executor, provider, errPick := m.pickNextMixed(selectionCtx, providers, routeModel, pickOpts, tried)
-=======
-		pickOpts = withExcludedAuthIDs(pickOpts, t)
-		auth, executor, provider, errPick := m.pickNextMixed(ctx, providers, routeModel, pickOpts, t)
->>>>>>> parent of be22c684 (merge: integrate upstream main into model pricing lane)
 		if errPick != nil {
 			if shouldReturnLastErrorOnPickFailure(homeMode, lastErr, errPick) {
 				return cliproxyexecutor.Response{}, lastErr
@@ -665,19 +629,9 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 		debugLogAuthSelection(entry, auth, provider, routeModel)
 		publishSelectedAuthMetadata(opts.Metadata, auth)
 
-<<<<<<< HEAD
 		tried[auth.ID] = struct{}{}
 		prepareCtx := m.requestAttemptContext(selectionCtx, auth, opts, routeModel)
 		execCtx := prepareCtx
-=======
-		t[auth.ID] = struct{}{}
-		execCtx := ctx
-		if rt := m.roundTripperFor(auth); rt != nil {
-			execCtx = context.WithValue(execCtx, roundTripperContextKey{}, rt)
-			execCtx = context.WithValue(execCtx, "cliproxy.roundtripper", rt)
-		}
-		execCtx = contextWithRequestedModelAlias(execCtx, opts, routeModel)
->>>>>>> parent of be22c684 (merge: integrate upstream main into model pricing lane)
 
 		models, pooled, aliasResult, routing := m.preparedExecutionModelsWithAlias(auth, routeModel)
 		if failFastRouting {
@@ -703,7 +657,6 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			if errCancel := claudeOAuthRequestCancellation(prepareCtx, auth, errPrepare); errCancel != nil {
 				return cliproxyexecutor.Response{}, errCancel
 			}
-<<<<<<< HEAD
 			result := Result{AuthID: auth.ID, Provider: provider, Model: routeModel, Success: false, Error: resultErrorFromError(errPrepare), Options: pickOpts, SkipQuotaObservation: true}
 			if errRecord := m.MarkResult(execCtx, result); errRecord != nil {
 				return cliproxyexecutor.Response{}, joinExecutionResultError(errPrepare, errRecord)
@@ -711,10 +664,6 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			if failFastRouting {
 				return cliproxyexecutor.Response{}, errPrepare
 			}
-=======
-			result := Result{AuthID: auth.ID, Provider: provider, Model: routeModel, Success: false, Error: resultErrorFromError(errPrepare), Options: pickOpts}
-			m.MarkResult(execCtx, result)
->>>>>>> parent of be22c684 (merge: integrate upstream main into model pricing lane)
 			lastErr = errPrepare
 			continue
 		}
@@ -744,7 +693,6 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 				if errCtx := execCtx.Err(); errCtx != nil {
 					return cliproxyexecutor.Response{}, errCtx
 				}
-<<<<<<< HEAD
 				refreshCtx := newUpstreamAttemptContext(execCtx)
 				if !failFastRouting {
 					if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(refreshCtx, auth, errExec, didRefreshOnUnauthorized); okRefresh {
@@ -759,18 +707,6 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 							if errCtx := execCtx.Err(); errCtx != nil {
 								return cliproxyexecutor.Response{}, errCtx
 							}
-=======
-				if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(execCtx, auth, errExec, didRefreshOnUnauthorized); okRefresh {
-					auth = refreshed
-					didRefreshOnUnauthorized = true
-					startRetry := time.Now()
-					resp, errExec = executor.CountTokens(execCtx, auth, execReq, execOpts)
-					durationRetry := time.Since(startRetry)
-					if errExec != nil {
-						warnLogUpstreamFailure(execCtx, entry, provider, upstreamModel, auth, durationRetry, errExec)
-						if errCtx := execCtx.Err(); errCtx != nil {
-							return cliproxyexecutor.Response{}, errCtx
->>>>>>> parent of be22c684 (merge: integrate upstream main into model pricing lane)
 						}
 					} else {
 						warnLogUpstreamFailure(execCtx, entry, provider, upstreamModel, auth, durationExec, errExec)
@@ -911,11 +847,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 				provider = selection.Provider
 			}
 		} else {
-<<<<<<< HEAD
 			auth, executor, provider, errPick = m.pickNextMixed(selectionCtx, providers, routeModel, pickOpts, tried)
-=======
-			auth, executor, provider, errPick = m.pickNextMixed(ctx, providers, routeModel, pickOpts, t)
->>>>>>> parent of be22c684 (merge: integrate upstream main into model pricing lane)
 		}
 		if errPick != nil {
 			if shouldReturnLastErrorOnPickFailure(homeMode, lastErr, errPick) {
@@ -971,12 +903,8 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			execCtx = selectionCtx
 		}
 		// Enrich before auth preparation so prepare-stage usage records observe the client request.
-<<<<<<< HEAD
 		prepareCtx := m.requestAttemptContext(execCtx, auth, opts, routeModel)
 		execCtx = prepareCtx
-=======
-		execCtx = contextWithRequestedModelAlias(execCtx, opts, routeModel)
->>>>>>> parent of be22c684 (merge: integrate upstream main into model pricing lane)
 		models, pooled, aliasResult, routing := m.preparedExecutionModelsWithAlias(auth, routeModel)
 		if failFastRouting {
 			models = []string{routeModel}

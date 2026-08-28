@@ -94,12 +94,9 @@ func CleanJSONSchemaForGemini(jsonStr string) string {
 
 // cleanJSONSchema performs the core cleaning operations on the JSON schema.
 func cleanJSONSchema(jsonStr string, options jsonSchemaCleanOptions) string {
-<<<<<<< HEAD
 	// Phase 0: Normalize malformed schemas (e.g. bare property maps and boolean required from MCP tools)
 	jsonStr = normalizeMalformedSchemaObjects(jsonStr, options.addMissingArrayItems)
 
-=======
->>>>>>> parent of be22c684 (merge: integrate upstream main into model pricing lane)
 	// Phase 1: Convert and add hints
 	if options.antigravitySemantics {
 		jsonStr = inlineLocalRefs(jsonStr)
@@ -231,7 +228,6 @@ func removePlaceholderFields(jsonStr string) string {
 	return jsonStr
 }
 
-<<<<<<< HEAD
 // normalizeMalformedSchemaObjects normalizes malformed JSON schema nodes commonly produced by
 // certain MCP tool definitions (e.g. Asana MCP server):
 // 1. Bare property maps missing the "type": "object" and "properties": {...} wrappers are wrapped.
@@ -617,8 +613,6 @@ func InlineLocalRefs(jsonStr string) string {
 	return inlineLocalRefs(jsonStr)
 }
 
-=======
->>>>>>> parent of be22c684 (merge: integrate upstream main into model pricing lane)
 // inlineLocalRefs resolves JSON Pointer references against the original schema before definition
 // containers are stripped. Each expansion receives its own copy, sibling keywords override the
 // referenced definition, and cycles terminate as a typed hint instead of recursing forever.

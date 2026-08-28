@@ -1619,7 +1619,6 @@ func TestCleanJSONSchemaKeepsPropertyNamedEncrypted(t *testing.T) {
 		}
 	}
 }
-<<<<<<< HEAD
 
 // TestCleanJSONSchema_BarePropertyMapNormalized covers Issue #5178:
 // MCP tools (e.g. Asana) emit bare property maps missing type:object and properties wrappers,
@@ -2342,5 +2341,3 @@ func TestCleanJSONSchemaForAntigravityResponse_ContainsKeywordStripped(t *testin
 		}
 	}
 }
-=======
->>>>>>> parent of be22c684 (merge: integrate upstream main into model pricing lane)
