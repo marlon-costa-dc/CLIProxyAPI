@@ -45,7 +45,9 @@ func TestRegisterConfigAPIKeyAuthsOpenCodeModels(t *testing.T) {
 	manager := coreauth.NewManager(nil, nil, nil)
 	service := &Service{cfg: cfg, coreManager: manager}
 
-	service.registerConfigAPIKeyAuths(context.Background(), cfg)
+	if errRegister := service.registerConfigAPIKeyAuths(context.Background(), cfg); errRegister != nil {
+		t.Fatalf("registerConfigAPIKeyAuths() error = %v", errRegister)
+	}
 
 	auths := manager.List()
 	if len(auths) != 1 {

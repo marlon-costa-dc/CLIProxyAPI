@@ -20,14 +20,16 @@ func TestManager_Remove_DeletesRuntimeAuth(t *testing.T) {
 		t.Fatalf("register auth: %v", errRegister)
 	}
 
-	manager.Remove(ctx, auth.ID)
+	if errRemove := manager.Remove(ctx, auth.ID); errRemove != nil {
+		t.Fatalf("Remove() error = %v", errRemove)
+	}
 
 	if _, ok := manager.GetByID(auth.ID); ok {
 		t.Fatalf("expected auth %q to be removed", auth.ID)
 	}
 }
 
-func TestManager_Update_MissingAuthIsNoOp(t *testing.T) {
+func TestManager_Update_MissingAuthFailsLoudly(t *testing.T) {
 	manager := NewManager(nil, nil, nil)
 	ctx := context.Background()
 
@@ -39,7 +41,9 @@ func TestManager_Update_MissingAuthIsNoOp(t *testing.T) {
 	if _, errRegister := manager.Register(ctx, auth); errRegister != nil {
 		t.Fatalf("register auth: %v", errRegister)
 	}
-	manager.Remove(ctx, auth.ID)
+	if errRemove := manager.Remove(ctx, auth.ID); errRemove != nil {
+		t.Fatalf("Remove() error = %v", errRemove)
+	}
 
 	updated, errUpdate := manager.Update(ctx, &Auth{
 		ID:       auth.ID,
@@ -47,8 +51,8 @@ func TestManager_Update_MissingAuthIsNoOp(t *testing.T) {
 		Status:   StatusDisabled,
 		Disabled: true,
 	})
-	if errUpdate != nil {
-		t.Fatalf("update removed auth: %v", errUpdate)
+	if errUpdate == nil {
+		t.Fatal("Update() accepted a removed auth")
 	}
 	if updated != nil {
 		t.Fatalf("expected update on removed auth to be no-op, got %#v", updated)
@@ -97,7 +101,9 @@ func TestManager_Remove_UnschedulesAutoRefresh(t *testing.T) {
 	}
 	loop.mu.Unlock()
 
-	manager.Remove(ctx, auth.ID)
+	if errRemove := manager.Remove(ctx, auth.ID); errRemove != nil {
+		t.Fatalf("Remove() error = %v", errRemove)
+	}
 
 	if _, ok := manager.GetByID(auth.ID); ok {
 		t.Fatalf("expected auth to be removed")

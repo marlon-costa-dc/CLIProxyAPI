@@ -185,7 +185,7 @@ func TestManagerMarkResultRecordsResponseQuotaSignalsInMemory(t *testing.T) {
 		"X-Codex-Primary-Window-Minutes": []string{"10080"},
 		"X-Codex-Primary-Reset-At":       []string{"1782951970"},
 	})
-	manager.MarkResult(ctx, Result{
+	mustMarkResult(t, manager, ctx, Result{
 		AuthID:   auth.ID,
 		Provider: "codex",
 		Model:    "gpt-5.3-codex",
@@ -220,7 +220,7 @@ func TestMarkResultCountTokensDoesNotReplaceObservation(t *testing.T) {
 	internallogging.SetResponseHeaders(ctx, http.Header{
 		"Anthropic-Ratelimit-Unified-Status": []string{"rejected"},
 	})
-	manager.MarkResult(ctx, Result{
+	mustMarkResult(t, manager, ctx, Result{
 		AuthID:               auth.ID,
 		Provider:             "claude",
 		Model:                "claude-opus-4-6",
@@ -524,7 +524,7 @@ func TestMarkResultQuotaFailureDoesNotEraseSiblingObservation(t *testing.T) {
 		"Retry-After":                  []string{"120"},
 		"X-Codex-Primary-Used-Percent": []string{"99"},
 	})
-	manager.MarkResult(ctx, Result{
+	mustMarkResult(t, manager, ctx, Result{
 		AuthID:          auth.ID,
 		Provider:        "codex",
 		Model:           "gpt-5.3-codex",
@@ -592,7 +592,7 @@ func TestMarkResultRetainedCredentialQuotaStillObservesModel(t *testing.T) {
 	internallogging.SetResponseHeaders(ctx, http.Header{
 		"X-Codex-Primary-Used-Percent": []string{"20"},
 	})
-	manager.MarkResult(ctx, Result{
+	mustMarkResult(t, manager, ctx, Result{
 		AuthID:   auth.ID,
 		Provider: "codex",
 		Model:    "gpt-5.3-codex",

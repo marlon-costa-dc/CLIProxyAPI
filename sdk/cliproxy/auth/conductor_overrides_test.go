@@ -1138,7 +1138,7 @@ func TestManager_MarkResult_RespectsAuthDisableCoolingOverride(t *testing.T) {
 	}
 
 	model := "test-model"
-	m.MarkResult(context.Background(), Result{
+	mustMarkResult(t, m, context.Background(), Result{
 		AuthID:   "auth-1",
 		Provider: "claude",
 		Model:    model,
@@ -1180,7 +1180,7 @@ func TestManager_MarkResult_TransientErrorCooldownDefault(t *testing.T) {
 	}
 
 	model := "test-model-transient-default"
-	m.MarkResult(context.Background(), Result{
+	mustMarkResult(t, m, context.Background(), Result{
 		AuthID:   auth.ID,
 		Provider: auth.Provider,
 		Model:    model,
@@ -1226,7 +1226,7 @@ func TestManager_MarkResult_TransientErrorCooldownDisabled(t *testing.T) {
 	}
 
 	model := "test-model-transient-disabled"
-	m.MarkResult(context.Background(), Result{
+	mustMarkResult(t, m, context.Background(), Result{
 		AuthID:   modelAuth.ID,
 		Provider: modelAuth.Provider,
 		Model:    model,
@@ -1254,7 +1254,7 @@ func TestManager_MarkResult_TransientErrorCooldownDisabled(t *testing.T) {
 		t.Fatalf("register auth-level auth: %v", errRegisterAuth)
 	}
 
-	m.MarkResult(context.Background(), Result{
+	mustMarkResult(t, m, context.Background(), Result{
 		AuthID:   authLevelAuth.ID,
 		Provider: authLevelAuth.Provider,
 		Success:  false,
@@ -1291,7 +1291,7 @@ func TestManager_MarkResult_TransientErrorCooldownDoesNotDisableAuthErrors(t *te
 	}
 
 	model := "test-model-auth-error"
-	m.MarkResult(context.Background(), Result{
+	mustMarkResult(t, m, context.Background(), Result{
 		AuthID:   auth.ID,
 		Provider: auth.Provider,
 		Model:    model,
@@ -1339,7 +1339,7 @@ func TestManager_MarkResult_RespectsAuthDisableCoolingOverride_On403(t *testing.
 	reg.RegisterClient(auth.ID, "claude", []*registry.ModelInfo{{ID: model}})
 	t.Cleanup(func() { reg.UnregisterClient(auth.ID) })
 
-	m.MarkResult(context.Background(), Result{
+	mustMarkResult(t, m, context.Background(), Result{
 		AuthID:   auth.ID,
 		Provider: "claude",
 		Model:    model,
@@ -1384,7 +1384,7 @@ func TestManager_MarkResult_CloudflareChallenge_On403(t *testing.T) {
 	reg.RegisterClient(auth.ID, "claude", []*registry.ModelInfo{{ID: model}})
 	t.Cleanup(func() { reg.UnregisterClient(auth.ID) })
 
-	m.MarkResult(context.Background(), Result{
+	mustMarkResult(t, m, context.Background(), Result{
 		AuthID:   auth.ID,
 		Provider: "claude",
 		Model:    model,
@@ -2030,7 +2030,7 @@ func TestManager_MarkResult_RequestScopedNotFoundDoesNotCooldownAuth(t *testing.
 	}
 
 	model := "gpt-4.1"
-	m.MarkResult(context.Background(), Result{
+	mustMarkResult(t, m, context.Background(), Result{
 		AuthID:   auth.ID,
 		Provider: auth.Provider,
 		Model:    model,
@@ -2829,7 +2829,7 @@ func TestManager_MarkResult_RequestFaultBodyDoesNotCooldownModelOrAuth(t *testin
 
 	model := "deepseek-chat"
 	// SDK consumer reports a 401 request-fault body directly without knowing the internal requestScopedErrorCode.
-	m.MarkResult(context.Background(), Result{
+	mustMarkResult(t, m, context.Background(), Result{
 		AuthID:   auth.ID,
 		Provider: auth.Provider,
 		Model:    model,
@@ -2864,7 +2864,7 @@ func TestManager_MarkResult_RequestFaultBodyDoesNotCooldownModelOrAuth(t *testin
 		t.Fatalf("MarkRequestScoped code = %q, want %q", customErr.Code, ErrorCodeRequestScoped)
 	}
 
-	m.MarkResult(context.Background(), Result{
+	mustMarkResult(t, m, context.Background(), Result{
 		AuthID:   auth.ID,
 		Provider: auth.Provider,
 		Model:    model,
@@ -2876,7 +2876,7 @@ func TestManager_MarkResult_RequestFaultBodyDoesNotCooldownModelOrAuth(t *testin
 		t.Fatalf("expected explicit request-scoped error to keep auth available")
 	}
 
-	m.MarkResult(context.Background(), Result{
+	mustMarkResult(t, m, context.Background(), Result{
 		AuthID:   auth.ID,
 		Provider: auth.Provider,
 		Model:    model,
@@ -2889,7 +2889,7 @@ func TestManager_MarkResult_RequestFaultBodyDoesNotCooldownModelOrAuth(t *testin
 	}
 
 	// Custom non-empty Code with request-fault message payload.
-	m.MarkResult(context.Background(), Result{
+	mustMarkResult(t, m, context.Background(), Result{
 		AuthID:   auth.ID,
 		Provider: auth.Provider,
 		Model:    model,
@@ -2913,7 +2913,7 @@ func TestManager_MarkResult_RequestFaultBodyDoesNotCooldownModelOrAuth(t *testin
 	if _, errRegister := m.Register(context.Background(), authEmptyModel); errRegister != nil {
 		t.Fatalf("register authEmptyModel: %v", errRegister)
 	}
-	m.MarkResult(context.Background(), Result{
+	mustMarkResult(t, m, context.Background(), Result{
 		AuthID:   authEmptyModel.ID,
 		Provider: authEmptyModel.Provider,
 		Model:    "",
@@ -2939,7 +2939,7 @@ func TestManager_MarkResult_RequestFaultBodyDoesNotCooldownModelOrAuth(t *testin
 	if _, errRegister := m.Register(context.Background(), authFail); errRegister != nil {
 		t.Fatalf("register authFail: %v", errRegister)
 	}
-	m.MarkResult(context.Background(), Result{
+	mustMarkResult(t, m, context.Background(), Result{
 		AuthID:   authFail.ID,
 		Provider: authFail.Provider,
 		Model:    model,

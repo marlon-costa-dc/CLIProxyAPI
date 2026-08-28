@@ -1698,7 +1698,7 @@ func TestManager_SchedulerSharesThinkingSuffixCooldownAndRegistryState(t *testin
 	}
 
 	retryAfter := time.Hour
-	manager.MarkResult(context.Background(), Result{
+	mustMarkResult(t, manager, context.Background(), Result{
 		AuthID:     "thinking-auth-a",
 		Provider:   "gemini",
 		Model:      baseModel + "(high)",
@@ -1727,7 +1727,7 @@ func TestManager_SchedulerSharesThinkingSuffixCooldownAndRegistryState(t *testin
 		}
 	}
 
-	manager.MarkResult(context.Background(), Result{
+	mustMarkResult(t, manager, context.Background(), Result{
 		AuthID:   "thinking-auth-a",
 		Provider: "gemini",
 		Model:    baseModel + "(low)",
@@ -1792,7 +1792,7 @@ func TestManager_SchedulerTracksMarkResultCooldownAndRecovery(t *testing.T) {
 		t.Fatalf("Register(auth-b) error = %v", errRegister)
 	}
 
-	manager.MarkResult(context.Background(), Result{
+	mustMarkResult(t, manager, context.Background(), Result{
 		AuthID:   "auth-a",
 		Provider: "gemini",
 		Model:    "test-model",
@@ -1808,7 +1808,7 @@ func TestManager_SchedulerTracksMarkResultCooldownAndRecovery(t *testing.T) {
 		t.Fatalf("scheduler.pickSingle() after cooldown auth = %v, want auth-b", got)
 	}
 
-	manager.MarkResult(context.Background(), Result{
+	mustMarkResult(t, manager, context.Background(), Result{
 		AuthID:   "auth-a",
 		Provider: "gemini",
 		Model:    "test-model",

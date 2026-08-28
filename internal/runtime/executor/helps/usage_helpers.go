@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -14,7 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/clienterror"
 	internallogging "github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/modelrouting"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
@@ -45,7 +46,7 @@ type UsageReporter struct {
 	once            sync.Once
 	authMu          sync.RWMutex
 	accessTokenHash string
-	pricing         *registry.ModelPricing
+	pricing         *modelrouting.Pricing
 }
 
 type usageExecutor interface {
@@ -255,19 +256,57 @@ func normalizeUsageDetailTotal(detail usage.Detail, provider, executorType strin
 }
 
 func (r *UsageReporter) applyCost(detail usage.Detail) usage.Detail {
-	if r == nil || r.pricing == nil || r.pricing.InputPerMillion == nil || r.pricing.OutputPerMillion == nil {
+	if r == nil || r.pricing == nil {
 		detail.Cost = usage.CostBreakdown{Quality: usage.CostQualityUnavailable}
 		return detail
 	}
+	input, output, cache, ok := basePricingComponents(r.pricing)
+	if !ok {
+		detail.Cost = usage.CostBreakdown{Quality: usage.CostQualityUnavailable}
+		return detail
+	}
+	digest := ""
+	if active := modelrouting.Active(); active != nil {
+		digest = active.ProjectionDigest
+	}
 	detail.Cost = usage.CalculateCost(
 		detail.TokenBreakdown,
-		*r.pricing.InputPerMillion,
-		*r.pricing.OutputPerMillion,
-		r.pricing.CacheReadPerMillion,
-		r.pricing.Source,
-		r.pricing.SourceDigest,
+		input,
+		output,
+		cache,
+		r.pricing.SourceID,
+		digest,
 	)
 	return detail
+}
+
+func basePricingComponents(pricing *modelrouting.Pricing) (input, output float64, cache *float64, ok bool) {
+	if pricing == nil {
+		return 0, 0, nil, false
+	}
+	hasInput := false
+	hasOutput := false
+	for _, entry := range pricing.Entries {
+		if entry.TierType != nil || entry.TierSize != nil || entry.ContextKey != nil {
+			continue
+		}
+		value, err := strconv.ParseFloat(entry.Amount, 64)
+		if err != nil {
+			return 0, 0, nil, false
+		}
+		switch entry.Name {
+		case "input":
+			input = value
+			hasInput = true
+		case "output":
+			output = value
+			hasOutput = true
+		case "cache_read":
+			copyValue := value
+			cache = &copyValue
+		}
+	}
+	return input, output, cache, hasInput && hasOutput
 }
 
 func hasNonZeroTokenUsage(detail usage.Detail) bool {

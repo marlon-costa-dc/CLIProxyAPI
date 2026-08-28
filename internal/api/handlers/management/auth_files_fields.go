@@ -723,47 +723,48 @@ func syncAuthFileDisabledState(auth *coreauth.Auth) {
 	auth.StatusMessage = ""
 }
 
-func (h *Handler) removeAuth(ctx context.Context, id string) {
+func (h *Handler) removeAuth(ctx context.Context, id string) error {
 	if h == nil || h.authManager == nil {
-		return
+		return fmt.Errorf("remove auth: handler or auth manager is nil")
 	}
 	id = strings.TrimSpace(id)
 	if id == "" {
-		return
+		return fmt.Errorf("remove auth: ID is empty")
 	}
 	if _, ok := h.authManager.GetByID(id); ok {
-		h.authManager.Remove(ctx, id)
-		return
+		return h.authManager.Remove(ctx, id)
 	}
 	authID := h.authIDForPath(id)
 	if authID == "" {
-		return
+		return nil
 	}
-	h.authManager.Remove(ctx, authID)
+	return h.authManager.Remove(ctx, authID)
 }
 
-func (h *Handler) removeAuthsForPath(ctx context.Context, path string, fallbackID string) {
+func (h *Handler) removeAuthsForPath(ctx context.Context, path string, fallbackID string) error {
 	if h == nil || h.authManager == nil {
-		return
+		return fmt.Errorf("remove auths for path: handler or auth manager is nil")
 	}
 	removed := false
+	var removeErr error
 	for _, auth := range h.authManager.List() {
 		if auth == nil {
 			continue
 		}
 		if sameAuthFilePath(authAttribute(auth, "path"), path) || sameAuthFilePath(authAttribute(auth, coreauth.AttributeVirtualSource), path) {
-			h.removeAuth(ctx, auth.ID)
+			if errRemove := h.removeAuth(ctx, auth.ID); errRemove != nil {
+				removeErr = errors.Join(removeErr, fmt.Errorf("remove auth %s: %w", auth.ID, errRemove))
+			}
 			removed = true
 		}
 	}
 	if removed {
-		return
+		return removeErr
 	}
 	if strings.TrimSpace(fallbackID) != "" {
-		h.removeAuth(ctx, fallbackID)
-		return
+		return h.removeAuth(ctx, fallbackID)
 	}
-	h.removeAuth(ctx, path)
+	return h.removeAuth(ctx, path)
 }
 
 func sameAuthFilePath(left, right string) bool {

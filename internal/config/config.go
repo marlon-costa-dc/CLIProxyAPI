@@ -4,6 +4,8 @@
 // debug settings, proxy configuration, and API keys.
 package config
 
+import "github.com/router-for-me/CLIProxyAPI/v7/internal/modelrouting"
+
 // Config represents the application's configuration, loaded from a YAML file.
 type Config struct {
 	SDKConfig `yaml:",inline"`
@@ -176,8 +178,8 @@ type Config struct {
 	// OpenAICompatibility defines OpenAI API compatibility configurations for external providers.
 	OpenAICompatibility []OpenAICompatibility `yaml:"openai-compatibility" json:"openai-compatibility"`
 
-	// ModelPricing is the exact, source-attributed price catalog for every routed model identity.
-	ModelPricing []ModelPricingEntry `yaml:"model-pricing,omitempty" json:"model-pricing,omitempty"`
+	// ModelRouting is the versioned AI Hub projection rendered exclusively by CCS.
+	ModelRouting *modelrouting.Config `yaml:"model-routing,omitempty" json:"model-routing,omitempty"`
 
 	// VertexCompatAPIKey defines Vertex AI-compatible API key configurations for third-party providers.
 	// Used for services that use Vertex AI-style paths but with simple API key authentication.

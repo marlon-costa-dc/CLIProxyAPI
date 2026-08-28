@@ -92,7 +92,7 @@ func (cfg *Config) SanitizeOAuthModelAlias() {
 			out[channel] = nil
 			continue
 		}
-		seenEntry := make(map[string]struct{}, len(aliases))
+		seenAlias := make(map[string]struct{}, len(aliases))
 		clean := make([]OAuthModelAlias, 0, len(aliases))
 		for _, entry := range aliases {
 			name := strings.TrimSpace(entry.Name)
@@ -103,19 +103,15 @@ func (cfg *Config) SanitizeOAuthModelAlias() {
 			if strings.EqualFold(name, alias) {
 				continue
 			}
-			// Ordered pools allow the same alias to map to multiple upstream
-			// models for sequential failover; only fully identical entries
-			// (same name+alias pair) are duplicates.
-			entryKey := strings.ToLower(name) + "\x00" + strings.ToLower(alias)
-			if _, ok := seenEntry[entryKey]; ok {
+			aliasKey := strings.ToLower(alias)
+			if _, ok := seenAlias[aliasKey]; ok {
 				continue
 			}
-			seenEntry[entryKey] = struct{}{}
+			seenAlias[aliasKey] = struct{}{}
 			clean = append(clean, OAuthModelAlias{
 				Name:         name,
 				Alias:        alias,
 				Fork:         entry.Fork,
-				Order:        entry.Order,
 				DisplayName:  strings.TrimSpace(entry.DisplayName),
 				ForceMapping: entry.ForceMapping,
 			})
@@ -175,27 +171,21 @@ func (cfg *Config) SanitizeOAuthRequestScopedErrors() {
 	cfg.OAuthRequestScopedErrors = out
 }
 
-// SanitizeOpenAICompatibility removes OpenAI-compatibility provider entries that are
-// not actionable, specifically those missing a BaseURL. It trims whitespace before
-// evaluation and preserves the relative order of remaining entries.
+// SanitizeOpenAICompatibility normalizes OpenAI-compatibility provider entries.
+// Runtime validation rejects incomplete enabled entries before normalization;
+// this function must never erase invalid configuration silently.
 func (cfg *Config) SanitizeOpenAICompatibility() {
 	if cfg == nil || len(cfg.OpenAICompatibility) == 0 {
 		return
 	}
-	out := make([]OpenAICompatibility, 0, len(cfg.OpenAICompatibility))
 	for i := range cfg.OpenAICompatibility {
-		e := cfg.OpenAICompatibility[i]
-		e.Name = strings.TrimSpace(e.Name)
-		e.Prefix = normalizeModelPrefix(e.Prefix)
-		e.BaseURL = strings.TrimSpace(e.BaseURL)
-		e.Headers = NormalizeHeaders(e.Headers)
-		if e.BaseURL == "" {
-			// Skip providers with no base-url; treated as removed
-			continue
-		}
-		out = append(out, e)
+		entry := &cfg.OpenAICompatibility[i]
+		entry.Name = strings.TrimSpace(entry.Name)
+		entry.Prefix = normalizeModelPrefix(entry.Prefix)
+		entry.BaseURL = strings.TrimSpace(entry.BaseURL)
+		entry.RouteChannel = strings.TrimSpace(entry.RouteChannel)
+		entry.Headers = NormalizeHeaders(entry.Headers)
 	}
-	cfg.OpenAICompatibility = out
 }
 
 // SanitizeCodexKeys removes Codex API key entries missing a BaseURL.

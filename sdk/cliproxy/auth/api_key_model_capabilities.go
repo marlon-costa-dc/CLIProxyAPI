@@ -7,6 +7,7 @@ import (
 
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/modelconfig"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/modelrouting"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
@@ -64,17 +65,17 @@ func ResolvedAPIKeyModelInfo(req cliproxyexecutor.Request) (*registry.ModelInfo,
 func WithResolvedModelPricing(ctx context.Context, req cliproxyexecutor.Request) context.Context {
 	modelInfo, ok := ResolvedAPIKeyModelInfo(req)
 	if !ok {
-		return context.WithValue(ctx, resolvedModelPricingContextKey{}, (*registry.ModelPricing)(nil))
+		return context.WithValue(ctx, resolvedModelPricingContextKey{}, (*modelrouting.Pricing)(nil))
 	}
 	return context.WithValue(ctx, resolvedModelPricingContextKey{}, modelInfo.Pricing)
 }
 
 // ResolvedModelPricingFromContext returns the selected model pricing snapshot.
-func ResolvedModelPricingFromContext(ctx context.Context) (*registry.ModelPricing, bool) {
+func ResolvedModelPricingFromContext(ctx context.Context) (*modelrouting.Pricing, bool) {
 	if ctx == nil {
 		return nil, false
 	}
-	pricing, ok := ctx.Value(resolvedModelPricingContextKey{}).(*registry.ModelPricing)
+	pricing, ok := ctx.Value(resolvedModelPricingContextKey{}).(*modelrouting.Pricing)
 	return pricing, ok && pricing != nil
 }
 

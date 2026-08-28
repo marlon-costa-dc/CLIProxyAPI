@@ -2,13 +2,12 @@ package cliproxy
 
 import (
 	"context"
-	"strconv"
+	"fmt"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 )
@@ -55,7 +54,7 @@ func (s *Service) newOpenAICompatibilityRegistrationCache() *openAICompatibility
 			providerName = "openai-compatibility"
 		}
 		entry := &openAICompatibilityRegistrationEntry{
-			providerKey: util.OpenAICompatibleProviderKey(providerName),
+			providerKey: strings.TrimSpace(compat.RouteChannel),
 			models:      buildOpenAICompatibilityConfigModels(compat),
 		}
 		cache.byIndex[i] = entry
@@ -69,18 +68,22 @@ func (s *Service) newOpenAICompatibilityRegistrationCache() *openAICompatibility
 	return cache
 }
 
-func (c *openAICompatibilityRegistrationCache) lookup(auth *coreauth.Auth, compatName string) (*openAICompatibilityRegistrationEntry, bool) {
+func (c *openAICompatibilityRegistrationCache) lookup(auth *coreauth.Auth, compatName string) (*openAICompatibilityRegistrationEntry, bool, error) {
 	if c == nil {
-		return nil, false
+		return nil, false, nil
 	}
-	if auth != nil && auth.AuthSourceKind() == coreauth.AuthSourceConfig && auth.Attributes != nil {
-		if index, errIndex := strconv.Atoi(strings.TrimSpace(auth.Attributes[coreauth.AttributeConfigIndex])); errIndex == nil {
-			entry, ok := c.byIndex[index]
-			return entry, ok
+	if auth != nil && auth.AuthSourceKind() == coreauth.AuthSourceConfig {
+		if auth.OpenAICompatibilityIndex == nil {
+			return nil, false, fmt.Errorf("config auth %s is missing its OpenAI compatibility reference", auth.ID)
 		}
+		entry, ok := c.byIndex[*auth.OpenAICompatibilityIndex]
+		if !ok {
+			return nil, false, fmt.Errorf("config auth %s references missing OpenAI compatibility index %d", auth.ID, *auth.OpenAICompatibilityIndex)
+		}
+		return entry, true, nil
 	}
 	entry, ok := c.byName[strings.ToLower(strings.TrimSpace(compatName))]
-	return entry, ok
+	return entry, ok, nil
 }
 
 func (s *Service) hasNativeOpenAICompatExecutorConfig(a *coreauth.Auth, providerKey string, cfg *config.Config) bool {
@@ -518,22 +521,22 @@ func (s *Service) appendPluginModels(providerKey string, models []*ModelInfo) []
 	return out
 }
 
-func (s *Service) tryRegisterPluginModelsForAuth(ctx context.Context, a *coreauth.Auth, provider, authKind string, excluded []string) bool {
+func (s *Service) tryRegisterPluginModelsForAuth(ctx context.Context, a *coreauth.Auth, provider, authKind string, excluded []string) (bool, error) {
 	if s == nil || s.pluginHost == nil || a == nil {
-		return false
+		return false, nil
 	}
 	if ctx != nil && ctx.Err() != nil {
-		return true
+		return true, ctx.Err()
 	}
 	result := s.pluginHost.ModelsForAuth(ctx, a)
 	if ctx != nil && ctx.Err() != nil {
-		return true
+		return true, ctx.Err()
 	}
 	if !result.Handled {
-		return false
+		return false, nil
 	}
 	if result.Err != nil {
-		return true
+		return true, fmt.Errorf("load plugin models for auth %s: %w", a.ID, result.Err)
 	}
 	activeAuth := a
 	providerKey := strings.ToLower(strings.TrimSpace(result.Provider))
@@ -556,7 +559,11 @@ func (s *Service) tryRegisterPluginModelsForAuth(ctx context.Context, a *coreaut
 				result.Auth.Attributes[key] = value
 			}
 		}
-		if updated, errUpdate := s.coreManager.Update(ctx, result.Auth); errUpdate == nil && updated != nil {
+		updated, errUpdate := s.coreManager.Update(ctx, result.Auth)
+		if errUpdate != nil {
+			return true, fmt.Errorf("persist plugin auth %s: %w", a.ID, errUpdate)
+		}
+		if updated != nil {
 			activeAuth = updated.Clone()
 		}
 	}
@@ -580,14 +587,14 @@ func (s *Service) tryRegisterPluginModelsForAuth(ctx context.Context, a *coreaut
 		}
 	}
 	if ctx != nil && ctx.Err() != nil {
-		return true
+		return true, ctx.Err()
 	}
 	models := applyExcludedModels(result.Models, activeExcluded)
 	models = applyOAuthModelAliasForAuth(s.cfg, providerKey, activeAuthKind, activeAuth.Attributes, models)
 	if len(models) > 0 {
 		s.registerResolvedModelsForAuth(activeAuth, providerKey, applyModelPrefixes(models, activeAuth.Prefix, s.cfg != nil && s.cfg.ForceModelPrefix))
-		return true
+		return true, nil
 	}
 	GlobalModelRegistry().UnregisterClient(activeAuth.ID)
-	return true
+	return true, nil
 }

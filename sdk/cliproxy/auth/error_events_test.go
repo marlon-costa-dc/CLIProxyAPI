@@ -28,7 +28,7 @@ func TestManagerMarkResultPublishesErrorEventAfterAuthStateUpdate(t *testing.T) 
 		t.Fatalf("Register returned error: %v", errRegister)
 	}
 
-	manager.MarkResult(context.Background(), Result{
+	mustMarkResult(t, manager, context.Background(), Result{
 		AuthID:   auth.ID,
 		Provider: "codex",
 		Model:    "gpt-5",
@@ -118,7 +118,7 @@ func TestManagerMarkResultSkipsErrorEventInHomeMode(t *testing.T) {
 		t.Fatalf("Register returned error: %v", errRegister)
 	}
 
-	manager.MarkResult(context.Background(), Result{
+	mustMarkResult(t, manager, context.Background(), Result{
 		AuthID:   auth.ID,
 		Provider: "codex",
 		Model:    "gpt-5",

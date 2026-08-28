@@ -66,9 +66,14 @@ func (m *Manager) UnregisterExecutor(provider string) {
 
 // Register inserts a new auth entry into the manager.
 func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
-	if auth == nil {
-		return nil, nil
+	if m == nil {
+		return nil, fmt.Errorf("register auth: manager is nil")
 	}
+	if auth == nil {
+		return nil, fmt.Errorf("register auth: auth is nil")
+	}
+	m.mutationMu.Lock()
+	defer m.mutationMu.Unlock()
 	NormalizeCredentialMetadata(auth.Metadata)
 	if errWeight := ValidateAuthWeight(auth); errWeight != nil {
 		return nil, fmt.Errorf("register auth: %w", errWeight)
@@ -83,6 +88,9 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 	}
 	auth.EnsureIndex()
 	authClone := auth.Clone()
+	if errPersist := m.persist(ctx, authClone); errPersist != nil {
+		return nil, fmt.Errorf("register auth persistence: %w", errPersist)
+	}
 	m.mu.Lock()
 	m.auths[auth.ID] = authClone
 	m.mu.Unlock()
@@ -93,19 +101,28 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 		m.scheduler.upsertAuth(authClone)
 	}
 	m.queueRefreshReschedule(auth.ID)
-	_ = m.persist(ctx, auth)
-	m.hook.OnAuthRegistered(ctx, auth.Clone())
 	if cooldownStateChanged {
-		m.persistCooldownStates(ctx)
+		if errCooldown := m.persistCooldownStates(ctx); errCooldown != nil {
+			return nil, fmt.Errorf("register auth cooldown persistence: %w", errCooldown)
+		}
 	}
+	m.hook.OnAuthRegistered(ctx, auth.Clone())
 	return auth.Clone(), nil
 }
 
 // Update replaces an existing auth entry and notifies hooks.
 func (m *Manager) Update(ctx context.Context, auth *Auth) (*Auth, error) {
-	if auth == nil || auth.ID == "" {
-		return nil, nil
+	if m == nil {
+		return nil, fmt.Errorf("update auth: manager is nil")
 	}
+	if auth == nil {
+		return nil, fmt.Errorf("update auth: auth is nil")
+	}
+	if strings.TrimSpace(auth.ID) == "" {
+		return nil, fmt.Errorf("update auth: auth ID is empty")
+	}
+	m.mutationMu.Lock()
+	defer m.mutationMu.Unlock()
 	NormalizeCredentialMetadata(auth.Metadata)
 	if errWeight := ValidateAuthWeight(auth); errWeight != nil {
 		return nil, fmt.Errorf("update auth: %w", errWeight)
@@ -114,7 +131,7 @@ func (m *Manager) Update(ctx context.Context, auth *Auth) (*Auth, error) {
 	existing, ok := m.auths[auth.ID]
 	if !ok || existing == nil {
 		m.mu.Unlock()
-		return nil, nil
+		return nil, fmt.Errorf("update auth %s: auth not found", auth.ID)
 	}
 	if !auth.indexAssigned && auth.Index == "" {
 		auth.Index = existing.Index
@@ -143,6 +160,11 @@ func (m *Manager) Update(ctx context.Context, auth *Auth) (*Auth, error) {
 	}
 	auth.EnsureIndex()
 	authClone := auth.Clone()
+	m.mu.Unlock()
+	if errPersist := m.persist(ctx, authClone); errPersist != nil {
+		return nil, fmt.Errorf("update auth persistence: %w", errPersist)
+	}
+	m.mu.Lock()
 	m.auths[auth.ID] = authClone
 	m.mu.Unlock()
 	if !shouldDeferAPIKeyModelAliasRebuild(ctx) {
@@ -152,31 +174,33 @@ func (m *Manager) Update(ctx context.Context, auth *Auth) (*Auth, error) {
 		m.scheduler.upsertAuth(authClone)
 	}
 	m.queueRefreshReschedule(auth.ID)
-	_ = m.persist(ctx, auth)
-	m.hook.OnAuthUpdated(ctx, auth.Clone())
 	if cooldownStateChanged {
-		m.persistCooldownStates(ctx)
+		if errCooldown := m.persistCooldownStates(ctx); errCooldown != nil {
+			return nil, fmt.Errorf("update auth cooldown persistence: %w", errCooldown)
+		}
 	}
+	m.hook.OnAuthUpdated(ctx, auth.Clone())
 	return auth.Clone(), nil
 }
 
 // Remove deletes an auth from runtime state without persisting.
 // Disk and token-store deletion must be handled by the caller.
-func (m *Manager) Remove(ctx context.Context, id string) {
+func (m *Manager) Remove(ctx context.Context, id string) error {
 	if m == nil {
-		return
+		return fmt.Errorf("remove auth: manager is nil")
 	}
 	id = strings.TrimSpace(id)
 	if id == "" {
-		return
+		return fmt.Errorf("remove auth: ID is empty")
 	}
-	_ = ctx
+	m.mutationMu.Lock()
+	defer m.mutationMu.Unlock()
 
 	m.mu.Lock()
 	existing := m.auths[id]
 	if existing == nil {
 		m.mu.Unlock()
-		return
+		return nil
 	}
 	provider := strings.TrimSpace(existing.Provider)
 	delete(m.auths, id)
@@ -210,7 +234,10 @@ func (m *Manager) Remove(ctx context.Context, id string) {
 			}
 		}
 	}
-	m.persistCooldownStates(ctx)
+	if errCooldown := m.persistCooldownStates(ctx); errCooldown != nil {
+		return fmt.Errorf("remove auth cooldown persistence: %w", errCooldown)
+	}
+	return nil
 }
 
 func (m *Manager) invalidateSessionAffinity(authID string) {

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	misc "github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/modelrouting"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -30,6 +31,19 @@ type ModelInfo struct {
 	// CanonicalModelID links an alias/variant ID to its canonical base model.
 	// Empty means this record is itself canonical.
 	CanonicalModelID string `json:"canonical_model_id,omitempty"`
+	// CatalogProviderID is the explicit models.dev canonical provider identity.
+	CatalogProviderID string `json:"-"`
+	// CatalogModelID is the explicit models.dev canonical model identity. It is
+	// distinct from CanonicalModelID, which tracks runtime alias lineage.
+	CatalogModelID string `json:"-"`
+	// CatalogRouteProviderID is the explicit models.dev provider host for this route.
+	CatalogRouteProviderID string `json:"-"`
+	// CatalogRouteModelID is the exact model key below the models.dev provider host.
+	CatalogRouteModelID string `json:"-"`
+	// VariantID marks this record as a model-owned variant when non-empty.
+	VariantID string `json:"-"`
+	// Protocols names the exact wire protocols supported by this route.
+	Protocols []string `json:"-"`
 	// Object type for the model (typically "model")
 	Object string `json:"object"`
 	// Created timestamp when the model was created
@@ -87,21 +101,8 @@ type ModelInfo struct {
 	// It is internal metadata and is not exposed in model listings.
 	IsCompat bool `json:"-"`
 
-	// Pricing is the source-attributed USD cost per million tokens.
-	Pricing *ModelPricing `json:"pricing,omitempty"`
-}
-
-// ModelPricing preserves the external pricing record used to configure a model.
-// Nil component pointers mean the source did not publish that price; zero is a
-// real, explicitly free price.
-type ModelPricing struct {
-	InputPerMillion     *float64  `json:"input_per_million" yaml:"input-per-million"`
-	OutputPerMillion    *float64  `json:"output_per_million" yaml:"output-per-million"`
-	CacheReadPerMillion *float64  `json:"cache_read_per_million,omitempty" yaml:"cache-read-per-million,omitempty"`
-	Currency            string    `json:"currency" yaml:"currency"`
-	Source              string    `json:"source" yaml:"source"`
-	SourceDigest        string    `json:"source_digest" yaml:"source-digest"`
-	FetchedAt           time.Time `json:"fetched_at" yaml:"fetched-at"`
+	// Pricing preserves exact catalog decimals for the selected route.
+	Pricing *modelrouting.Pricing `json:"pricing,omitempty"`
 }
 
 // ModelConfig holds optional runtime overrides for a model definition.
@@ -150,26 +151,17 @@ type ModelRegistration struct {
 	SuspendedClients map[string]string
 }
 
-// ModelInventoryEntry is the management-plane view of one registered model.
-// It intentionally aggregates route state so management consumers never receive
-// credential or client identifiers.
-type ModelInventoryEntry struct {
-	Model                *ModelInfo            `json:"model"`
-	RegisteredRoutes     int                   `json:"registered_routes"`
-	SelectableRoutes     int                   `json:"selectable_routes"`
-	QuotaBlockedRoutes   int                   `json:"quota_blocked_routes"`
-	SuspendedRoutes      int                   `json:"suspended_routes"`
-	Providers            map[string]int        `json:"providers"`
-	SelectableByProvider map[string]int        `json:"selectable_by_provider"`
-	ProviderModels       map[string]*ModelInfo `json:"provider_models"`
-	NextQuotaRecovery    *time.Time            `json:"next_quota_recovery,omitempty"`
-}
-
-// ModelInventorySnapshot is a point-in-time, secret-free registry snapshot.
-type ModelInventorySnapshot struct {
-	GeneratedAt time.Time             `json:"generated_at"`
-	Generation  uint64                `json:"generation"`
-	Models      []ModelInventoryEntry `json:"models"`
+// RegisteredRouteSnapshot is an internal management-plane fact. ClientID is
+// never serialized; the inventory boundary hashes it before publication.
+type RegisteredRouteSnapshot struct {
+	ClientID         string
+	RouteChannel     string
+	RuntimeModelID   string
+	Model            *ModelInfo
+	QuotaBlocked     bool
+	QuotaResetsAt    *time.Time
+	SuspensionReason string
+	LastUpdated      time.Time
 }
 
 // ModelRegistryHook provides optional callbacks for external integrations to track model list changes.
@@ -194,8 +186,6 @@ type ModelRegistry struct {
 	mutex *sync.RWMutex
 	// availableModelsCache stores per-handler snapshots for GetAvailableModels.
 	availableModelsCache map[string]availableModelsCacheEntry
-	// modelPricing maps exact routed model IDs to the externally measured catalog price.
-	modelPricing map[string]*ModelPricing
 	// generation tracks changes to model registrations and availability.
 	generation uint64
 	// hook is an optional callback sink for model registration changes
@@ -215,31 +205,12 @@ func GetGlobalRegistry() *ModelRegistry {
 			clientModelInfos:     make(map[string]map[string]*ModelInfo),
 			clientProviders:      make(map[string]string),
 			availableModelsCache: make(map[string]availableModelsCacheEntry),
-			modelPricing:         make(map[string]*ModelPricing),
 			mutex:                &sync.RWMutex{},
 		}
 	})
 	return globalRegistry
 }
 
-// ModelPricingKey returns the canonical identity for one routed model price.
-func ModelPricingKey(channel, modelID string) string {
-	return strings.ToLower(strings.TrimSpace(channel)) + "\x00" + strings.TrimSpace(modelID)
-}
-
-// SetModelPricing atomically replaces the source-attributed channel/model price catalog.
-func (r *ModelRegistry) SetModelPricing(pricing map[string]*ModelPricing) {
-	r.mutex.Lock()
-	defer r.mutex.Unlock()
-	r.modelPricing = make(map[string]*ModelPricing, len(pricing))
-	for modelID, record := range pricing {
-		if modelID == "" || record == nil {
-			continue
-		}
-		r.modelPricing[modelID] = cloneModelPricing(record)
-	}
-	r.invalidateAvailableModelsCacheLocked()
-}
 func (r *ModelRegistry) ensureAvailableModelsCacheLocked() {
 	if r.availableModelsCache == nil {
 		r.availableModelsCache = make(map[string]availableModelsCacheEntry)
@@ -661,6 +632,9 @@ func cloneModelInfo(model *ModelInfo) *ModelInfo {
 	if len(model.SupportedOutputModalities) > 0 {
 		copyModel.SupportedOutputModalities = append([]string(nil), model.SupportedOutputModalities...)
 	}
+	if len(model.Protocols) > 0 {
+		copyModel.Protocols = append([]string(nil), model.Protocols...)
+	}
 	if model.Thinking != nil {
 		copyThinking := *model.Thinking
 		if len(model.Thinking.Levels) > 0 {
@@ -669,20 +643,7 @@ func cloneModelInfo(model *ModelInfo) *ModelInfo {
 		copyModel.Thinking = &copyThinking
 	}
 	if model.Pricing != nil {
-		copyPricing := *model.Pricing
-		if model.Pricing.InputPerMillion != nil {
-			value := *model.Pricing.InputPerMillion
-			copyPricing.InputPerMillion = &value
-		}
-		if model.Pricing.OutputPerMillion != nil {
-			value := *model.Pricing.OutputPerMillion
-			copyPricing.OutputPerMillion = &value
-		}
-		if model.Pricing.CacheReadPerMillion != nil {
-			value := *model.Pricing.CacheReadPerMillion
-			copyPricing.CacheReadPerMillion = &value
-		}
-		copyModel.Pricing = &copyPricing
+		copyModel.Pricing = modelrouting.ClonePricing(model.Pricing)
 	}
 	if model.Config != nil {
 		copyConfig := *model.Config
@@ -697,32 +658,12 @@ func cloneModelInfo(model *ModelInfo) *ModelInfo {
 	return &copyModel
 }
 
-func cloneModelPricing(pricing *ModelPricing) *ModelPricing {
-	if pricing == nil {
-		return nil
-	}
-	copyPricing := *pricing
-	if pricing.InputPerMillion != nil {
-		value := *pricing.InputPerMillion
-		copyPricing.InputPerMillion = &value
-	}
-	if pricing.OutputPerMillion != nil {
-		value := *pricing.OutputPerMillion
-		copyPricing.OutputPerMillion = &value
-	}
-	if pricing.CacheReadPerMillion != nil {
-		value := *pricing.CacheReadPerMillion
-		copyPricing.CacheReadPerMillion = &value
-	}
-	return &copyPricing
-}
-
 func (r *ModelRegistry) withCatalogPricingLocked(model *ModelInfo, provider string) *ModelInfo {
 	result := cloneModelInfo(model)
 	if result == nil || result.Pricing != nil || strings.TrimSpace(provider) == "" {
 		return result
 	}
-	result.Pricing = cloneModelPricing(r.modelPricing[ModelPricingKey(provider, result.ID)])
+	result.Pricing = modelrouting.ActivePricing(provider, result.ID)
 	return result
 }
 
@@ -1044,58 +985,54 @@ func (r *ModelRegistry) GetAvailableModelInfos() []*ModelInfo {
 	return result
 }
 
-// GetModelInventory returns every registered model, including models whose
-// routes are currently blocked. Route identities are reduced to aggregate
-// counts to avoid exposing credential or client identifiers.
-func (r *ModelRegistry) GetModelInventory() ModelInventorySnapshot {
+// RegisteredRouteSnapshots returns every credential/model registration for the
+// management inventory builder. Callers must hash ClientID before serialization.
+func (r *ModelRegistry) RegisteredRouteSnapshots() []RegisteredRouteSnapshot {
 	now := time.Now().UTC()
 	r.mutex.RLock()
 	defer r.mutex.RUnlock()
-
-	snapshot := ModelInventorySnapshot{
-		GeneratedAt: now,
-		Generation:  r.generation,
-		Models:      make([]ModelInventoryEntry, 0, len(r.models)),
-	}
-	for modelID, registration := range r.models {
-		if registration == nil || registration.Info == nil {
-			continue
-		}
-		selectable, recoveryAt := r.selectableModelClientsLocked(modelID, "", registration, now)
-		entry := ModelInventoryEntry{
-			Model:                cloneModelInfo(registration.Info),
-			RegisteredRoutes:     registration.Count,
-			SelectableRoutes:     selectable,
-			Providers:            make(map[string]int, len(registration.Providers)),
-			SelectableByProvider: make(map[string]int, len(registration.Providers)),
-			ProviderModels:       make(map[string]*ModelInfo, len(registration.InfoByProvider)),
-		}
-		for provider, count := range registration.Providers {
-			entry.Providers[provider] = count
-			providerSelectable, _ := r.selectableModelClientsLocked(modelID, provider, registration, now)
-			entry.SelectableByProvider[provider] = providerSelectable
-		}
-		for provider, info := range registration.InfoByProvider {
-			entry.ProviderModels[provider] = cloneModelInfo(info)
-		}
-		blockedByQuota := make(map[string]struct{})
-		for clientID, quotaTime := range registration.QuotaExceededClients {
-			if quotaTime != nil && now.Before(quotaTime.Add(modelQuotaExceededWindow)) {
-				blockedByQuota[clientID] = struct{}{}
+	result := make([]RegisteredRouteSnapshot, 0)
+	for clientID, modelIDs := range r.clientModels {
+		provider := r.clientProviders[clientID]
+		for _, modelID := range modelIDs {
+			registration := r.models[modelID]
+			if registration == nil {
+				continue
 			}
+			info := registration.Info
+			if byClient := r.clientModelInfos[clientID]; byClient != nil && byClient[modelID] != nil {
+				info = byClient[modelID]
+			} else if registration.InfoByProvider[provider] != nil {
+				info = registration.InfoByProvider[provider]
+			}
+			if info == nil {
+				continue
+			}
+			snapshot := RegisteredRouteSnapshot{
+				ClientID: clientID, RouteChannel: provider, RuntimeModelID: modelID,
+				Model: cloneModelInfo(info), SuspensionReason: registration.SuspendedClients[clientID],
+				LastUpdated: registration.LastUpdated.UTC(),
+			}
+			if markedAt := registration.QuotaExceededClients[clientID]; markedAt != nil {
+				resetsAt := markedAt.Add(modelQuotaExceededWindow).UTC()
+				if now.Before(resetsAt) {
+					snapshot.QuotaBlocked = true
+					snapshot.QuotaResetsAt = &resetsAt
+				}
+			}
+			result = append(result, snapshot)
 		}
-		entry.QuotaBlockedRoutes = len(blockedByQuota)
-		entry.SuspendedRoutes = len(registration.SuspendedClients)
-		if !recoveryAt.IsZero() {
-			recovery := recoveryAt.UTC()
-			entry.NextQuotaRecovery = &recovery
-		}
-		snapshot.Models = append(snapshot.Models, entry)
 	}
-	sort.Slice(snapshot.Models, func(i, j int) bool {
-		return snapshot.Models[i].Model.ID < snapshot.Models[j].Model.ID
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].RuntimeModelID != result[j].RuntimeModelID {
+			return result[i].RuntimeModelID < result[j].RuntimeModelID
+		}
+		if result[i].RouteChannel != result[j].RouteChannel {
+			return result[i].RouteChannel < result[j].RouteChannel
+		}
+		return result[i].ClientID < result[j].ClientID
 	})
-	return snapshot
+	return result
 }
 
 func (r *ModelRegistry) buildAvailableModelsLocked(handlerType string, now time.Time) ([]map[string]any, time.Time) {
@@ -1506,24 +1443,15 @@ func (r *ModelRegistry) convertModelToMap(model *ModelInfo, handlerType string) 
 	}
 }
 
-func modelPricingMap(pricing *ModelPricing) map[string]any {
+func modelPricingMap(pricing *modelrouting.Pricing) map[string]any {
 	if pricing == nil {
 		return nil
 	}
 	result := map[string]any{
-		"currency":      pricing.Currency,
-		"source":        pricing.Source,
-		"source_digest": pricing.SourceDigest,
-		"fetched_at":    pricing.FetchedAt.UTC().Format(time.RFC3339),
-	}
-	if pricing.InputPerMillion != nil {
-		result["input_per_million"] = *pricing.InputPerMillion
-	}
-	if pricing.OutputPerMillion != nil {
-		result["output_per_million"] = *pricing.OutputPerMillion
-	}
-	if pricing.CacheReadPerMillion != nil {
-		result["cache_read_per_million"] = *pricing.CacheReadPerMillion
+		"currency":  pricing.Currency,
+		"unit":      pricing.Unit,
+		"source_id": pricing.SourceID,
+		"entries":   pricing.Entries,
 	}
 	return result
 }

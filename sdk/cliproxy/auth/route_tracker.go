@@ -26,9 +26,10 @@ type routeAttemptTracker struct {
 }
 
 type routeExecutionState struct {
-	tracker        *routeAttemptTracker
-	tried          map[string]struct{}
-	callerExcluded map[string]struct{}
+	tracker                 *routeAttemptTracker
+	tried                   map[string]struct{}
+	callerExcluded          map[string]struct{}
+	modelRoutingAcquisition *modelRoutingAcquisitionScope
 }
 
 func newRouteAttemptTracker() *routeAttemptTracker {

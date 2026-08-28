@@ -25,7 +25,7 @@ type serverOptionConfig struct {
 	postAuthHook          auth.PostAuthHook
 	postAuthPersistHook   auth.PostAuthHook
 	pluginHost            *pluginhost.Host
-	configReloadHook      func(context.Context, *config.Config)
+	configReloadHook      func(context.Context, *config.Config) error
 	exampleAPIKeySafeMode bool
 }
 
@@ -121,7 +121,7 @@ func WithPluginHost(host *pluginhost.Host) ServerOption {
 }
 
 // WithConfigReloadHook registers a callback used after management saves config changes.
-func WithConfigReloadHook(hook func(context.Context, *config.Config)) ServerOption {
+func WithConfigReloadHook(hook func(context.Context, *config.Config) error) ServerOption {
 	return func(cfg *serverOptionConfig) {
 		cfg.configReloadHook = hook
 	}

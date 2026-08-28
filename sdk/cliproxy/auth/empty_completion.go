@@ -1468,6 +1468,5 @@ func (a *emptyCompletionAccum) evalSSE(payload []byte) {
 func (m *Manager) markEmptyCompletion(ctx context.Context, result *Result) error {
 	result.Success = false
 	result.Error = errEmptyCompletion
-	m.MarkResult(ctx, *result)
-	return errEmptyCompletion
+	return joinExecutionResultError(errEmptyCompletion, m.MarkResult(ctx, *result))
 }

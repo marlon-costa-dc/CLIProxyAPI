@@ -211,6 +211,6 @@ func BenchmarkManagerPickNextAndMarkResult1000(b *testing.B) {
 		if errPick != nil || auth == nil {
 			b.Fatalf("pickNext failed: auth=%v err=%v", auth, errPick)
 		}
-		manager.MarkResult(ctx, Result{AuthID: auth.ID, Provider: "gemini", Model: model, Success: true})
+		mustMarkResult(b, manager, ctx, Result{AuthID: auth.ID, Provider: "gemini", Model: model, Success: true})
 	}
 }

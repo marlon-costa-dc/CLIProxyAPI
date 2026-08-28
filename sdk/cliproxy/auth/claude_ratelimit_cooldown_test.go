@@ -40,7 +40,7 @@ func TestAuthManager_ConcurrentSuccessDoesNotClearActiveCredentialCooldown(t *te
 
 	// 1. Request A fails with 7d credential-scoped cooldown
 	sevenDayDuration := 7 * 24 * time.Hour
-	manager.MarkResult(context.Background(), Result{
+	mustMarkResult(t, manager, context.Background(), Result{
 		AuthID:          auth.ID,
 		Provider:        "claude",
 		Model:           "claude-3-5-sonnet-20241022",
@@ -51,7 +51,7 @@ func TestAuthManager_ConcurrentSuccessDoesNotClearActiveCredentialCooldown(t *te
 	})
 
 	// 2. An earlier in-flight request on opus returns 200 OK after the 429
-	manager.MarkResult(context.Background(), Result{
+	mustMarkResult(t, manager, context.Background(), Result{
 		AuthID:   auth.ID,
 		Provider: "claude",
 		Model:    "claude-3-opus-20240229",
@@ -105,7 +105,7 @@ func TestAuthManager_UpdatePreservesActiveCredentialCooldown(t *testing.T) {
 	}
 
 	sevenDayDuration := 7 * 24 * time.Hour
-	manager.MarkResult(context.Background(), Result{
+	mustMarkResult(t, manager, context.Background(), Result{
 		AuthID:          auth.ID,
 		Provider:        "claude",
 		Model:           "claude-3-5-sonnet-20241022",
@@ -171,7 +171,7 @@ func TestAuthManager_DisableCoolingDoesNotPermanentlyBlock(t *testing.T) {
 
 	// 429 arrives while cooling is disabled
 	sevenDayDuration := 7 * 24 * time.Hour
-	manager.MarkResult(context.Background(), Result{
+	mustMarkResult(t, manager, context.Background(), Result{
 		AuthID:          auth.ID,
 		Provider:        "claude",
 		Model:           "claude-3-5-sonnet-20241022",
@@ -217,7 +217,7 @@ func TestAuthManager_NonClaudeProvider_Model429DoesNotBlockSiblingModels(t *test
 	}
 
 	// Regular model 429 on gpt-4o (CredentialScope is false)
-	manager.MarkResult(context.Background(), Result{
+	mustMarkResult(t, manager, context.Background(), Result{
 		AuthID:          auth.ID,
 		Provider:        "openai",
 		Model:           "gpt-4o",
@@ -263,7 +263,7 @@ func TestAuthManager_CooldownPersistenceAcrossRestore(t *testing.T) {
 	}
 
 	futureCooldown := 7 * 24 * time.Hour
-	manager.MarkResult(context.Background(), Result{
+	mustMarkResult(t, manager, context.Background(), Result{
 		AuthID:          auth.ID,
 		Provider:        "claude",
 		Model:           "claude-3-5-sonnet-20241022",

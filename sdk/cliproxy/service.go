@@ -68,6 +68,10 @@ type Service struct {
 	// serverErr channel for server startup/shutdown errors.
 	serverErr chan error
 
+	// runtimeErr delivers the first asynchronous runtime mutation failure to Run.
+	runtimeErr   chan error
+	runtimeErrMu sync.RWMutex
+
 	// watcher handles file system monitoring.
 	watcher *WatcherWrapper
 

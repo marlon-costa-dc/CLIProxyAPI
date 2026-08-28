@@ -59,6 +59,8 @@ type authSelectionEligibility struct {
 	credentialPolicy string
 	disallowFreeAuth bool
 	excludedAuthIDs  map[string]struct{}
+	allowedAuthIDs   map[string]struct{}
+	hasAllowlist     bool
 }
 
 func withRequiredAuthKind(ctx context.Context, requiredKind string) context.Context {
@@ -82,6 +84,7 @@ func authSelectionEligibilityForRequest(ctx context.Context, opts cliproxyexecut
 		disallowFreeAuth: disallowFreeAuthFromMetadata(opts.Metadata),
 		excludedAuthIDs:  extractExcludedAuthIDs(opts.Metadata),
 	}
+	eligibility.allowedAuthIDs, eligibility.hasAllowlist = allowedAuthIDsFromMetadata(opts.Metadata)
 	if ctx != nil {
 		eligibility.requiredKind, _ = ctx.Value(requiredAuthKindContextKey{}).(string)
 		eligibility.credentialPolicy, _ = ctx.Value(credentialPolicyContextKey{}).(string)
@@ -95,6 +98,11 @@ func (e authSelectionEligibility) allows(auth *Auth) bool {
 	}
 	if _, excluded := e.excludedAuthIDs[auth.ID]; excluded {
 		return false
+	}
+	if e.hasAllowlist {
+		if _, allowed := e.allowedAuthIDs[auth.ID]; !allowed {
+			return false
+		}
 	}
 	if e.requiredKind != "" && auth.AuthKind() != e.requiredKind {
 		return false
@@ -942,7 +950,7 @@ func (m *Manager) shouldRetryAfterErrorWithHomeRetryLimit(ctx context.Context, o
 	if isRequestInvalidError(err) || isRequestStopError(err) {
 		return 0, false
 	}
-	if m.HomeEnabled() {
+	if m.HomeEnabled() && !isModelRoutingOptions(opts) {
 		var cooldownErr *homeDispatchRetryAfterError
 		if errors.As(err, &cooldownErr) && cooldownErr != nil {
 			observeHomeCooldownRetryLimit(cooldownErr, &homeRetryLimit, pinnedAuthIDFromMetadata(opts.Metadata) == "")
@@ -1525,7 +1533,7 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 		return nil, nil, &Error{Code: "executor_not_found", Message: "executor not registered"}
 	}
 	selected, errPick := m.scheduler.pickSingle(ctx, provider, model, opts, tried)
-	if errPick != nil && model != "" && shouldRetrySchedulerPick(errPick) {
+	if errPick != nil && model != "" && !isModelRoutingOptions(opts) && shouldRetrySchedulerPick(errPick) {
 		m.syncScheduler()
 		selected, errPick = m.scheduler.pickSingle(ctx, provider, model, opts, tried)
 	}

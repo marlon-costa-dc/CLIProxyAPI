@@ -2,7 +2,6 @@ package auth
 
 import (
 	"encoding/json"
-	"sort"
 	"strings"
 
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
@@ -19,20 +18,14 @@ type modelAliasEntry interface {
 
 // oauthModelAliasEntry stores the upstream model name and mapping flags for an alias.
 type oauthModelAliasEntry struct {
-	channel       string
 	upstreamModel string
 	configAlias   string
 	forceMapping  bool
-	order         int
 }
 
 type oauthModelAliasTable struct {
 	// reverse maps channel -> alias (lower) -> entry with upstream model and flags.
 	reverse map[string]map[string]oauthModelAliasEntry
-	// ordered maps channel -> alias (lower) -> entries in config order for sequential failover.
-	ordered map[string]map[string][]oauthModelAliasEntry
-	// globalOrdered maps alias -> explicitly ordered cross-channel candidates.
-	globalOrdered map[string][]oauthModelAliasEntry
 }
 
 // OAuthModelAliasResult contains the resolved upstream model and mapping metadata.
@@ -47,9 +40,7 @@ func compileOAuthModelAliasTable(aliases map[string][]internalconfig.OAuthModelA
 		return &oauthModelAliasTable{}
 	}
 	out := &oauthModelAliasTable{
-		reverse:       make(map[string]map[string]oauthModelAliasEntry, len(aliases)),
-		ordered:       make(map[string]map[string][]oauthModelAliasEntry, len(aliases)),
-		globalOrdered: make(map[string][]oauthModelAliasEntry),
+		reverse: make(map[string]map[string]oauthModelAliasEntry, len(aliases)),
 	}
 	for rawChannel, entries := range aliases {
 		channel := strings.ToLower(strings.TrimSpace(rawChannel))
@@ -57,7 +48,6 @@ func compileOAuthModelAliasTable(aliases map[string][]internalconfig.OAuthModelA
 			continue
 		}
 		rev := make(map[string]oauthModelAliasEntry, len(entries))
-		ord := make(map[string][]oauthModelAliasEntry, len(entries))
 		for _, entry := range entries {
 			name := strings.TrimSpace(entry.Name)
 			alias := strings.TrimSpace(entry.Alias)
@@ -69,47 +59,20 @@ func compileOAuthModelAliasTable(aliases map[string][]internalconfig.OAuthModelA
 			}
 			aliasKey := strings.ToLower(alias)
 			e := oauthModelAliasEntry{
-				channel:       channel,
 				upstreamModel: name,
 				configAlias:   alias,
 				forceMapping:  entry.ForceMapping,
 			}
-			if entry.Order != nil {
-				e.order = *entry.Order
-				out.globalOrdered[aliasKey] = append(out.globalOrdered[aliasKey], e)
-			}
 			if _, exists := rev[aliasKey]; !exists {
 				rev[aliasKey] = e
 			}
-			ord[aliasKey] = append(ord[aliasKey], e)
 		}
 		if len(rev) > 0 {
 			out.reverse[channel] = rev
 		}
-		if len(ord) > 0 {
-			out.ordered[channel] = ord
-		}
-	}
-	for alias := range out.globalOrdered {
-		sort.SliceStable(out.globalOrdered[alias], func(i, j int) bool {
-			left, right := out.globalOrdered[alias][i], out.globalOrdered[alias][j]
-			if left.order != right.order {
-				return left.order < right.order
-			}
-			if left.channel != right.channel {
-				return left.channel < right.channel
-			}
-			return left.upstreamModel < right.upstreamModel
-		})
 	}
 	if len(out.reverse) == 0 {
 		out.reverse = nil
-	}
-	if len(out.ordered) == 0 {
-		out.ordered = nil
-	}
-	if len(out.globalOrdered) == 0 {
-		out.globalOrdered = nil
 	}
 	return out
 }

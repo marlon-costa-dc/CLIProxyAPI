@@ -2,6 +2,8 @@ package cliproxy
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -61,46 +63,49 @@ func (s *Service) consumeAuthUpdates(ctx context.Context) {
 					break labelDrain
 				}
 			}
-			s.handleAuthUpdates(ctx, updates)
+			if errUpdate := s.handleAuthUpdates(ctx, updates); errUpdate != nil {
+				s.reportRuntimeError(fmt.Errorf("apply queued auth updates: %w", errUpdate))
+				return
+			}
 		}
 	}
 }
 
-func (s *Service) emitAuthUpdate(ctx context.Context, update watcher.AuthUpdate) {
+func (s *Service) emitAuthUpdate(ctx context.Context, update watcher.AuthUpdate) error {
 	if s == nil {
-		return
+		return fmt.Errorf("emit auth update: service is nil")
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if s.watcher != nil && s.watcher.DispatchRuntimeAuthUpdate(update) {
-		return
+		return nil
 	}
 	if s.authUpdates != nil {
 		select {
 		case s.authUpdates <- update:
-			return
+			return nil
 		default:
 			log.Debugf("auth update queue saturated, applying inline action=%v id=%s", update.Action, update.ID)
 		}
 	}
-	s.handleAuthUpdate(ctx, update)
+	return s.handleAuthUpdate(ctx, update)
 }
 
-func (s *Service) handleAuthUpdate(ctx context.Context, update watcher.AuthUpdate) {
-	s.handleAuthUpdates(ctx, []watcher.AuthUpdate{update})
+func (s *Service) handleAuthUpdate(ctx context.Context, update watcher.AuthUpdate) error {
+	return s.handleAuthUpdates(ctx, []watcher.AuthUpdate{update})
 }
 
-func (s *Service) handleAuthUpdates(ctx context.Context, updates []watcher.AuthUpdate) {
+func (s *Service) handleAuthUpdates(ctx context.Context, updates []watcher.AuthUpdate) error {
 	if s == nil {
-		return
+		return fmt.Errorf("handle auth updates: service is nil")
 	}
 	updates = coalesceAuthUpdates(updates)
 	s.cfgMu.RLock()
 	cfg := s.cfg
 	s.cfgMu.RUnlock()
 	if cfg == nil || s.coreManager == nil {
-		return
+		return fmt.Errorf("handle auth updates: config or auth manager is nil")
 	}
 
 	registrationCtx := coreauth.WithDeferredAPIKeyModelAliasRebuild(ctx)
@@ -111,19 +116,22 @@ func (s *Service) handleAuthUpdates(ctx context.Context, updates []watcher.AuthU
 		switch update.Action {
 		case watcher.AuthUpdateActionAdd, watcher.AuthUpdateActionModify:
 			if update.Auth == nil || update.Auth.ID == "" {
-				continue
+				return fmt.Errorf("handle auth update %v: auth and auth ID are required", update.Action)
 			}
-			auth := s.prepareCoreAuthForModelRegistration(registrationCtx, update.Auth)
+			auth, errPrepare := s.prepareCoreAuthForModelRegistration(registrationCtx, update.Auth)
+			if errPrepare != nil {
+				return errPrepare
+			}
 			if auth == nil {
-				continue
+				return fmt.Errorf("handle auth update %v for %s: no prepared auth", update.Action, update.Auth.ID)
 			}
 			needsAliasRebuild = true
 			authForRegistration := auth
 			tasks = append(tasks, modelRegistrationTask{
 				phase:    modelRegistrationPhase(authForRegistration),
 				category: modelRegistrationCategory(authForRegistration),
-				run: func(compatCache *openAICompatibilityRegistrationCache) {
-					s.completeModelRegistrationForAuthWithCache(registrationCtx, authForRegistration, compatCache)
+				run: func(compatCache *openAICompatibilityRegistrationCache) error {
+					return s.completeModelRegistrationForAuthWithCache(registrationCtx, authForRegistration, compatCache)
 				},
 			})
 			needsPluginSync = true
@@ -133,21 +141,45 @@ func (s *Service) handleAuthUpdates(ctx context.Context, updates []watcher.AuthU
 				id = update.Auth.ID
 			}
 			if id == "" {
-				continue
+				return fmt.Errorf("handle auth delete: auth ID is required")
 			}
-			s.applyCoreAuthRemoval(registrationCtx, id)
+			if errRemove := s.applyCoreAuthRemoval(registrationCtx, id); errRemove != nil {
+				return errRemove
+			}
 			needsAliasRebuild = true
 		default:
-			log.Debugf("received unknown auth update action: %v", update.Action)
+			return fmt.Errorf("handle auth update: unknown action %v", update.Action)
 		}
 	}
 
 	if needsAliasRebuild {
 		s.coreManager.RefreshAPIKeyModelAlias()
 	}
-	s.runModelRegistrationTasks(registrationCtx, tasks)
+	if errRegister := s.runModelRegistrationTasks(registrationCtx, tasks); errRegister != nil {
+		return errRegister
+	}
 	if needsPluginSync {
-		s.syncPluginRuntime(registrationCtx)
+		if errSync := s.syncPluginRuntime(registrationCtx); errSync != nil {
+			return fmt.Errorf("sync plugin runtime after auth updates: %w", errSync)
+		}
+	}
+	return nil
+}
+
+func (s *Service) reportRuntimeError(err error) {
+	if s == nil || err == nil {
+		return
+	}
+	s.runtimeErrMu.RLock()
+	runtimeErr := s.runtimeErr
+	s.runtimeErrMu.RUnlock()
+	if runtimeErr == nil {
+		log.WithError(err).Error("runtime mutation failed outside an active service run")
+		return
+	}
+	select {
+	case runtimeErr <- err:
+	default:
 	}
 }
 
@@ -234,11 +266,13 @@ func (s *Service) wsOnConnected(channelID string) {
 		Metadata:   map[string]any{"email": channelID}, // metadata drives logging and usage tracking
 	}
 	log.Infof("websocket provider connected: %s", channelID)
-	s.emitAuthUpdate(context.Background(), watcher.AuthUpdate{
+	if errUpdate := s.emitAuthUpdate(context.Background(), watcher.AuthUpdate{
 		Action: watcher.AuthUpdateActionAdd,
 		ID:     auth.ID,
 		Auth:   auth,
-	})
+	}); errUpdate != nil {
+		s.reportRuntimeError(errUpdate)
+	}
 }
 
 func (s *Service) wsOnDisconnected(channelID string, reason error) {
@@ -255,24 +289,34 @@ func (s *Service) wsOnDisconnected(channelID string, reason error) {
 		log.Infof("websocket provider disconnected: %s", channelID)
 	}
 	ctx := context.Background()
-	s.emitAuthUpdate(ctx, watcher.AuthUpdate{
+	if errUpdate := s.emitAuthUpdate(ctx, watcher.AuthUpdate{
 		Action: watcher.AuthUpdateActionDelete,
 		ID:     channelID,
-	})
-}
-
-func (s *Service) applyCoreAuthAddOrUpdate(ctx context.Context, auth *coreauth.Auth) {
-	auth = s.prepareCoreAuthForModelRegistration(ctx, auth)
-	if auth == nil {
-		return
+	}); errUpdate != nil {
+		s.reportRuntimeError(errUpdate)
 	}
-	s.completeModelRegistrationForAuth(ctx, auth)
-	s.syncPluginRuntime(ctx)
 }
 
-func (s *Service) prepareCoreAuthForModelRegistration(ctx context.Context, auth *coreauth.Auth) *coreauth.Auth {
-	if s == nil || s.coreManager == nil || auth == nil || auth.ID == "" {
+func (s *Service) applyCoreAuthAddOrUpdate(ctx context.Context, auth *coreauth.Auth) error {
+	auth, errPrepare := s.prepareCoreAuthForModelRegistration(ctx, auth)
+	if errPrepare != nil {
+		return errPrepare
+	}
+	if auth == nil {
 		return nil
+	}
+	if errRegister := s.completeModelRegistrationForAuth(ctx, auth); errRegister != nil {
+		return errRegister
+	}
+	if errSync := s.syncPluginRuntime(ctx); errSync != nil {
+		return fmt.Errorf("sync plugin runtime after auth update: %w", errSync)
+	}
+	return nil
+}
+
+func (s *Service) prepareCoreAuthForModelRegistration(ctx context.Context, auth *coreauth.Auth) (*coreauth.Auth, error) {
+	if s == nil || s.coreManager == nil || auth == nil || auth.ID == "" {
+		return nil, nil
 	}
 	auth = auth.Clone()
 	s.ensureExecutorsForAuthWithContext(ctx, auth, false)
@@ -297,31 +341,28 @@ func (s *Service) prepareCoreAuthForModelRegistration(ctx context.Context, auth 
 		_, err = s.coreManager.Register(ctx, auth)
 	}
 	if err != nil {
-		log.Errorf("failed to %s auth %s: %v", op, auth.ID, err)
-		current, ok := s.coreManager.GetByID(auth.ID)
-		if !ok || current.Disabled {
-			GlobalModelRegistry().UnregisterClient(auth.ID)
-			return nil
-		}
-		auth = current
+		GlobalModelRegistry().UnregisterClient(auth.ID)
+		return nil, fmt.Errorf("%s auth %s: %w", op, auth.ID, err)
 	}
-	return auth
+	return auth, nil
 }
 
-func (s *Service) completeModelRegistrationForAuth(ctx context.Context, auth *coreauth.Auth) {
-	s.completeModelRegistrationForAuthWithCache(ctx, auth, nil)
+func (s *Service) completeModelRegistrationForAuth(ctx context.Context, auth *coreauth.Auth) error {
+	return s.completeModelRegistrationForAuthWithCache(ctx, auth, nil)
 }
 
-func (s *Service) completeModelRegistrationForAuthWithCache(ctx context.Context, auth *coreauth.Auth, compatCache *openAICompatibilityRegistrationCache) {
+func (s *Service) completeModelRegistrationForAuthWithCache(ctx context.Context, auth *coreauth.Auth, compatCache *openAICompatibilityRegistrationCache) error {
 	if s == nil || s.coreManager == nil || auth == nil || auth.ID == "" {
-		return
+		return nil
 	}
 	if ctx != nil && ctx.Err() != nil {
-		return
+		return ctx.Err()
 	}
-	s.registerModelsForAuthWithCache(ctx, auth, compatCache)
+	if errRegister := s.registerModelsForAuthWithCache(ctx, auth, compatCache); errRegister != nil {
+		return fmt.Errorf("register models for auth %s: %w", auth.ID, errRegister)
+	}
 	if ctx != nil && ctx.Err() != nil {
-		return
+		return ctx.Err()
 	}
 	s.coreManager.ReconcileRegistryModelStates(ctx, auth.ID)
 
@@ -330,29 +371,37 @@ func (s *Service) completeModelRegistrationForAuthWithCache(ctx context.Context,
 	// have an empty supportedModelSet (because Register/Update upserts into the
 	// scheduler before registerModelsForAuth runs) and are invisible to the scheduler.
 	s.coreManager.RefreshSchedulerEntry(auth.ID)
+	return nil
 }
 
-func (s *Service) applyCoreAuthRemoval(ctx context.Context, id string) {
+func (s *Service) applyCoreAuthRemoval(ctx context.Context, id string) error {
 	if s == nil || id == "" {
-		return
+		return fmt.Errorf("remove core auth: service and auth ID are required")
 	}
 	if s.coreManager == nil {
-		return
+		return fmt.Errorf("remove core auth %s: auth manager is nil", id)
 	}
 	id = strings.TrimSpace(id)
 	var provider string
 	if existing, ok := s.coreManager.GetByID(id); ok && existing != nil {
 		provider = strings.TrimSpace(existing.Provider)
 	}
+	errRemove := s.coreManager.Remove(ctx, id)
 	GlobalModelRegistry().UnregisterClient(id)
-	s.coreManager.Remove(ctx, id)
 	if strings.EqualFold(provider, "codex") {
 		executor.CloseCodexWebsocketSessionsForAuthID(id, "auth_removed")
 	}
 	if strings.EqualFold(provider, "xai") {
 		executor.CloseXAIWebsocketSessionsForAuthID(id, "auth_removed")
 	}
-	s.syncPluginRuntime(ctx)
+	errSync := s.syncPluginRuntime(ctx)
+	if errRemove != nil {
+		errRemove = fmt.Errorf("remove core auth %s: %w", id, errRemove)
+	}
+	if errSync != nil {
+		errSync = fmt.Errorf("sync plugin runtime after removing auth %s: %w", id, errSync)
+	}
+	return errors.Join(errRemove, errSync)
 }
 
 func (s *Service) applyRetryConfig(cfg *config.Config) {
@@ -364,39 +413,42 @@ func (s *Service) applyRetryConfig(cfg *config.Config) {
 	coreauth.SetTransientErrorCooldownSeconds(cfg.TransientErrorCooldownSeconds)
 }
 
-func (s *Service) configureCooldownStateStore(cfg *config.Config) {
-	_ = s.configureCooldownStateStoreContext(context.Background(), cfg, false)
+func (s *Service) configureCooldownStateStore(cfg *config.Config) error {
+	return s.configureCooldownStateStoreContext(context.Background(), cfg, false)
 }
 
-func (s *Service) configureCooldownStateStoreContext(ctx context.Context, cfg *config.Config, persistOld bool) bool {
+func (s *Service) configureCooldownStateStoreContext(ctx context.Context, cfg *config.Config, persistOld bool) error {
 	if s == nil || s.coreManager == nil {
-		return true
+		return nil
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if errContext := ctx.Err(); errContext != nil {
-		return false
+		return errContext
 	}
-	return s.coreManager.SwapCooldownStateStore(ctx, s.resolveCooldownStateStore(cfg), persistOld)
+	store, errResolve := s.resolveCooldownStateStore(cfg)
+	if errResolve != nil {
+		return errResolve
+	}
+	return s.coreManager.SwapCooldownStateStore(ctx, store, persistOld)
 }
 
-func (s *Service) resolveCooldownStateStore(cfg *config.Config) coreauth.CooldownStateStore {
+func (s *Service) resolveCooldownStateStore(cfg *config.Config) (coreauth.CooldownStateStore, error) {
 	if cfg == nil || !cfg.SaveCooldownStatus || cfg.Home.Enabled {
-		return nil
+		return nil, nil
 	}
 	if s != nil && s.cooldownStateStore != nil {
-		return s.cooldownStateStore
+		return s.cooldownStateStore, nil
 	}
 	authDir, errResolve := resolveCooldownStateAuthDir(cfg)
 	if errResolve != nil {
-		log.Warnf("failed to resolve cooldown state directory: %v", errResolve)
-		return nil
+		return nil, fmt.Errorf("resolve cooldown state directory: %w", errResolve)
 	}
 	if authDir == "" {
-		return nil
+		return nil, nil
 	}
-	return coreauth.NewFileCooldownStateStoreWithAuthDir(authDir, authDir)
+	return coreauth.NewFileCooldownStateStoreWithAuthDir(authDir, authDir), nil
 }
 
 func resolveCooldownStateAuthDir(cfg *config.Config) (string, error) {
@@ -413,6 +465,12 @@ func resolveCooldownStateAuthDir(cfg *config.Config) (string, error) {
 func openAICompatInfoFromAuth(a *coreauth.Auth) (providerKey string, compatName string, ok bool) {
 	if a == nil {
 		return "", "", false
+	}
+	if routeChannel := strings.TrimSpace(a.RouteChannel); routeChannel != "" {
+		if len(a.Attributes) > 0 {
+			compatName = strings.TrimSpace(a.Attributes["compat_name"])
+		}
+		return routeChannel, compatName, true
 	}
 	if len(a.Attributes) > 0 {
 		providerKey = strings.TrimSpace(a.Attributes["provider_key"])

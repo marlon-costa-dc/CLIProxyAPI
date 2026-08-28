@@ -217,7 +217,7 @@ func TestManager_ResumeEveryModelAfterCredentialRecovery(t *testing.T) {
 	}
 
 	// Fail with invalid_api_key on modelA -> should suspend all models for this auth
-	manager.MarkResult(ctx, Result{
+	mustMarkResult(t, manager, ctx, Result{
 		AuthID:   authID,
 		Provider: "openai",
 		Model:    modelA,
@@ -244,7 +244,7 @@ func TestManager_ResumeEveryModelAfterCredentialRecovery(t *testing.T) {
 	manager.mu.Unlock()
 
 	// Successful request on modelA -> proves credential recovered
-	manager.MarkResult(ctx, Result{
+	mustMarkResult(t, manager, ctx, Result{
 		AuthID:   authID,
 		Provider: "openai",
 		Model:    modelA,
@@ -288,7 +288,7 @@ func TestManager_ModelSpecificSuspensionSurvivesSiblingSuccess(t *testing.T) {
 	}
 
 	// Fail modelB with model_not_supported -> modelB should be suspended, modelA available
-	manager.MarkResult(ctx, Result{
+	mustMarkResult(t, manager, ctx, Result{
 		AuthID:   authID,
 		Provider: "openai",
 		Model:    modelB,
@@ -304,7 +304,7 @@ func TestManager_ModelSpecificSuspensionSurvivesSiblingSuccess(t *testing.T) {
 	}
 
 	// Success on modelA -> should NOT resume modelB
-	manager.MarkResult(ctx, Result{
+	mustMarkResult(t, manager, ctx, Result{
 		AuthID:   authID,
 		Provider: "openai",
 		Model:    modelA,

@@ -122,3 +122,23 @@ func WriteUpstreamHeaders(dst http.Header, src http.Header) {
 		}
 	}
 }
+
+// mergeTrustedDownstreamHeaders applies headers produced inside CLIProxy after
+// upstream filtering and response interceptors. The separate carrier prevents
+// an upstream response from impersonating routing evidence.
+func mergeTrustedDownstreamHeaders(dst, trusted http.Header) http.Header {
+	if len(trusted) == 0 {
+		return dst
+	}
+	result := dst.Clone()
+	if result == nil {
+		result = make(http.Header)
+	}
+	for key, values := range trusted {
+		result.Del(key)
+		for _, value := range values {
+			result.Add(key, value)
+		}
+	}
+	return result
+}

@@ -49,7 +49,7 @@ func TestManager_MarkResult_ConnectionLifecycleDoesNotCooldown(t *testing.T) {
 			}
 
 			model := "gpt-5.6-sol"
-			m.MarkResult(context.Background(), Result{
+			mustMarkResult(t, m, context.Background(), Result{
 				AuthID:   auth.ID,
 				Provider: auth.Provider,
 				Model:    model,
@@ -77,7 +77,7 @@ func TestManager_MarkResult_ConnectionLifecycleAuthLevelDoesNotCooldown(t *testi
 		t.Fatalf("register auth: %v", errRegister)
 	}
 
-	m.MarkResult(context.Background(), Result{
+	mustMarkResult(t, m, context.Background(), Result{
 		AuthID:   auth.ID,
 		Provider: auth.Provider,
 		// Empty model exercises the auth-level failure path.
@@ -128,7 +128,7 @@ func TestManager_MarkResult_HTTPStatusWithLifecycleTextStillCooldowns(t *testing
 
 			model := "gpt-5.6-sol"
 			before := time.Now()
-			m.MarkResult(context.Background(), Result{
+			mustMarkResult(t, m, context.Background(), Result{
 				AuthID:   auth.ID,
 				Provider: auth.Provider,
 				Model:    model,
@@ -177,7 +177,7 @@ func TestManager_MarkResult_NonLifecycleStillCooldowns(t *testing.T) {
 
 	model := "gpt-5.6-sol"
 	before := time.Now()
-	m.MarkResult(context.Background(), Result{
+	mustMarkResult(t, m, context.Background(), Result{
 		AuthID:   auth.ID,
 		Provider: auth.Provider,
 		Model:    model,
@@ -287,7 +287,7 @@ func TestIsConnectionLifecycleError_TypedCloseWins(t *testing.T) {
 		t.Fatalf("register auth: %v", errRegister)
 	}
 	model := "gpt-5.6-sol"
-	m.MarkResult(context.Background(), Result{
+	mustMarkResult(t, m, context.Background(), Result{
 		AuthID:   auth.ID,
 		Provider: auth.Provider,
 		Model:    model,

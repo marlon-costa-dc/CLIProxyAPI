@@ -16,7 +16,8 @@ import (
 
 // ExecuteStreamWithAuthManager executes a streaming request via the core auth manager.
 // This path is the only supported execution route.
-// The returned http.Header carries upstream response headers captured before streaming begins.
+// The returned http.Header carries filtered upstream headers and trusted CLIProxy headers
+// captured before streaming begins.
 func (h *BaseAPIHandler) ExecuteStreamWithAuthManager(ctx context.Context, handlerType, modelName string, rawJSON []byte, alt string) (<-chan []byte, http.Header, <-chan *interfaces.ErrorMessage) {
 	return h.executeStreamWithAuthManager(ctx, handlerType, modelName, rawJSON, alt, false)
 }
@@ -122,6 +123,7 @@ func (h *BaseAPIHandler) streamWithPluginExecutor(ctx context.Context, entryProt
 		applyStreamHeaders(intercepted.Headers)
 	}
 	upstreamHeaders := downstreamHeadersAfterInterceptors(baseStreamHeaders, rawStreamHeaders, passthroughHeadersEnabled)
+	upstreamHeaders = mergeTrustedDownstreamHeaders(upstreamHeaders, streamResult.DownstreamHeaders)
 	if upstreamHeaders == nil && (passthroughHeadersEnabled || streamInterceptorsActive) {
 		upstreamHeaders = make(http.Header)
 	}
@@ -379,6 +381,7 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 	// returned header snapshot is never modified by the stream goroutine.
 	rawStreamHeaders := cloneHeader(streamResult.Headers)
 	baseStreamHeaders := cloneHeader(streamResult.Headers)
+	trustedDownstreamHeaders := cloneHeader(streamResult.DownstreamHeaders)
 	chunks := streamResult.Chunks
 	if chunks == nil {
 		closed := make(chan coreexecutor.StreamChunk)
@@ -563,6 +566,7 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 		}
 		rawStreamHeaders = cloneHeader(retryResult.Headers)
 		baseStreamHeaders = cloneHeader(retryResult.Headers)
+		trustedDownstreamHeaders = cloneHeader(retryResult.DownstreamHeaders)
 		streamHeaderInitialized = false
 		streamClosedBeforeRead = false
 		bootstrapStreamErr = nil
@@ -581,6 +585,7 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 	}
 
 	upstreamHeaders := downstreamHeadersAfterInterceptors(baseStreamHeaders, rawStreamHeaders, passthroughHeadersEnabled)
+	upstreamHeaders = mergeTrustedDownstreamHeaders(upstreamHeaders, trustedDownstreamHeaders)
 	if upstreamHeaders == nil && (passthroughHeadersEnabled || streamInterceptorsActive) {
 		upstreamHeaders = make(http.Header)
 	}
