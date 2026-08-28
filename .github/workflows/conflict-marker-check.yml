@@ -1,0 +1,19 @@
+name: Conflict Marker Check
+
+on: [push, pull_request]
+
+jobs:
+  check-conflict-markers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check for conflict markers
+        run: |
+          if grep -rnI '<<<<<<< HEAD' . --include='*.py' --include='*.js' --include='*.ts' --include='*.java' --include='*.rs' --include='*.go' --include='*.yml' --include='*.yaml' --include='*.json' --include='*.md' --include='*.txt' --include='*.sh' --include='*.conf' --include='*.cfg' --include='*.toml' --include='*.lock' --include='*.cjs' --include='*.mjs' --include='*.jsonc' --include='*.vue' --include='*.jsx' --include='*.tsx' --include='*.cpp' --include='*.h' --include='*.cs' --include='*.rb' --include='*.php' --include='*.swift' --include='*.kt' --include='*.scala' --include='*.pl' --include='*.pm' --include='*.lua' --include='*.r' --include='*.R' --include='*.sql' --include='*.css' --include='*.scss' --include='*.less' --include='*.html' --include='*.xml' --include='*.svg' --include='*.properties' --include='*.env' --include='*.envrc' --include='Dockerfile' --include='Makefile' --include='*.mk' --include='*.gradle' --include='*.sbt' --include='*.cmake' --include='CMakeLists.txt' --exclude-dir=.git; then
+            echo "::error::Conflict markers found in source files!"
+            grep -rnI '<<<<<<< HEAD' . --include='*.py' --include='*.js' --include='*.ts' --include='*.java' --include='*.rs' --include='*.go' --include='*.yml' --include='*.yaml' --include='*.json' --include='*.md' --include='*.txt' --include='*.sh' --include='*.conf' --include='*.cfg' --include='*.toml' --include='*.lock' --include='*.cjs' --include='*.mjs' --include='*.jsonc' --include='*.vue' --include='*.jsx' --include='*.tsx' --include='*.cpp' --include='*.h' --include='*.cs' --include='*.rb' --include='*.php' --include='*.swift' --include='*.kt' --include='*.scala' --include='*.pl' --include='*.pm' --include='*.lua' --include='*.r' --include='*.R' --include='*.sql' --include='*.css' --include='*.scss' --include='*.less' --include='*.html' --include='*.xml' --include='*.svg' --include='*.properties' --include='*.env' --include='*.envrc' --include='Dockerfile' --include='Makefile' --include='*.mk' --include='*.gradle' --include='*.sbt' --include='*.cmake' --include='CMakeLists.txt' --exclude-dir=.git
+            exit 1
+          else
+            echo "No conflict markers found."
+          fi
+        shell: bash
