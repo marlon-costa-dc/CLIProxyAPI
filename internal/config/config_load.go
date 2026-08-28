@@ -2,11 +2,9 @@ package config
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 	"os"
 	"strings"
-	"syscall"
 
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v3"
@@ -27,36 +25,25 @@ func LoadConfig(configFile string) (*Config, error) {
 }
 
 // LoadConfigOptional reads YAML from configFile.
-// If optional is true and the file is missing, it returns an empty Config.
-// If optional is true and the file is empty or invalid, it returns an empty Config.
+// If optional is true and the file is absent, it returns an empty Config. Any
+// existing file must be readable, non-empty, valid YAML, and runtime-valid.
 func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	// Read the entire configuration file into memory.
 	data, err := os.ReadFile(configFile)
 	if err != nil {
-		if optional {
-			if os.IsNotExist(err) || errors.Is(err, syscall.EISDIR) {
-				// Missing and optional: return empty config (cloud deploy standby).
-				cfg := &Config{CredentialInFlight: DefaultCredentialInFlightConfig()}
-				cfg.NormalizePluginsConfig()
-				return cfg, nil
-			}
+		if optional && os.IsNotExist(err) {
+			cfg := &Config{CredentialInFlight: DefaultCredentialInFlightConfig()}
+			cfg.NormalizePluginsConfig()
+			return cfg, nil
 		}
 		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
 
-	// In cloud deploy mode (optional=true), if file is empty or contains only whitespace, return empty config.
-	if optional && len(bytes.TrimSpace(data)) == 0 {
-		cfg := &Config{CredentialInFlight: DefaultCredentialInFlightConfig()}
-		cfg.NormalizePluginsConfig()
-		return cfg, nil
+	if len(bytes.TrimSpace(data)) == 0 {
+		return nil, fmt.Errorf("config file exists but is empty")
 	}
 
 	if errValidate := validateCredentialWeightYAML(data); errValidate != nil {
-		if optional {
-			cfgOptional := &Config{CredentialInFlight: DefaultCredentialInFlightConfig()}
-			cfgOptional.NormalizePluginsConfig()
-			return cfgOptional, nil
-		}
 		return nil, errValidate
 	}
 
@@ -79,15 +66,8 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
 	cfg.CredentialInFlight = DefaultCredentialInFlightConfig()
 	if err = yaml.Unmarshal(data, &cfg); err != nil {
-		if optional {
-			// In cloud deploy mode, if YAML parsing fails, return empty config instead of error.
-			cfgOptional := &Config{CredentialInFlight: DefaultCredentialInFlightConfig()}
-			cfgOptional.NormalizePluginsConfig()
-			return cfgOptional, nil
-		}
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
-
 	cfg.CredentialConcurrency = cfg.CredentialConcurrency.WithDefaults()
 	if errValidate := cfg.CredentialInFlight.Validate(); errValidate != nil {
 		return nil, errValidate
@@ -110,7 +90,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 		// Persist the hashed value back to the config file to avoid re-hashing on next startup.
 		// Preserve YAML comments and ordering; update only the nested key.
-		_ = SaveConfigPreserveCommentsUpdateNestedScalar(configFile, []string{"remote-management", "secret-key"}, hashed)
+		if errPersist := SaveConfigPreserveCommentsUpdateNestedScalar(configFile, []string{"remote-management", "secret-key"}, hashed); errPersist != nil {
+			return nil, fmt.Errorf("persist hashed remote management key: %w", errPersist)
+		}
 	}
 
 	cfg.RemoteManagement.PanelGitHubRepository = strings.TrimSpace(cfg.RemoteManagement.PanelGitHubRepository)

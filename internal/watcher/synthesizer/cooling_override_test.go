@@ -13,6 +13,8 @@ func boolPointer(value bool) *bool {
 
 func TestConfigSynthesizerPreservesExplicitFalseCoolingOverrides(t *testing.T) {
 	disableCooling := false
+	compat := modelPipelineOpenAICompatibility("compat", "https://compat.example.com", "compat-key")
+	compat.DisableCooling = &disableCooling
 	tests := []struct {
 		name string
 		cfg  *config.Config
@@ -56,12 +58,7 @@ func TestConfigSynthesizerPreservesExplicitFalseCoolingOverrides(t *testing.T) {
 		},
 		{
 			name: "openai compatibility",
-			cfg: &config.Config{OpenAICompatibility: []config.OpenAICompatibility{{
-				Name:           "compat",
-				BaseURL:        "https://compat.example.com",
-				DisableCooling: &disableCooling,
-				APIKeyEntries:  []config.OpenAICompatibilityAPIKey{{APIKey: "compat-key"}},
-			}}},
+			cfg:  &config.Config{OpenAICompatibility: []config.OpenAICompatibility{compat}},
 		},
 		{
 			name: "vertex",

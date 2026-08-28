@@ -330,7 +330,9 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 				action, okAction := matchRequestScopedErrorAction(auth, chunk.Err, m.runtimeConfigSnapshot())
 				result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: rerr, Options: opts}
 				applyRequestScopedActionToResult(action, okAction, &result)
-				m.recordExecutionResult(ctx, result, auth, ephemeralResult)
+				if errRecord := m.recordExecutionResult(ctx, result, auth, ephemeralResult); errRecord != nil {
+					chunk.Err = joinExecutionResultError(chunk.Err, errRecord)
+				}
 			}
 			if !forward {
 				return false
@@ -387,7 +389,17 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 			}
 		}
 		if !failed && (ephemeralResult || claudeOAuthRequestCancellation(ctx, auth, nil) == nil) {
-			m.recordExecutionResult(ctx, Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: true, Options: opts}, auth, ephemeralResult)
+			if errRecord := m.recordExecutionResult(ctx, Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: true, Options: opts}, auth, ephemeralResult); errRecord != nil && forward {
+				chunk := cliproxyexecutor.StreamChunk{Err: joinExecutionResultError(nil, errRecord)}
+				if ctx == nil {
+					out <- chunk
+				} else {
+					select {
+					case <-ctx.Done():
+					case out <- chunk:
+					}
+				}
+			}
 		}
 	}()
 	return &cliproxyexecutor.StreamResult{Headers: headers, Chunks: out}
@@ -412,8 +424,8 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 		_, didRefreshOnUnauthorized = unauthorizedRefreshTried[auth.ID]
 	}
 	for idx, execModel := range execModels {
+		ctx = newUpstreamAttemptContext(ctx)
 		ttftTimeout := m.streamFirstChunkTimeout(opts)
-
 		resultModel := m.stateModelForExecution(auth, routeModel, execModel, pooled)
 		execReq := req
 		execReq.Model = execModel
@@ -459,7 +471,8 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 				scope.stop()
 				alreadyTried := didRefreshOnUnauthorized
 				willAttemptHomeRefresh := ephemeralResult && !alreadyTried && auth != nil && auth.AuthKind() == AuthKindOAuth && isUnauthorizedError(errStream)
-				refreshed, okRefresh, errRefresh := m.tryRefreshExecutionAuthAfterUnauthorized(ctx, executor, auth, errStream, alreadyTried, ephemeralResult)
+				refreshCtx := newUpstreamAttemptContext(ctx)
+				refreshed, okRefresh, errRefresh := m.tryRefreshExecutionAuthAfterUnauthorized(refreshCtx, executor, auth, errStream, alreadyTried, ephemeralResult)
 				if willAttemptHomeRefresh {
 					didRefreshOnUnauthorized = true
 					if unauthorizedRefreshTried != nil {
@@ -478,6 +491,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 					publishSelectedAuthMetadata(execOpts.Metadata, auth)
 					didRefreshOnUnauthorized = true
 					// Fresh TTFT budget and attempt context for the retry.
+					ctx = newUpstreamAttemptContext(ctx)
 					scope.release()
 					scope = newTTFTScope(ctx, ttftTimeout)
 					attemptCtx = scope.ctx
@@ -526,7 +540,9 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 				result.CredentialScope = true
 			}
 			applyRequestScopedActionToResult(action, okAction, &result)
-			m.recordExecutionResult(ctx, result, auth, ephemeralResult)
+			if errRecord := m.recordExecutionResult(ctx, result, auth, ephemeralResult); errRecord != nil {
+				return nil, joinExecutionResultError(errStream, errRecord)
+			}
 			if okAction {
 				if isRequestScopedStop(action, okAction) {
 					return nil, wrapRequestStopError(errStream)
@@ -563,7 +579,8 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 				scope.stop()
 				alreadyTried := didRefreshOnUnauthorized
 				willAttemptHomeRefresh := ephemeralResult && !alreadyTried && auth != nil && auth.AuthKind() == AuthKindOAuth && isUnauthorizedError(bootstrapErr)
-				refreshed, okRefresh, errRefresh := m.tryRefreshExecutionAuthAfterUnauthorized(ctx, executor, auth, bootstrapErr, alreadyTried, ephemeralResult)
+				refreshCtx := newUpstreamAttemptContext(ctx)
+				refreshed, okRefresh, errRefresh := m.tryRefreshExecutionAuthAfterUnauthorized(refreshCtx, executor, auth, bootstrapErr, alreadyTried, ephemeralResult)
 				if willAttemptHomeRefresh {
 					didRefreshOnUnauthorized = true
 					if unauthorizedRefreshTried != nil {
@@ -582,6 +599,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 					publishSelectedAuthMetadata(execOpts.Metadata, auth)
 					didRefreshOnUnauthorized = true
 					// Fresh TTFT budget and attempt context for the retry.
+					ctx = newUpstreamAttemptContext(ctx)
 					scope.release()
 					scope = newTTFTScope(ctx, ttftTimeout)
 					attemptCtx = scope.ctx
@@ -638,7 +656,10 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 					result.CredentialScope = true
 				}
 				applyRequestScopedActionToResult(action, okAction, &result)
-				m.recordExecutionResult(ctx, result, auth, ephemeralResult)
+				if errRecord := m.recordExecutionResult(ctx, result, auth, ephemeralResult); errRecord != nil {
+					discardStreamChunks(streamResult.Chunks)
+					return nil, newStreamBootstrapError(joinExecutionResultError(bootstrapErr, errRecord), streamResult.Headers)
+				}
 				discardStreamChunks(streamResult.Chunks)
 				if isRequestScopedStop(action, okAction) {
 					return nil, wrapRequestStopError(bootstrapErr)
@@ -656,7 +677,10 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 				if isCredentialScopedError(bootstrapErr) {
 					result.CredentialScope = true
 				}
-				m.recordExecutionResult(ctx, result, auth, ephemeralResult)
+				if errRecord := m.recordExecutionResult(ctx, result, auth, ephemeralResult); errRecord != nil {
+					discardStreamChunks(streamResult.Chunks)
+					return nil, newStreamBootstrapError(joinExecutionResultError(bootstrapErr, errRecord), streamResult.Headers)
+				}
 				discardStreamChunks(streamResult.Chunks)
 				return nil, bootstrapErr
 			}
@@ -667,7 +691,10 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 				if isCredentialScopedError(bootstrapErr) {
 					result.CredentialScope = true
 				}
-				m.recordExecutionResult(ctx, result, auth, ephemeralResult)
+				if errRecord := m.recordExecutionResult(ctx, result, auth, ephemeralResult); errRecord != nil {
+					discardStreamChunks(streamResult.Chunks)
+					return nil, newStreamBootstrapError(joinExecutionResultError(bootstrapErr, errRecord), streamResult.Headers)
+				}
 				discardStreamChunks(streamResult.Chunks)
 				lastErr = bootstrapErr
 				if result.CredentialScope {
@@ -681,7 +708,10 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			if isCredentialScopedError(bootstrapErr) {
 				result.CredentialScope = true
 			}
-			m.recordExecutionResult(ctx, result, auth, ephemeralResult)
+			if errRecord := m.recordExecutionResult(ctx, result, auth, ephemeralResult); errRecord != nil {
+				discardStreamChunks(streamResult.Chunks)
+				return nil, newStreamBootstrapError(joinExecutionResultError(bootstrapErr, errRecord), streamResult.Headers)
+			}
 			discardStreamChunks(streamResult.Chunks)
 			return nil, newStreamBootstrapError(bootstrapErr, streamResult.Headers)
 		}
@@ -703,7 +733,10 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			}
 			warnLogUpstreamFailure(ctx, entry, provider, execModel, auth, time.Since(startStream), emptyErr)
 			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: emptyErr, Options: execOpts}
-			m.recordExecutionResult(ctx, result, auth, ephemeralResult)
+			if errRecord := m.recordExecutionResult(ctx, result, auth, ephemeralResult); errRecord != nil {
+				discardStreamChunks(streamResult.Chunks)
+				return nil, newStreamBootstrapError(joinExecutionResultError(emptyErr, errRecord), streamResult.Headers)
+			}
 			discardStreamChunks(streamResult.Chunks)
 			if idx < len(execModels)-1 {
 				lastErr = emptyErr

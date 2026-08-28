@@ -861,24 +861,28 @@ func (h *Handler) savePluginLoginRecords(ctx context.Context, state, provider st
 			savedPaths = append(savedPaths, savedPath)
 		}
 		if errSave != nil {
-			h.rollbackSavedTokenRecords(ctx, savedPaths)
-			return errSave
+			errRollback := h.rollbackSavedTokenRecords(ctx, savedPaths)
+			return errors.Join(errSave, errRollback)
 		}
 	}
 	return nil
 }
 
-func (h *Handler) rollbackSavedTokenRecords(ctx context.Context, savedPaths []string) {
+func (h *Handler) rollbackSavedTokenRecords(ctx context.Context, savedPaths []string) error {
+	var rollbackErr error
 	for i := len(savedPaths) - 1; i >= 0; i-- {
 		path := strings.TrimSpace(savedPaths[i])
 		if path == "" {
 			continue
 		}
 		if errDelete := h.deleteTokenRecord(ctx, path); errDelete != nil {
-			log.WithError(errDelete).WithField("path", path).Warn("failed to roll back plugin auth token")
+			rollbackErr = errors.Join(rollbackErr, fmt.Errorf("delete rolled-back plugin auth token %s: %w", path, errDelete))
 		}
-		h.removeAuthsForPath(ctx, path, path)
+		if errRemove := h.removeAuthsForPath(ctx, path, path); errRemove != nil {
+			rollbackErr = errors.Join(rollbackErr, fmt.Errorf("remove rolled-back plugin auth %s: %w", path, errRemove))
+		}
 	}
+	return rollbackErr
 }
 
 // PopulateAuthContext extracts request info and adds it to the context

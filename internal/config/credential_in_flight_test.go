@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -21,40 +22,36 @@ func TestLoadConfigOptionalMissingFallbackAppliesCredentialInFlightDefaults(t *t
 	assertOptionalConfigFallback(t, cfg)
 }
 
-func TestLoadConfigOptionalEmptyFallbackAppliesCredentialInFlightDefaults(t *testing.T) {
+func TestLoadConfigOptionalEmptyFileFailsLoudly(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	if errWrite := os.WriteFile(configPath, nil, 0o600); errWrite != nil {
 		t.Fatal(errWrite)
 	}
-	cfg, errLoad := LoadConfigOptional(configPath, true)
-	if errLoad != nil {
-		t.Fatalf("LoadConfigOptional() error = %v", errLoad)
-	}
-	assertOptionalConfigFallback(t, cfg)
+	assertOptionalConfigLoadError(t, configPath, "config file exists but is empty")
 }
 
-func TestLoadConfigOptionalWhitespaceFallbackAppliesCredentialInFlightDefaults(t *testing.T) {
+func TestLoadConfigOptionalWhitespaceFileFailsLoudly(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	if errWrite := os.WriteFile(configPath, []byte(" \t\n\r "), 0o600); errWrite != nil {
 		t.Fatal(errWrite)
 	}
-	cfg, errLoad := LoadConfigOptional(configPath, true)
-	if errLoad != nil {
-		t.Fatalf("LoadConfigOptional() error = %v", errLoad)
-	}
-	assertOptionalConfigFallback(t, cfg)
+	assertOptionalConfigLoadError(t, configPath, "config file exists but is empty")
 }
 
-func TestLoadConfigOptionalInvalidFallbackAppliesCredentialInFlightDefaults(t *testing.T) {
+func TestLoadConfigOptionalInvalidFileFailsLoudly(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	if errWrite := os.WriteFile(configPath, []byte(":"), 0o600); errWrite != nil {
 		t.Fatal(errWrite)
 	}
+	assertOptionalConfigLoadError(t, configPath, "failed to parse config file")
+}
+
+func assertOptionalConfigLoadError(t *testing.T, configPath, want string) {
+	t.Helper()
 	cfg, errLoad := LoadConfigOptional(configPath, true)
-	if errLoad != nil {
-		t.Fatalf("LoadConfigOptional() error = %v", errLoad)
+	if errLoad == nil || !strings.Contains(errLoad.Error(), want) {
+		t.Fatalf("LoadConfigOptional() = (%#v, %v), want error containing %q", cfg, errLoad, want)
 	}
-	assertOptionalConfigFallback(t, cfg)
 }
 
 func assertOptionalConfigFallback(t *testing.T, cfg *Config) {

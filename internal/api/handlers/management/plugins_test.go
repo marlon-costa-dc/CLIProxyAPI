@@ -44,9 +44,10 @@ func waitForReloadDone(t *testing.T, done <-chan struct{}) {
 func captureConfigReload(h *Handler) (<-chan *config.Config, <-chan struct{}) {
 	reloads := make(chan *config.Config, 1)
 	done := make(chan struct{})
-	h.SetConfigReloadHook(func(_ context.Context, cfg *config.Config) {
+	h.SetConfigReloadHook(func(_ context.Context, cfg *config.Config) error {
 		defer close(done)
 		reloads <- cfg
+		return nil
 	})
 	return reloads, done
 }
@@ -64,8 +65,9 @@ func TestConfigReloadGenerationSkipsOlderSnapshot(t *testing.T) {
 		},
 	}
 	reloadedModes := make([]string, 0, 1)
-	h.SetConfigReloadHook(func(_ context.Context, cfg *config.Config) {
+	h.SetConfigReloadHook(func(_ context.Context, cfg *config.Config) error {
 		reloadedModes = append(reloadedModes, pluginRawScalarValue(t, cfg.Plugins.Configs["sample"], "mode"))
+		return nil
 	})
 
 	h.mu.Lock()
@@ -404,10 +406,11 @@ func TestPatchPluginEnabledReloadSnapshotRawImmutability(t *testing.T) {
 	reloads := make(chan *config.Config, 1)
 	releaseReload := make(chan struct{})
 	reloadDone := make(chan struct{})
-	h.SetConfigReloadHook(func(_ context.Context, cfg *config.Config) {
+	h.SetConfigReloadHook(func(_ context.Context, cfg *config.Config) error {
 		defer close(reloadDone)
 		reloads <- cfg
 		<-releaseReload
+		return nil
 	})
 
 	rec := httptest.NewRecorder()
@@ -596,10 +599,11 @@ func TestDeletePluginRemovesDiscoveredFileAndConfig(t *testing.T) {
 	reloads := make(chan *config.Config, 1)
 	releaseReload := make(chan struct{})
 	reloadDone := make(chan struct{})
-	h.SetConfigReloadHook(func(_ context.Context, cfg *config.Config) {
+	h.SetConfigReloadHook(func(_ context.Context, cfg *config.Config) error {
 		defer close(reloadDone)
 		reloads <- cfg
 		<-releaseReload
+		return nil
 	})
 
 	path, errPath := pluginFilePath(pluginsDir, "sample")

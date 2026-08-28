@@ -25,7 +25,7 @@ func TestLookupAPIKeyUpstreamModel(t *testing.T) {
 	mgr.SetConfig(cfg)
 
 	ctx := context.Background()
-	_, _ = mgr.Register(ctx, &Auth{ID: "a1", Provider: "gemini", Attributes: map[string]string{"api_key": "k", "base_url": "https://example.com"}})
+	mustRegisterAuth(t, mgr, ctx, &Auth{ID: "a1", Provider: "gemini", Attributes: map[string]string{"api_key": "k", "base_url": "https://example.com"}})
 
 	tests := []struct {
 		name   string
@@ -79,7 +79,7 @@ func TestLookupAPIKeyUpstreamModel_InteractionsKey(t *testing.T) {
 	mgr.SetConfig(cfg)
 
 	ctx := context.Background()
-	_, _ = mgr.Register(ctx, &Auth{ID: "interactions-auth", Provider: "gemini-interactions", Attributes: map[string]string{"api_key": "interactions-key", "base_url": "https://interactions.example.com"}})
+	mustRegisterAuth(t, mgr, ctx, &Auth{ID: "interactions-auth", Provider: "gemini-interactions", Attributes: map[string]string{"api_key": "interactions-key", "base_url": "https://interactions.example.com"}})
 
 	resolved := mgr.lookupAPIKeyUpstreamModel("interactions-auth", "native-flash")
 	if resolved != "gemini-2.5-flash" {
@@ -101,7 +101,7 @@ func TestAPIKeyModelAlias_ConfigHotReload(t *testing.T) {
 	mgr.SetConfig(cfg)
 
 	ctx := context.Background()
-	_, _ = mgr.Register(ctx, &Auth{ID: "a1", Provider: "gemini", Attributes: map[string]string{"api_key": "k"}})
+	mustRegisterAuth(t, mgr, ctx, &Auth{ID: "a1", Provider: "gemini", Attributes: map[string]string{"api_key": "k"}})
 
 	// Initial alias
 	if resolved := mgr.lookupAPIKeyUpstreamModel("a1", "g25p"); resolved != "gemini-2.5-pro-exp-03-25" {
@@ -136,10 +136,10 @@ func TestAPIKeyModelAlias_MultipleProviders(t *testing.T) {
 	mgr.SetConfig(cfg)
 
 	ctx := context.Background()
-	_, _ = mgr.Register(ctx, &Auth{ID: "gemini-auth", Provider: "gemini", Attributes: map[string]string{"api_key": "gemini-key"}})
-	_, _ = mgr.Register(ctx, &Auth{ID: "claude-auth", Provider: "claude", Attributes: map[string]string{"api_key": "claude-key"}})
-	_, _ = mgr.Register(ctx, &Auth{ID: "codex-auth", Provider: "codex", Attributes: map[string]string{"api_key": "codex-key"}})
-	_, _ = mgr.Register(ctx, &Auth{ID: "xai-auth", Provider: "xai", Attributes: map[string]string{"api_key": "xai-key"}})
+	mustRegisterAuth(t, mgr, ctx, &Auth{ID: "gemini-auth", Provider: "gemini", Attributes: map[string]string{"api_key": "gemini-key"}})
+	mustRegisterAuth(t, mgr, ctx, &Auth{ID: "claude-auth", Provider: "claude", Attributes: map[string]string{"api_key": "claude-key"}})
+	mustRegisterAuth(t, mgr, ctx, &Auth{ID: "codex-auth", Provider: "codex", Attributes: map[string]string{"api_key": "codex-key"}})
+	mustRegisterAuth(t, mgr, ctx, &Auth{ID: "xai-auth", Provider: "xai", Attributes: map[string]string{"api_key": "xai-key"}})
 
 	tests := []struct {
 		authID, input, want string
@@ -170,7 +170,7 @@ func TestApplyAPIKeyModelAlias(t *testing.T) {
 	ctx := context.Background()
 	apiKeyAuth := &Auth{ID: "a1", Provider: "gemini", Attributes: map[string]string{"api_key": "k"}}
 	oauthAuth := &Auth{ID: "oauth-auth", Provider: "claude", Attributes: map[string]string{"auth_kind": "oauth"}}
-	_, _ = mgr.Register(ctx, apiKeyAuth)
+	mustRegisterAuth(t, mgr, ctx, apiKeyAuth)
 
 	tests := []struct {
 		name       string

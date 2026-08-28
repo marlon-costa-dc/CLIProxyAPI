@@ -133,7 +133,7 @@ var zhStrings = map[string]string{
 	"section_websocket":         "WebSocket",
 	"section_other":             "其他",
 	"oauth_model_alias_label":   "OAuth 模型别名",
-	"oauth_model_alias_summary": "%d 个通道, %d 个别名有顺序池",
+	"oauth_model_alias_summary": "%d 个通道",
 
 	// ── Auth Files ──
 	"auth_title":      "🔑 认证文件",
@@ -290,7 +290,7 @@ var enStrings = map[string]string{
 	"section_websocket":         "WebSocket",
 	"section_other":             "Other",
 	"oauth_model_alias_label":   "OAuth Model Alias",
-	"oauth_model_alias_summary": "%d channels, %d ordered aliases",
+	"oauth_model_alias_summary": "%d channels",
 
 	// ── Auth Files ──
 	"auth_title":      "🔑 Auth Files",

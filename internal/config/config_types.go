@@ -216,6 +216,14 @@ type CodexConfig struct {
 	IdentityConfuse bool `yaml:"identity-confuse" json:"identity-confuse"`
 	// DisableCodexCloaking disables forcing the official Codex identity headers on HTTP/SSE and WebSocket requests.
 	DisableCodexCloaking bool `yaml:"disable-codex-cloaking" json:"disable-codex-cloaking"`
+	// StreamBootstrapBuffering holds back initial handshake events (response.created,
+	// response.in_progress and the websocket metadata frames) until the first generated event
+	// arrives. The upstream delivers server_is_overloaded rejections inside an HTTP 200 stream
+	// right after those handshake events instead of returning 503 on the wire, so buffering them
+	// keeps the downstream response headers uncommitted long enough to retry on another credential.
+	// Trade-off: the response headers are delayed until the upstream starts generating, which can
+	// trip client or reverse-proxy read timeouts. Default is false.
+	StreamBootstrapBuffering bool `yaml:"stream-bootstrap-buffering" json:"stream-bootstrap-buffering"`
 	// OptimizeMultiAgentV2 optimizes official Codex multi-agent requests.
 	OptimizeMultiAgentV2 bool `yaml:"optimize-multi-agent-v2" json:"optimize-multi-agent-v2"`
 	// LiveMediaRelay terminates and relays Codex Live WebRTC media in this process.
@@ -438,7 +446,7 @@ type ClaudeKey struct {
 	DisableCooling *bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
 
 	// RequestRetry optionally overrides the global request-retry for this credential.
-	// Nil or a negative value means "use the global request-retry". 0 disables retries.
+	// Nil or a negative value means "use the global request-retry". 0 disables additional retry rounds.
 	RequestRetry *int `yaml:"request-retry,omitempty" json:"request-retry,omitempty"`
 
 	// RequestScopedErrors configures custom classification rules for upstream errors.
@@ -556,7 +564,7 @@ type CodexKey struct {
 	DisableCooling *bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
 
 	// RequestRetry optionally overrides the global request-retry for this credential.
-	// Nil or a negative value means "use the global request-retry". 0 disables retries.
+	// Nil or a negative value means "use the global request-retry". 0 disables additional retry rounds.
 	RequestRetry *int `yaml:"request-retry,omitempty" json:"request-retry,omitempty"`
 
 	// RequestScopedErrors configures custom classification rules for upstream errors.
@@ -662,7 +670,7 @@ type GeminiKey struct {
 	DisableCooling *bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
 
 	// RequestRetry optionally overrides the global request-retry for this credential.
-	// Nil or a negative value means "use the global request-retry". 0 disables retries.
+	// Nil or a negative value means "use the global request-retry". 0 disables additional retry rounds.
 	RequestRetry *int `yaml:"request-retry,omitempty" json:"request-retry,omitempty"`
 
 	// RequestScopedErrors configures custom classification rules for upstream errors.
@@ -732,6 +740,10 @@ type OpenAICompatibility struct {
 	// BaseURL is the base URL for the external OpenAI-compatible API endpoint.
 	BaseURL string `yaml:"base-url" json:"base-url"`
 
+	// RouteChannel is the exact runtime routing channel registered for this
+	// provider. It is configuration data, not a value inferred from Name.
+	RouteChannel string `yaml:"route-channel" json:"route-channel"`
+
 	// APIKeyEntries defines API keys with optional per-key proxy configuration.
 	APIKeyEntries []OpenAICompatibilityAPIKey `yaml:"api-key-entries,omitempty" json:"api-key-entries,omitempty"`
 
@@ -749,7 +761,7 @@ type OpenAICompatibility struct {
 	DisableCooling *bool `yaml:"disable-cooling,omitempty" json:"disable-cooling,omitempty"`
 
 	// RequestRetry optionally overrides the global request-retry for this provider.
-	// Nil or a negative value means "use the global request-retry". 0 disables retries.
+	// Nil or a negative value means "use the global request-retry". 0 disables additional retry rounds.
 	RequestRetry *int `yaml:"request-retry,omitempty" json:"request-retry,omitempty"`
 
 	// RequestScopedErrors configures custom classification rules for upstream errors.
@@ -760,6 +772,9 @@ type OpenAICompatibility struct {
 type OpenAICompatibilityAPIKey struct {
 	// APIKey is the authentication key for accessing the external API services.
 	APIKey string `yaml:"api-key" json:"api-key"`
+
+	// QuotaDomain identifies the quota pool for this exact credential.
+	QuotaDomain string `yaml:"quota-domain" json:"quota-domain"`
 
 	// Weight controls proportional selection under weighted-round-robin.
 	// An omitted value defaults to 1; non-positive values exclude this credential; maximum 1,000,000.
@@ -777,6 +792,23 @@ type OpenAICompatibilityModel struct {
 
 	// Alias is the model name alias that clients will use to reference this model.
 	Alias string `yaml:"alias" json:"alias"`
+
+	// CatalogProviderID and CatalogModelID form the required models.dev ModelKey.
+	// Every enabled OpenAI-compatible route participates in the model inventory.
+	CatalogProviderID string `yaml:"catalog-provider-id,omitempty" json:"catalog-provider-id,omitempty"`
+	CatalogModelID    string `yaml:"catalog-model-id,omitempty" json:"catalog-model-id,omitempty"`
+
+	// CatalogRouteProviderID and CatalogRouteModelID identify the exact
+	// models.dev provider/model pair backing this runtime route.
+	CatalogRouteProviderID string `yaml:"catalog-route-provider-id,omitempty" json:"catalog-route-provider-id,omitempty"`
+	CatalogRouteModelID    string `yaml:"catalog-route-model-id,omitempty" json:"catalog-route-model-id,omitempty"`
+
+	// VariantID marks an explicitly proven model-owned variant. An empty value
+	// means the configured route serves the canonical model directly.
+	VariantID string `yaml:"variant-id,omitempty" json:"variant-id,omitempty"`
+
+	// Protocols declares the exact wire protocols implemented by this route.
+	Protocols []string `yaml:"protocols,omitempty" json:"protocols,omitempty"`
 
 	// DisplayName is the optional human-readable name shown in model catalogs.
 	DisplayName string `yaml:"display-name,omitempty" json:"display-name,omitempty"`
@@ -804,9 +836,6 @@ type OpenAICompatibilityModel struct {
 	// Thinking configures the thinking/reasoning capability for this model.
 	// If nil, the model defaults to level-based reasoning with levels ["low", "medium", "high"].
 	Thinking *registry.ThinkingSupport `yaml:"thinking,omitempty" json:"thinking,omitempty"`
-
-	// Pricing is source-attributed USD cost per million tokens.
-	Pricing *registry.ModelPricing `yaml:"pricing,omitempty" json:"pricing,omitempty"`
 }
 
 func (m OpenAICompatibilityModel) GetName() string { return m.Name }
@@ -819,5 +848,3 @@ func (m OpenAICompatibilityModel) GetForceMapping() bool    { return m.ForceMapp
 func (m OpenAICompatibilityModel) GetIsCompat() bool        { return m.IsCompat }
 
 func (m OpenAICompatibilityModel) GetThinking() *registry.ThinkingSupport { return m.Thinking }
-
-func (m OpenAICompatibilityModel) GetPricing() *registry.ModelPricing { return m.Pricing }

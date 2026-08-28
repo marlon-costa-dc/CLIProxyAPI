@@ -12,6 +12,7 @@ import (
 	"time"
 
 	misc "github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/modelrouting"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -27,6 +28,22 @@ const (
 type ModelInfo struct {
 	// ID is the unique identifier for the model
 	ID string `json:"id"`
+	// CanonicalModelID links an alias/variant ID to its canonical base model.
+	// Empty means this record is itself canonical.
+	CanonicalModelID string `json:"canonical_model_id,omitempty"`
+	// CatalogProviderID is the explicit models.dev canonical provider identity.
+	CatalogProviderID string `json:"-"`
+	// CatalogModelID is the explicit models.dev canonical model identity. It is
+	// distinct from CanonicalModelID, which tracks runtime alias lineage.
+	CatalogModelID string `json:"-"`
+	// CatalogRouteProviderID is the explicit models.dev provider host for this route.
+	CatalogRouteProviderID string `json:"-"`
+	// CatalogRouteModelID is the exact model key below the models.dev provider host.
+	CatalogRouteModelID string `json:"-"`
+	// VariantID marks this record as a model-owned variant when non-empty.
+	VariantID string `json:"-"`
+	// Protocols names the exact wire protocols supported by this route.
+	Protocols []string `json:"-"`
 	// Object type for the model (typically "model")
 	Object string `json:"object"`
 	// Created timestamp when the model was created
@@ -84,21 +101,8 @@ type ModelInfo struct {
 	// It is internal metadata and is not exposed in model listings.
 	IsCompat bool `json:"-"`
 
-	// Pricing is the source-attributed USD cost per million tokens.
-	Pricing *ModelPricing `json:"pricing,omitempty"`
-}
-
-// ModelPricing preserves the external pricing record used to configure a model.
-// Nil component pointers mean the source did not publish that price; zero is a
-// real, explicitly free price.
-type ModelPricing struct {
-	InputPerMillion     *float64  `json:"input_per_million" yaml:"input-per-million"`
-	OutputPerMillion    *float64  `json:"output_per_million" yaml:"output-per-million"`
-	CacheReadPerMillion *float64  `json:"cache_read_per_million,omitempty" yaml:"cache-read-per-million,omitempty"`
-	Currency            string    `json:"currency" yaml:"currency"`
-	Source              string    `json:"source" yaml:"source"`
-	SourceDigest        string    `json:"source_digest" yaml:"source-digest"`
-	FetchedAt           time.Time `json:"fetched_at" yaml:"fetched-at"`
+	// Pricing preserves exact catalog decimals for the selected route.
+	Pricing *modelrouting.Pricing `json:"pricing,omitempty"`
 }
 
 // ModelConfig holds optional runtime overrides for a model definition.
@@ -147,6 +151,19 @@ type ModelRegistration struct {
 	SuspendedClients map[string]string
 }
 
+// RegisteredRouteSnapshot is an internal management-plane fact. ClientID is
+// never serialized; the inventory boundary hashes it before publication.
+type RegisteredRouteSnapshot struct {
+	ClientID         string
+	RouteChannel     string
+	RuntimeModelID   string
+	Model            *ModelInfo
+	QuotaBlocked     bool
+	QuotaResetsAt    *time.Time
+	SuspensionReason string
+	LastUpdated      time.Time
+}
+
 // ModelRegistryHook provides optional callbacks for external integrations to track model list changes.
 // Hook implementations must be non-blocking and resilient; calls are executed asynchronously and panics are recovered.
 type ModelRegistryHook interface {
@@ -193,6 +210,7 @@ func GetGlobalRegistry() *ModelRegistry {
 	})
 	return globalRegistry
 }
+
 func (r *ModelRegistry) ensureAvailableModelsCacheLocked() {
 	if r.availableModelsCache == nil {
 		r.availableModelsCache = make(map[string]availableModelsCacheEntry)
@@ -614,6 +632,9 @@ func cloneModelInfo(model *ModelInfo) *ModelInfo {
 	if len(model.SupportedOutputModalities) > 0 {
 		copyModel.SupportedOutputModalities = append([]string(nil), model.SupportedOutputModalities...)
 	}
+	if len(model.Protocols) > 0 {
+		copyModel.Protocols = append([]string(nil), model.Protocols...)
+	}
 	if model.Thinking != nil {
 		copyThinking := *model.Thinking
 		if len(model.Thinking.Levels) > 0 {
@@ -622,20 +643,7 @@ func cloneModelInfo(model *ModelInfo) *ModelInfo {
 		copyModel.Thinking = &copyThinking
 	}
 	if model.Pricing != nil {
-		copyPricing := *model.Pricing
-		if model.Pricing.InputPerMillion != nil {
-			value := *model.Pricing.InputPerMillion
-			copyPricing.InputPerMillion = &value
-		}
-		if model.Pricing.OutputPerMillion != nil {
-			value := *model.Pricing.OutputPerMillion
-			copyPricing.OutputPerMillion = &value
-		}
-		if model.Pricing.CacheReadPerMillion != nil {
-			value := *model.Pricing.CacheReadPerMillion
-			copyPricing.CacheReadPerMillion = &value
-		}
-		copyModel.Pricing = &copyPricing
+		copyModel.Pricing = modelrouting.ClonePricing(model.Pricing)
 	}
 	if model.Config != nil {
 		copyConfig := *model.Config
@@ -903,46 +911,49 @@ func (r *ModelRegistry) GetAvailableModels(handlerType string) []map[string]any 
 	return models
 }
 
-func modelRegistrationAvailability(registration *ModelRegistration, now time.Time) (bool, time.Time) {
+func (r *ModelRegistry) selectableModelClientsLocked(modelID, provider string, registration *ModelRegistration, now time.Time) (int, time.Time) {
 	if registration == nil {
-		return false, time.Time{}
+		return 0, time.Time{}
 	}
 
-	availableClients := registration.Count
-	expiredClients := 0
-	var expiresAt time.Time
-	for _, quotaTime := range registration.QuotaExceededClients {
-		if quotaTime == nil {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	selectable := 0
+	var recoveryAt time.Time
+	for clientID, modelIDs := range r.clientModels {
+		if provider != "" && strings.ToLower(strings.TrimSpace(r.clientProviders[clientID])) != provider {
 			continue
 		}
-		recoveryAt := quotaTime.Add(modelQuotaExceededWindow)
-		if now.Before(recoveryAt) {
-			expiredClients++
-			if expiresAt.IsZero() || recoveryAt.Before(expiresAt) {
-				expiresAt = recoveryAt
+
+		supportsModel := false
+		for _, registeredModelID := range modelIDs {
+			if strings.EqualFold(strings.TrimSpace(registeredModelID), modelID) {
+				supportsModel = true
+				break
 			}
+		}
+		if !supportsModel {
+			continue
+		}
+
+		blocked := false
+		if quotaTime := registration.QuotaExceededClients[clientID]; quotaTime != nil {
+			clientRecoveryAt := quotaTime.Add(modelQuotaExceededWindow)
+			if now.Before(clientRecoveryAt) {
+				blocked = true
+				if recoveryAt.IsZero() || clientRecoveryAt.Before(recoveryAt) {
+					recoveryAt = clientRecoveryAt
+				}
+			}
+		}
+		if _, suspended := registration.SuspendedClients[clientID]; suspended {
+			blocked = true
+		}
+		if !blocked {
+			selectable++
 		}
 	}
 
-	cooldownSuspended := 0
-	otherSuspended := 0
-	if registration.SuspendedClients != nil {
-		for _, reason := range registration.SuspendedClients {
-			if strings.EqualFold(reason, "quota") {
-				cooldownSuspended++
-				continue
-			}
-			otherSuspended++
-		}
-	}
-
-	effectiveClients := availableClients - expiredClients - otherSuspended
-	if effectiveClients < 0 {
-		effectiveClients = 0
-	}
-
-	available := effectiveClients > 0 || (availableClients > 0 && (expiredClients > 0 || cooldownSuspended > 0) && otherSuspended == 0)
-	return available, expiresAt
+	return selectable, recoveryAt
 }
 
 // GetAvailableModelInfos returns cloned metadata for all currently available models.
@@ -952,9 +963,9 @@ func (r *ModelRegistry) GetAvailableModelInfos() []*ModelInfo {
 	defer r.mutex.RUnlock()
 
 	result := make([]*ModelInfo, 0, len(r.models))
-	for _, registration := range r.models {
-		available, _ := modelRegistrationAvailability(registration, now)
-		if !available || registration == nil || registration.Info == nil {
+	for modelID, registration := range r.models {
+		selectable, _ := r.selectableModelClientsLocked(modelID, "", registration, now)
+		if selectable == 0 || registration == nil || registration.Info == nil {
 			continue
 		}
 		result = append(result, cloneModelInfo(registration.Info))
@@ -965,16 +976,66 @@ func (r *ModelRegistry) GetAvailableModelInfos() []*ModelInfo {
 	return result
 }
 
+// RegisteredRouteSnapshots returns every credential/model registration for the
+// management inventory builder. Callers must hash ClientID before serialization.
+func (r *ModelRegistry) RegisteredRouteSnapshots() []RegisteredRouteSnapshot {
+	now := time.Now().UTC()
+	r.mutex.RLock()
+	defer r.mutex.RUnlock()
+	result := make([]RegisteredRouteSnapshot, 0)
+	for clientID, modelIDs := range r.clientModels {
+		provider := r.clientProviders[clientID]
+		for _, modelID := range modelIDs {
+			registration := r.models[modelID]
+			if registration == nil {
+				continue
+			}
+			info := registration.Info
+			if byClient := r.clientModelInfos[clientID]; byClient != nil && byClient[modelID] != nil {
+				info = byClient[modelID]
+			} else if registration.InfoByProvider[provider] != nil {
+				info = registration.InfoByProvider[provider]
+			}
+			if info == nil {
+				continue
+			}
+			snapshot := RegisteredRouteSnapshot{
+				ClientID: clientID, RouteChannel: provider, RuntimeModelID: modelID,
+				Model: cloneModelInfo(info), SuspensionReason: registration.SuspendedClients[clientID],
+				LastUpdated: registration.LastUpdated.UTC(),
+			}
+			if markedAt := registration.QuotaExceededClients[clientID]; markedAt != nil {
+				resetsAt := markedAt.Add(modelQuotaExceededWindow).UTC()
+				if now.Before(resetsAt) {
+					snapshot.QuotaBlocked = true
+					snapshot.QuotaResetsAt = &resetsAt
+				}
+			}
+			result = append(result, snapshot)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].RuntimeModelID != result[j].RuntimeModelID {
+			return result[i].RuntimeModelID < result[j].RuntimeModelID
+		}
+		if result[i].RouteChannel != result[j].RouteChannel {
+			return result[i].RouteChannel < result[j].RouteChannel
+		}
+		return result[i].ClientID < result[j].ClientID
+	})
+	return result
+}
+
 func (r *ModelRegistry) buildAvailableModelsLocked(handlerType string, now time.Time) ([]map[string]any, time.Time) {
 	models := make([]map[string]any, 0, len(r.models))
 	var expiresAt time.Time
 
-	for _, registration := range r.models {
-		available, registrationExpiresAt := modelRegistrationAvailability(registration, now)
+	for modelID, registration := range r.models {
+		selectable, registrationExpiresAt := r.selectableModelClientsLocked(modelID, "", registration, now)
 		if !registrationExpiresAt.IsZero() && (expiresAt.IsZero() || registrationExpiresAt.Before(expiresAt)) {
 			expiresAt = registrationExpiresAt
 		}
-		if !available || registration == nil {
+		if selectable == 0 || registration == nil {
 			continue
 		}
 
@@ -1085,7 +1146,6 @@ func (r *ModelRegistry) GetAvailableModelsByProvider(provider string) []*ModelIn
 		return nil
 	}
 
-	now := time.Now()
 	result := make([]*ModelInfo, 0, len(providerModels))
 
 	for modelID, entry := range providerModels {
@@ -1094,47 +1154,8 @@ func (r *ModelRegistry) GetAvailableModelsByProvider(provider string) []*ModelIn
 		}
 		registration, ok := r.models[modelID]
 
-		expiredClients := 0
-		cooldownSuspended := 0
-		otherSuspended := 0
-		if ok && registration != nil {
-			if registration.QuotaExceededClients != nil {
-				for clientID, quotaTime := range registration.QuotaExceededClients {
-					if clientID == "" {
-						continue
-					}
-					if p, okProvider := r.clientProviders[clientID]; !okProvider || p != provider {
-						continue
-					}
-					if quotaTime != nil && now.Sub(*quotaTime) < modelQuotaExceededWindow {
-						expiredClients++
-					}
-				}
-			}
-			if registration.SuspendedClients != nil {
-				for clientID, reason := range registration.SuspendedClients {
-					if clientID == "" {
-						continue
-					}
-					if p, okProvider := r.clientProviders[clientID]; !okProvider || p != provider {
-						continue
-					}
-					if strings.EqualFold(reason, "quota") {
-						cooldownSuspended++
-						continue
-					}
-					otherSuspended++
-				}
-			}
-		}
-
-		availableClients := entry.count
-		effectiveClients := availableClients - expiredClients - otherSuspended
-		if effectiveClients < 0 {
-			effectiveClients = 0
-		}
-
-		if effectiveClients > 0 || (availableClients > 0 && (expiredClients > 0 || cooldownSuspended > 0) && otherSuspended == 0) {
+		selectable, _ := r.selectableModelClientsLocked(modelID, provider, registration, time.Now())
+		if selectable > 0 {
 			if entry.info != nil {
 				result = append(result, cloneModelInfo(entry.info))
 				continue
@@ -1159,24 +1180,8 @@ func (r *ModelRegistry) GetModelCount(modelID string) int {
 	defer r.mutex.RUnlock()
 
 	if registration, exists := r.models[modelID]; exists {
-		now := time.Now()
-
-		// Count clients that have exceeded quota but haven't recovered yet
-		expiredClients := 0
-		for _, quotaTime := range registration.QuotaExceededClients {
-			if quotaTime != nil && now.Sub(*quotaTime) < modelQuotaExceededWindow {
-				expiredClients++
-			}
-		}
-		suspendedClients := 0
-		if registration.SuspendedClients != nil {
-			suspendedClients = len(registration.SuspendedClients)
-		}
-		result := registration.Count - expiredClients - suspendedClients
-		if result < 0 {
-			return 0
-		}
-		return result
+		selectable, _ := r.selectableModelClientsLocked(modelID, "", registration, time.Now())
+		return selectable
 	}
 	return 0
 }
@@ -1279,6 +1284,7 @@ func (r *ModelRegistry) GetModelInfo(modelID, provider string) *ModelInfo {
 
 // convertModelToMap converts ModelInfo to the appropriate format for different handler types
 func (r *ModelRegistry) convertModelToMap(model *ModelInfo, handlerType string) map[string]any {
+	model = cloneModelInfo(model)
 	if model == nil {
 		return nil
 	}
@@ -1428,24 +1434,15 @@ func (r *ModelRegistry) convertModelToMap(model *ModelInfo, handlerType string) 
 	}
 }
 
-func modelPricingMap(pricing *ModelPricing) map[string]any {
+func modelPricingMap(pricing *modelrouting.Pricing) map[string]any {
 	if pricing == nil {
 		return nil
 	}
 	result := map[string]any{
-		"currency":      pricing.Currency,
-		"source":        pricing.Source,
-		"source_digest": pricing.SourceDigest,
-		"fetched_at":    pricing.FetchedAt.UTC().Format(time.RFC3339),
-	}
-	if pricing.InputPerMillion != nil {
-		result["input_per_million"] = *pricing.InputPerMillion
-	}
-	if pricing.OutputPerMillion != nil {
-		result["output_per_million"] = *pricing.OutputPerMillion
-	}
-	if pricing.CacheReadPerMillion != nil {
-		result["cache_read_per_million"] = *pricing.CacheReadPerMillion
+		"currency":  pricing.Currency,
+		"unit":      pricing.Unit,
+		"source_id": pricing.SourceID,
+		"entries":   pricing.Entries,
 	}
 	return result
 }

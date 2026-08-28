@@ -62,7 +62,7 @@ func TestManagerMarkResultUsesCredentialCoolingPrecedence(t *testing.T) {
 			}
 
 			const model = "test-model"
-			manager.MarkResult(context.Background(), Result{
+			mustMarkResult(t, manager, context.Background(), Result{
 				AuthID:   auth.ID,
 				Provider: auth.Provider,
 				Model:    model,

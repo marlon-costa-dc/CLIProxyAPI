@@ -15,6 +15,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/clienterror"
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	internallogging "github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
@@ -105,15 +106,18 @@ func recoverableFailureRetryAfter(now time.Time, disableCooling bool) time.Time 
 
 // SetConfig updates the runtime config snapshot used by request-time helpers.
 // Callers should provide the latest config on reload so per-credential alias mapping stays in sync.
-func (m *Manager) SetConfig(cfg *internalconfig.Config) {
+func (m *Manager) SetConfig(cfg *internalconfig.Config) error {
 	if m == nil {
-		return
+		return fmt.Errorf("set config: manager is nil")
 	}
 	m.configCooldownMu.Lock()
 	defer m.configCooldownMu.Unlock()
 	if m.setConfigSnapshotLocked(cfg) {
-		m.persistCooldownStatesLocked(context.Background())
+		if errPersist := m.persistCooldownStatesLocked(context.Background()); errPersist != nil {
+			return fmt.Errorf("set config: %w", errPersist)
+		}
 	}
+	return nil
 }
 
 // SetConfigSnapshot updates only in-memory configuration state. It reports whether
@@ -159,15 +163,15 @@ func (m *Manager) setConfigSnapshotLocked(cfg *internalconfig.Config) bool {
 // ApplyConfigWithCooldownStateStore serializes a config update with its cooldown
 // store transition. It persists the resulting state to the captured old store before
 // exposing the resolved replacement store.
-func (m *Manager) ApplyConfigWithCooldownStateStore(ctx context.Context, cfg *internalconfig.Config, store CooldownStateStore) bool {
+func (m *Manager) ApplyConfigWithCooldownStateStore(ctx context.Context, cfg *internalconfig.Config, store CooldownStateStore) error {
 	if m == nil {
-		return false
+		return fmt.Errorf("apply config with cooldown state store: manager is nil")
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if errContext := ctx.Err(); errContext != nil {
-		return false
+		return errContext
 	}
 
 	m.configCooldownMu.Lock()
@@ -176,40 +180,42 @@ func (m *Manager) ApplyConfigWithCooldownStateStore(ctx context.Context, cfg *in
 	oldStore := m.cooldownStore
 	m.mu.RUnlock()
 	m.setConfigSnapshotLocked(cfg)
-	if oldStore != nil && !m.persistCooldownStatesToLocked(ctx, oldStore) {
-		return false
+	if oldStore != nil {
+		if errPersist := m.persistCooldownStatesToLocked(ctx, oldStore); errPersist != nil {
+			return fmt.Errorf("persist cooldown state before store transition: %w", errPersist)
+		}
 	}
 	if errContext := ctx.Err(); errContext != nil {
-		return false
+		return errContext
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.cooldownStore != oldStore {
-		return false
+		return fmt.Errorf("cooldown state store changed during config application")
 	}
 	if m.pendingCooldownStateStore == oldStore {
 		m.pendingCooldownStateStore = nil
 	}
 	m.cooldownStore = store
-	return true
+	return nil
 }
 
 // PersistCooldownStates writes the current cooldown snapshot using ctx.
-func (m *Manager) PersistCooldownStates(ctx context.Context) {
-	m.persistCooldownStates(ctx)
+func (m *Manager) PersistCooldownStates(ctx context.Context) error {
+	return m.persistCooldownStates(ctx)
 }
 
 // SwapCooldownStateStore persists cleared state to the old store before replacing it.
 // Persistence is deliberately performed without holding the manager lock.
-func (m *Manager) SwapCooldownStateStore(ctx context.Context, store CooldownStateStore, persistOld bool) bool {
+func (m *Manager) SwapCooldownStateStore(ctx context.Context, store CooldownStateStore, persistOld bool) error {
 	if m == nil {
-		return false
+		return fmt.Errorf("swap cooldown state store: manager is nil")
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if errContext := ctx.Err(); errContext != nil {
-		return false
+		return errContext
 	}
 	m.configCooldownMu.Lock()
 	defer m.configCooldownMu.Unlock()
@@ -221,22 +227,24 @@ func (m *Manager) SwapCooldownStateStore(ctx context.Context, store CooldownStat
 	if storeToPersist == nil && persistOld {
 		storeToPersist = oldStore
 	}
-	if storeToPersist != nil && !m.persistCooldownStatesToLocked(ctx, storeToPersist) {
-		return false
+	if storeToPersist != nil {
+		if errPersist := m.persistCooldownStatesToLocked(ctx, storeToPersist); errPersist != nil {
+			return fmt.Errorf("persist cooldown state before store swap: %w", errPersist)
+		}
 	}
 	if errContext := ctx.Err(); errContext != nil {
-		return false
+		return errContext
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.cooldownStore != oldStore {
-		return false
+		return fmt.Errorf("cooldown state store changed during swap")
 	}
 	if m.pendingCooldownStateStore == storeToPersist {
 		m.pendingCooldownStateStore = nil
 	}
 	m.cooldownStore = store
-	return true
+	return nil
 }
 
 func (m *Manager) cooldownDisabledForAuth(auth *Auth) bool {
@@ -327,8 +335,7 @@ func (m *Manager) RestoreCooldownStates(ctx context.Context) error {
 			m.scheduler.upsertAuth(snapshot)
 		}
 	}
-	m.persistCooldownStates(ctx)
-	return nil
+	return m.persistCooldownStates(ctx)
 }
 
 func (m *Manager) restoreCooldownRecordLocked(record CooldownStateRecord, now time.Time) bool {
@@ -355,7 +362,8 @@ func (m *Manager) restoreCooldownRecordLocked(record CooldownStateRecord, now ti
 		auth.Unavailable = true
 		auth.Status = StatusError
 		auth.NextRetryAfter = record.NextRetryAfter
-		auth.Quota = quota
+		applyCooldownFields(&auth.Quota, quota)
+		auth.Quota = mergeQuotaObservation(auth.Quota, quota)
 		auth.UpdatedAt = updatedAt
 		if reason != "" {
 			auth.StatusMessage = reason
@@ -386,7 +394,7 @@ func clearCooldownStateForAuth(auth *Auth, now time.Time) bool {
 	if auth.Unavailable || !auth.NextRetryAfter.IsZero() || auth.Quota.Exceeded || !auth.Quota.NextRecoverAt.IsZero() {
 		auth.Unavailable = false
 		auth.NextRetryAfter = time.Time{}
-		auth.Quota = QuotaState{}
+		applyCooldownFields(&auth.Quota, QuotaState{})
 		auth.UpdatedAt = now
 		changed = true
 	}
@@ -397,7 +405,7 @@ func clearCooldownStateForAuth(auth *Auth, now time.Time) bool {
 		if state.Unavailable || !state.NextRetryAfter.IsZero() || state.Quota.Exceeded || !state.Quota.NextRecoverAt.IsZero() {
 			state.Unavailable = false
 			state.NextRetryAfter = time.Time{}
-			state.Quota = QuotaState{}
+			applyCooldownFields(&state.Quota, QuotaState{})
 			state.UpdatedAt = now
 			changed = true
 		}
@@ -504,7 +512,9 @@ func (m *Manager) ResetQuota(ctx context.Context, authID string) (*Auth, []strin
 		m.scheduler.upsertAuth(snapshot)
 	}
 	if snapshot != nil && cooldownStateChanged {
-		m.persistCooldownStates(ctx)
+		if errCooldown := m.persistCooldownStates(ctx); errCooldown != nil {
+			return snapshot, models, fmt.Errorf("persist reset cooldown state: %w", errCooldown)
+		}
 	}
 	return snapshot, models, nil
 }
@@ -521,44 +531,45 @@ func modelsForRegisteredAuth(authID string) []string {
 	return models
 }
 
-func (m *Manager) persistCooldownStates(ctx context.Context) {
+func (m *Manager) persistCooldownStates(ctx context.Context) error {
 	if m == nil {
-		return
+		return fmt.Errorf("persist cooldown state: manager is nil")
 	}
 	m.configCooldownMu.Lock()
 	defer m.configCooldownMu.Unlock()
-	m.persistCooldownStatesLocked(ctx)
+	return m.persistCooldownStatesLocked(ctx)
 }
 
-func (m *Manager) persistCooldownStatesLocked(ctx context.Context) {
+func (m *Manager) persistCooldownStatesLocked(ctx context.Context) error {
 	m.mu.RLock()
 	store := m.cooldownStore
 	m.mu.RUnlock()
-	if m.persistCooldownStatesToLocked(ctx, store) {
-		m.mu.Lock()
-		if m.pendingCooldownStateStore == store {
-			m.pendingCooldownStateStore = nil
-		}
-		m.mu.Unlock()
+	if errPersist := m.persistCooldownStatesToLocked(ctx, store); errPersist != nil {
+		return errPersist
 	}
+	m.mu.Lock()
+	if m.pendingCooldownStateStore == store {
+		m.pendingCooldownStateStore = nil
+	}
+	m.mu.Unlock()
+	return nil
 }
 
-func (m *Manager) persistCooldownStatesToLocked(ctx context.Context, store CooldownStateStore) bool {
+func (m *Manager) persistCooldownStatesToLocked(ctx context.Context, store CooldownStateStore) error {
 	if m == nil || store == nil {
-		return true
+		return nil
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if errContext := ctx.Err(); errContext != nil {
-		return false
+		return errContext
 	}
 	records := m.cooldownStateRecordsSnapshot()
 	if errSave := store.Save(ctx, records); errSave != nil {
-		logEntryWithRequestID(ctx).Warnf("failed to persist cooldown state: %v", errSave)
-		return false
+		return fmt.Errorf("save cooldown state: %w", errSave)
 	}
-	return ctx.Err() == nil
+	return ctx.Err()
 }
 
 func (m *Manager) cooldownStateRecordsSnapshot() []CooldownStateRecord {
@@ -657,7 +668,7 @@ func authCooldownStateRecord(auth *Auth, now time.Time) (CooldownStateRecord, bo
 		Status:         "cooling",
 		NextRetryAfter: auth.NextRetryAfter,
 		Reason:         cooldownReason(auth.StatusMessage, auth.Quota, auth.LastError),
-		Quota:          auth.Quota,
+		Quota:          cooldownFieldsOf(auth.Quota),
 		LastError:      cloneError(auth.LastError),
 		UpdatedAt:      auth.UpdatedAt,
 	}, true
@@ -676,7 +687,7 @@ func modelCooldownStateRecord(auth *Auth, model string, state *ModelState, now t
 		Status:         "cooling",
 		NextRetryAfter: state.NextRetryAfter,
 		Reason:         cooldownReason(state.StatusMessage, state.Quota, state.LastError),
-		Quota:          state.Quota,
+		Quota:          cooldownFieldsOf(state.Quota),
 		LastError:      cloneError(state.LastError),
 		UpdatedAt:      state.UpdatedAt,
 	}, true
@@ -701,10 +712,15 @@ func cooldownReason(statusMessage string, quota QuotaState, lastErr *Error) stri
 }
 
 // MarkResult records an execution result and notifies hooks.
-func (m *Manager) MarkResult(ctx context.Context, result Result) {
-	if result.AuthID == "" {
-		return
+func (m *Manager) MarkResult(ctx context.Context, result Result) error {
+	if m == nil {
+		return fmt.Errorf("mark result: manager is nil")
 	}
+	if result.AuthID == "" {
+		return nil
+	}
+	m.mutationMu.Lock()
+	defer m.mutationMu.Unlock()
 	modelKey := canonicalModelKey(result.Model)
 
 	shouldResumeModel := false
@@ -716,8 +732,11 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	cooldownStateChanged := false
 
 	m.mu.Lock()
-	if auth, ok := m.auths[result.AuthID]; ok && auth != nil {
+	if existing, ok := m.auths[result.AuthID]; ok && existing != nil {
+		auth := existing.Clone()
 		now := time.Now()
+		responseHeaders := internallogging.GetResponseHeaders(ctx)
+		modelState := existingModelState(auth, modelKey)
 		var cooldownRecordsBefore []CooldownStateRecord
 		trackCooldownState := m.cooldownStore != nil
 		if trackCooldownState {
@@ -735,6 +754,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 				// Retain active credential-scoped cooldown
 			} else if modelKey != "" {
 				state := ensureModelState(auth, modelKey)
+				modelState = state
 				resetModelState(state, now)
 				updateAggregatedAvailability(auth, now)
 				if !hasModelError(auth, now) {
@@ -756,6 +776,7 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 						disableCooling = false
 					}
 					state := ensureModelState(auth, modelKey)
+					modelState = state
 					state.Unavailable = true
 					state.Status = StatusError
 					state.UpdatedAt = now
@@ -779,12 +800,12 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 						if auth.LastError != nil {
 							auth.StatusMessage = "cloudflare challenge"
 						}
-						state.Quota = QuotaState{
+						applyCooldownFields(&state.Quota, QuotaState{
 							Exceeded:      true,
 							Reason:        "cloudflare challenge",
 							NextRecoverAt: next,
 							BackoffLevel:  backoffLevel,
-						}
+						})
 					} else if isInvalidGrantResultError(result.Error) {
 						if disableCooling {
 							state.NextRetryAfter = time.Time{}
@@ -872,12 +893,12 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 								}
 							}
 							state.NextRetryAfter = next
-							state.Quota = QuotaState{
+							applyCooldownFields(&state.Quota, QuotaState{
 								Exceeded:      true,
 								Reason:        "quota",
 								NextRecoverAt: next,
 								BackoffLevel:  backoffLevel,
-							}
+							})
 							if !disableCooling {
 								suspendReason = "quota"
 								shouldSuspendModel = true
@@ -893,12 +914,12 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 											otherNext = otherState.Quota.NextRecoverAt
 										}
 										otherState.NextRetryAfter = otherNext
-										otherState.Quota = QuotaState{
+										applyCooldownFields(&otherState.Quota, QuotaState{
 											Exceeded:      true,
 											Reason:        "credential_quota",
 											NextRecoverAt: otherNext,
 											BackoffLevel:  backoffLevel,
-										}
+										})
 									}
 								}
 								auth.Unavailable = true
@@ -941,7 +962,13 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 			}
 		}
 
-		_ = m.persist(ctx, auth)
+		if !result.SkipQuotaObservation {
+			auth.Quota.ObserveResponseHeadersForProvider(result.Provider, responseHeaders, now)
+			if modelState != nil {
+				modelState.Quota.ObserveResponseHeadersForProvider(result.Provider, responseHeaders, now)
+			}
+		}
+
 		authSnapshot = auth.Clone()
 		if trackCooldownState {
 			cooldownRecordsAfter := m.cooldownStateRecordsForAuthLocked(auth, now)
@@ -949,11 +976,20 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 		}
 	}
 	m.mu.Unlock()
+	if authSnapshot != nil {
+		if errPersist := m.persist(ctx, authSnapshot); errPersist != nil {
+			return fmt.Errorf("persist auth execution result: %w", errPersist)
+		}
+		m.mu.Lock()
+		m.auths[result.AuthID] = authSnapshot
+		m.mu.Unlock()
+	}
 	if m.scheduler != nil && authSnapshot != nil {
 		m.scheduler.upsertAuth(authSnapshot)
 	}
+	var errCooldown error
 	if authSnapshot != nil && cooldownStateChanged {
-		m.persistCooldownStates(context.Background())
+		errCooldown = m.persistCooldownStates(ctx)
 	}
 
 	if clearModelQuota && modelKey != "" {
@@ -987,6 +1023,10 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 	m.hook.OnResult(ctx, result)
 	m.publishErrorEvent(result, authSnapshot)
 	m.updateSessionAffinity(result)
+	if errCooldown != nil {
+		errCooldown = fmt.Errorf("persist execution cooldown state: %w", errCooldown)
+	}
+	return errCooldown
 }
 
 func (m *Manager) updateSessionAffinity(result Result) {
@@ -1000,12 +1040,45 @@ func (m *Manager) updateSessionAffinity(result Result) {
 	}
 }
 
-func (m *Manager) recordExecutionResult(ctx context.Context, result Result, auth *Auth, ephemeral bool) {
+func (m *Manager) recordExecutionResult(ctx context.Context, result Result, auth *Auth, ephemeral bool) error {
 	if !ephemeral {
-		m.MarkResult(ctx, result)
-		return
+		return m.MarkResult(ctx, result)
 	}
 	m.reportHomeResult(ctx, result, auth)
+	return nil
+}
+
+func joinExecutionResultError(operationErr, recordErr error) error {
+	if recordErr == nil {
+		return operationErr
+	}
+	recordErr = &executionResultRecordError{cause: recordErr}
+	return errors.Join(operationErr, recordErr)
+}
+
+// executionResultRecordError marks a persistence/observation failure as local
+// executor infrastructure. Candidate failover must never conceal it.
+type executionResultRecordError struct {
+	cause error
+}
+
+func (e *executionResultRecordError) Error() string {
+	if e == nil || e.cause == nil {
+		return "record execution result"
+	}
+	return "record execution result: " + e.cause.Error()
+}
+
+func (e *executionResultRecordError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
+}
+
+func isExecutionResultRecordError(err error) bool {
+	var recordErr *executionResultRecordError
+	return errors.As(err, &recordErr) && recordErr != nil
 }
 
 // reportHomeResult only observes a Home dispatch result and never updates local auth state.
@@ -1021,12 +1094,16 @@ func (m *Manager) reportHomeResult(ctx context.Context, result Result, auth *Aut
 	m.publishErrorEvent(result, snapshot)
 }
 
-func (m *Manager) recordAvailabilityNeutralResult(ctx context.Context, result Result) {
+func (m *Manager) recordAvailabilityNeutralResult(ctx context.Context, result Result) error {
+	if m == nil {
+		return fmt.Errorf("record availability-neutral result: manager is nil")
+	}
 	if result.AuthID == "" {
-		return
+		return nil
 	}
 
 	var authSnapshot *Auth
+	var errPersist error
 	m.mu.Lock()
 	if auth, ok := m.auths[result.AuthID]; ok && auth != nil {
 		now := time.Now()
@@ -1036,13 +1113,25 @@ func (m *Manager) recordAvailabilityNeutralResult(ctx context.Context, result Re
 		} else {
 			auth.Failed++
 		}
-		_ = m.persist(ctx, auth)
+		errPersist = m.persist(ctx, auth)
 		authSnapshot = auth.Clone()
 	}
 	m.mu.Unlock()
 
 	m.hook.OnResult(ctx, result)
 	m.publishErrorEvent(result, authSnapshot)
+	if errPersist != nil {
+		return fmt.Errorf("persist availability-neutral auth result: %w", errPersist)
+	}
+	return nil
+}
+
+func existingModelState(auth *Auth, model string) *ModelState {
+	model = canonicalModelKey(model)
+	if auth == nil || model == "" {
+		return nil
+	}
+	return auth.ModelStates[model]
 }
 
 func ensureModelState(auth *Auth, model string) *ModelState {
@@ -1117,6 +1206,8 @@ func mergeModelState(target, source *ModelState) *ModelState {
 		},
 		UpdatedAt: target.UpdatedAt,
 	}
+	merged.Quota = mergeQuotaObservation(merged.Quota, fallback.Quota)
+	merged.Quota = mergeQuotaObservation(merged.Quota, preferred.Quota)
 	if source.NextRetryAfter.After(merged.NextRetryAfter) {
 		merged.NextRetryAfter = source.NextRetryAfter
 	}
@@ -1156,7 +1247,7 @@ func resetModelState(state *ModelState, now time.Time) {
 	state.StatusMessage = ""
 	state.NextRetryAfter = time.Time{}
 	state.LastError = nil
-	state.Quota = QuotaState{}
+	applyCooldownFields(&state.Quota, QuotaState{})
 	state.UpdatedAt = now
 }
 
@@ -1262,7 +1353,7 @@ func clearAggregatedAvailability(auth *Auth) {
 	}
 	auth.Unavailable = false
 	auth.NextRetryAfter = time.Time{}
-	auth.Quota = QuotaState{}
+	applyCooldownFields(&auth.Quota, QuotaState{})
 }
 
 func hasModelError(auth *Auth, now time.Time) bool {
@@ -1979,12 +2070,12 @@ func applyAuthFailureState(auth *Auth, resultErr *Error, retryAfter *time.Durati
 	if isCloudflareChallengeResultError(resultErr) {
 		auth.StatusMessage = "cloudflare challenge"
 		next, backoffLevel := nextCloudflareCooldown(auth.Quota.BackoffLevel, disableCooling, now)
-		auth.Quota = QuotaState{
+		applyCooldownFields(&auth.Quota, QuotaState{
 			Exceeded:      true,
 			Reason:        "cloudflare challenge",
 			NextRecoverAt: next,
 			BackoffLevel:  backoffLevel,
-		}
+		})
 		auth.NextRetryAfter = next
 		return
 	}

@@ -154,6 +154,25 @@ func (e *RequestTerminatedError) ResponseBody() []byte {
 	return append([]byte(nil), e.Body...)
 }
 
+// WebSocketResponseEvent describes an upstream WebSocket response event received during execution.
+type WebSocketResponseEvent struct {
+	RequestID      string
+	TraceID        string
+	SourceFormat   string
+	Model          string
+	RequestedModel string
+	Provider       string
+	AuthID         string
+	AuthLabel      string
+	AuthType       string
+	EventType      string
+	Payload        []byte
+	Metadata       map[string]any
+}
+
+// WebSocketResponseObserver receives upstream WebSocket response events during execution.
+type WebSocketResponseObserver func(context.Context, WebSocketResponseEvent)
+
 // Options controls execution behavior for both streaming and non-streaming calls.
 type Options struct {
 	// Stream toggles streaming mode.
@@ -175,6 +194,8 @@ type Options struct {
 	Metadata map[string]any
 	// RequestAfterAuthInterceptor runs after credential selection and before executor translation.
 	RequestAfterAuthInterceptor RequestAfterAuthInterceptor
+	// WebSocketResponseObserver receives upstream WebSocket response events during execution.
+	WebSocketResponseObserver WebSocketResponseObserver
 	// ExecutionLifecycle owns Home-dispatched execution resources. Executors must not add it to request metadata.
 	ExecutionLifecycle ExecutionLifecycle
 }
@@ -203,6 +224,10 @@ type Response struct {
 	Metadata map[string]any
 	// Headers carries upstream HTTP response headers for passthrough to clients.
 	Headers http.Header
+	// DownstreamHeaders carries trusted headers created inside CLIProxy. They are
+	// distinct from upstream headers so disabled passthrough cannot erase local
+	// routing evidence and an upstream cannot forge that evidence.
+	DownstreamHeaders http.Header
 }
 
 // StreamChunk represents a single streaming payload unit emitted by provider executors.
@@ -218,8 +243,13 @@ type StreamChunk struct {
 type StreamResult struct {
 	// Headers carries upstream HTTP response headers from the initial connection.
 	Headers http.Header
+	// DownstreamHeaders carries trusted headers created inside CLIProxy.
+	DownstreamHeaders http.Header
 	// Chunks is the channel of streaming payload units.
 	Chunks <-chan StreamChunk
+	// Complete is a trusted local lifecycle callback. Handlers call it exactly
+	// once after terminal SSE validation, passing nil only for a valid terminal.
+	Complete func(error)
 }
 
 // StatusError represents an error that carries an HTTP-like status code.

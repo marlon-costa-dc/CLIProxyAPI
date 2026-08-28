@@ -8,7 +8,6 @@ import (
 	kiroauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/kiro"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher/diff"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
@@ -315,15 +314,10 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 		}
 		prefix := strings.TrimSpace(compat.Prefix)
 		providerName := strings.ToLower(strings.TrimSpace(compat.Name))
-		if providerName == "" {
-			providerName = "openai-compatibility"
-		}
-		internalProviderKey := util.OpenAICompatibleProviderKey(providerName)
+		internalProviderKey := compat.RouteChannel
 		base := strings.TrimSpace(compat.BaseURL)
 		disableCooling := compat.DisableCooling
 
-		// Handle new APIKeyEntries format (preferred)
-		createdEntries := 0
 		for j := range compat.APIKeyEntries {
 			entry := &compat.APIKeyEntries[j]
 			key := strings.TrimSpace(entry.APIKey)
@@ -331,12 +325,11 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 			idKind := fmt.Sprintf("openai-compatibility:%s", providerName)
 			id, token := idGen.Next(idKind, key, base, proxyURL)
 			attrs := map[string]string{
-				"source":       fmt.Sprintf("config:%s[%s]", providerName, token),
-				"base_url":     base,
-				"compat_name":  compat.Name,
-				"provider_key": internalProviderKey,
-				"config_index": strconv.Itoa(i),
+				"source":      fmt.Sprintf("config:%s[%s]", providerName, token),
+				"base_url":    base,
+				"compat_name": compat.Name,
 			}
+			configIndex := i
 			metadata := map[string]any{}
 			if disableCooling != nil {
 				metadata["disable_cooling"] = *disableCooling
@@ -355,57 +348,19 @@ func (s *ConfigSynthesizer) synthesizeOpenAICompat(ctx *SynthesisContext) []*cor
 			}
 			addConfigHeadersToAttrs(compat.Headers, attrs)
 			a := &coreauth.Auth{
-				ID:         id,
-				Provider:   internalProviderKey,
-				Label:      compat.Name,
-				Prefix:     prefix,
-				Status:     coreauth.StatusActive,
-				ProxyURL:   proxyURL,
-				Attributes: attrs,
-				Metadata:   metadata,
-				CreatedAt:  now,
-				UpdatedAt:  now,
-			}
-			if len(a.Metadata) == 0 {
-				a.Metadata = nil
-			}
-			out = append(out, a)
-			createdEntries++
-		}
-		// Fallback: create entry without API key if no APIKeyEntries
-		if createdEntries == 0 {
-			idKind := fmt.Sprintf("openai-compatibility:%s", providerName)
-			id, token := idGen.Next(idKind, base)
-			attrs := map[string]string{
-				"source":       fmt.Sprintf("config:%s[%s]", providerName, token),
-				"base_url":     base,
-				"compat_name":  compat.Name,
-				"provider_key": internalProviderKey,
-				"config_index": strconv.Itoa(i),
-			}
-			metadata := map[string]any{}
-			if disableCooling != nil {
-				metadata["disable_cooling"] = *disableCooling
-			}
-			addRequestRetryToMetadata(compat.RequestRetry, metadata)
-			addRequestScopedErrorsToMetadata(compat.RequestScopedErrors, metadata)
-			if compat.Priority != 0 {
-				attrs["priority"] = strconv.Itoa(compat.Priority)
-			}
-			if hash := diff.ComputeOpenAICompatModelsHash(compat.Models); hash != "" {
-				attrs["models_hash"] = hash
-			}
-			addConfigHeadersToAttrs(compat.Headers, attrs)
-			a := &coreauth.Auth{
-				ID:         id,
-				Provider:   internalProviderKey,
-				Label:      compat.Name,
-				Prefix:     prefix,
-				Status:     coreauth.StatusActive,
-				Attributes: attrs,
-				Metadata:   metadata,
-				CreatedAt:  now,
-				UpdatedAt:  now,
+				ID:                       id,
+				Provider:                 internalProviderKey,
+				RouteChannel:             internalProviderKey,
+				QuotaDomain:              entry.QuotaDomain,
+				OpenAICompatibilityIndex: &configIndex,
+				Label:                    compat.Name,
+				Prefix:                   prefix,
+				Status:                   coreauth.StatusActive,
+				ProxyURL:                 proxyURL,
+				Attributes:               attrs,
+				Metadata:                 metadata,
+				CreatedAt:                now,
+				UpdatedAt:                now,
 			}
 			if len(a.Metadata) == 0 {
 				a.Metadata = nil

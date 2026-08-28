@@ -45,7 +45,7 @@ func TestMarkResultQuotaBackoffEscalatesOncePerWindow(t *testing.T) {
 		t.Fatalf("Register returned error: %v", errRegister)
 	}
 
-	manager.MarkResult(context.Background(), quotaResult(auth.ID, "gpt-5"))
+	mustMarkResult(t, manager, context.Background(), quotaResult(auth.ID, "gpt-5"))
 	first, ok := manager.GetByID(auth.ID)
 	if !ok || first == nil || first.ModelStates["gpt-5"] == nil {
 		t.Fatalf("expected model state after first failure")
@@ -59,7 +59,7 @@ func TestMarkResultQuotaBackoffEscalatesOncePerWindow(t *testing.T) {
 	}
 
 	// A second in-flight failure lands while the first window is still open.
-	manager.MarkResult(context.Background(), quotaResult(auth.ID, "gpt-5"))
+	mustMarkResult(t, manager, context.Background(), quotaResult(auth.ID, "gpt-5"))
 	second, ok := manager.GetByID(auth.ID)
 	if !ok || second == nil || second.ModelStates["gpt-5"] == nil {
 		t.Fatalf("expected model state after second failure")
@@ -98,7 +98,7 @@ func TestMarkResultQuotaBackoffEscalatesAfterWindowExpiry(t *testing.T) {
 		t.Fatalf("Register returned error: %v", errRegister)
 	}
 
-	manager.MarkResult(context.Background(), quotaResult(auth.ID, "gpt-5"))
+	mustMarkResult(t, manager, context.Background(), quotaResult(auth.ID, "gpt-5"))
 	updated, ok := manager.GetByID(auth.ID)
 	if !ok || updated == nil || updated.ModelStates["gpt-5"] == nil {
 		t.Fatalf("expected model state after failure")
@@ -177,7 +177,7 @@ func TestRecoverableUnknownFailuresHaveFiniteCooldown(t *testing.T) {
 				t.Fatalf("Register returned error: %v", errRegister)
 			}
 
-			manager.MarkResult(context.Background(), Result{
+			mustMarkResult(t, manager, context.Background(), Result{
 				AuthID:   auth.ID,
 				Provider: auth.Provider,
 				Model:    testCase.model,
@@ -235,7 +235,7 @@ func TestSchedulerPromotesUnknownFailureAfterRetryDeadline(t *testing.T) {
 		t.Fatalf("initial scheduler pick returned error: %v", errPick)
 	}
 
-	manager.MarkResult(context.Background(), Result{
+	mustMarkResult(t, manager, context.Background(), Result{
 		AuthID:   authID,
 		Provider: provider,
 		Model:    model,

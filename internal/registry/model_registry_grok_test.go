@@ -47,13 +47,19 @@ func TestGetAvailableModelInfosHonorsQuotaAndSuspensionAvailability(t *testing.T
 		wantModelAvailable bool
 	}{
 		{
-			name:               "quota cooldown remains listed",
+			name:               "all routes in quota cooldown are hidden",
 			quotaExceeded:      true,
-			wantModelAvailable: true,
+			wantModelAvailable: false,
 		},
 		{
-			name:               "quota suspension reason remains listed",
+			name:               "all quota-suspended routes are hidden",
 			quotaSuspended:     true,
+			wantModelAvailable: false,
+		},
+		{
+			name:               "one selectable route keeps model visible",
+			clientCount:        2,
+			quotaExceeded:      true,
 			wantModelAvailable: true,
 		},
 		{

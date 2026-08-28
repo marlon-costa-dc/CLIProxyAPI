@@ -2,6 +2,7 @@ package cliproxy
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -15,23 +16,23 @@ import (
 )
 
 // registerModelsForAuth (re)binds provider models in the global registry using the core auth ID as client identifier.
-func (s *Service) registerModelsForAuth(ctx context.Context, a *coreauth.Auth) {
-	s.registerModelsForAuthWithCache(ctx, a, nil)
+func (s *Service) registerModelsForAuth(ctx context.Context, a *coreauth.Auth) error {
+	return s.registerModelsForAuthWithCache(ctx, a, nil)
 }
 
-func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreauth.Auth, compatCache *openAICompatibilityRegistrationCache) {
+func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreauth.Auth, compatCache *openAICompatibilityRegistrationCache) error {
 	if a == nil || a.ID == "" {
-		return
+		return nil
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if ctx.Err() != nil {
-		return
+		return ctx.Err()
 	}
 	if a.Disabled {
 		GlobalModelRegistry().UnregisterClient(a.ID)
-		return
+		return nil
 	}
 	authKind := a.AuthKind()
 	// Unregister legacy client ID (if present) to avoid double counting
@@ -48,11 +49,15 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 		provider = "openai-compatibility"
 	}
 	excluded := s.effectiveAuthExcludedModels(a, provider, authKind, nil)
-	if s.tryRegisterPluginModelsForAuth(ctx, a, provider, authKind, excluded) {
-		return
+	handledByPlugin, errPlugin := s.tryRegisterPluginModelsForAuth(ctx, a, provider, authKind, excluded)
+	if errPlugin != nil {
+		return errPlugin
+	}
+	if handledByPlugin {
+		return nil
 	}
 	if ctx.Err() != nil {
-		return
+		return ctx.Err()
 	}
 	var models []*ModelInfo
 	switch provider {
@@ -191,6 +196,9 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 	default:
 		// Handle OpenAI-compatibility providers by name using config
 		if s.cfg != nil {
+			if compatCache == nil {
+				compatCache = s.newOpenAICompatibilityRegistrationCache()
+			}
 			providerKey := provider
 			compatName := strings.TrimSpace(a.Provider)
 			isCompatAuth := false
@@ -249,7 +257,7 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 				}
 				return true
 			}
-			if cached, ok := compatCache.lookup(a, compatName); ok {
+			if cached, okCached := compatCache.lookup(a, compatName); okCached {
 				isCompatAuth = true
 				if providerKey == "" {
 					providerKey = cached.providerKey
@@ -269,15 +277,18 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 						GlobalModelRegistry().UnregisterClient(a.ID)
 					}
 				}
-				return
+				return nil
 			}
-			if indexed := configEntryForAuthIndex(a, s.cfg.OpenAICompatibility); indexed != nil && registerCompat(indexed) {
-				return
+			if a.AuthSourceKind() == coreauth.AuthSourceConfig {
+				if a.OpenAICompatibilityIndex == nil {
+					return fmt.Errorf("config auth %s is missing its OpenAI compatibility reference", a.ID)
+				}
+				return fmt.Errorf("config auth %s references missing OpenAI compatibility index %d", a.ID, *a.OpenAICompatibilityIndex)
 			}
 			for i := range s.cfg.OpenAICompatibility {
 				compat := &s.cfg.OpenAICompatibility[i]
 				if strings.EqualFold(compat.Name, compatName) && registerCompat(compat) {
-					return
+					return nil
 				}
 			}
 			if isCompatAuth {
@@ -288,16 +299,16 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 					// No matching provider found or models removed entirely; drop any prior registration.
 					GlobalModelRegistry().UnregisterClient(a.ID)
 				}
-				return
+				return nil
 			}
 		}
 	}
 	if ctx.Err() != nil {
-		return
+		return ctx.Err()
 	}
 	models = applyOAuthModelAliasForAuth(s.cfg, provider, authKind, a.Attributes, models)
 	if ctx.Err() != nil {
-		return
+		return ctx.Err()
 	}
 	key := provider
 	if key == "" {
@@ -306,10 +317,11 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 	models = s.appendPluginModels(key, models)
 	if len(models) > 0 {
 		s.registerResolvedModelsForAuth(a, key, applyModelPrefixes(models, a.Prefix, s.cfg != nil && s.cfg.ForceModelPrefix))
-		return
+		return nil
 	}
 
 	GlobalModelRegistry().UnregisterClient(a.ID)
+	return nil
 }
 
 // refreshModelRegistrationForAuth re-applies the latest model registration for
@@ -319,51 +331,55 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 // Re-registration is deliberate: registry cooldown/suspension state is treated
 // as part of the previous registration snapshot and is cleared when the auth is
 // rebound to the refreshed model catalog.
-func (s *Service) refreshModelRegistrationForAuth(current *coreauth.Auth) bool {
+func (s *Service) refreshModelRegistrationForAuth(current *coreauth.Auth) (bool, error) {
 	return s.refreshModelRegistrationForAuthWithContext(context.Background(), current, nil)
 }
 
-func (s *Service) refreshModelRegistrationForAuthWithCache(current *coreauth.Auth, compatCache *openAICompatibilityRegistrationCache) bool {
+func (s *Service) refreshModelRegistrationForAuthWithCache(current *coreauth.Auth, compatCache *openAICompatibilityRegistrationCache) (bool, error) {
 	return s.refreshModelRegistrationForAuthWithContext(context.Background(), current, compatCache)
 }
 
-func (s *Service) refreshModelRegistrationForAuthWithContext(ctx context.Context, current *coreauth.Auth, compatCache *openAICompatibilityRegistrationCache) bool {
+func (s *Service) refreshModelRegistrationForAuthWithContext(ctx context.Context, current *coreauth.Auth, compatCache *openAICompatibilityRegistrationCache) (bool, error) {
 	if s == nil || s.coreManager == nil || current == nil || current.ID == "" {
-		return false
+		return false, nil
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if ctx.Err() != nil {
-		return false
+		return false, ctx.Err()
 	}
 	if !current.Disabled {
 		s.ensureExecutorsForAuthWithContext(ctx, current, false)
 	}
-	s.registerModelsForAuthWithCache(ctx, current, compatCache)
+	if errRegister := s.registerModelsForAuthWithCache(ctx, current, compatCache); errRegister != nil {
+		return false, fmt.Errorf("refresh models for auth %s: %w", current.ID, errRegister)
+	}
 	s.coreManager.ReconcileRegistryModelStates(ctx, current.ID)
 	if ctx.Err() != nil {
-		return false
+		return false, ctx.Err()
 	}
 
 	latest, ok := s.latestAuthForModelRegistration(current.ID)
 	if !ok || latest.Disabled {
 		GlobalModelRegistry().UnregisterClient(current.ID)
 		s.coreManager.RefreshSchedulerEntry(current.ID)
-		return false
+		return false, nil
 	}
 
 	// Re-apply the latest auth snapshot so concurrent auth updates cannot leave
 	// stale model registrations behind. This may duplicate registration work when
 	// no auth fields changed, but keeps the refresh path simple and correct.
 	s.ensureExecutorsForAuthWithContext(ctx, latest, false)
-	s.registerModelsForAuthWithCache(ctx, latest, compatCache)
+	if errRegister := s.registerModelsForAuthWithCache(ctx, latest, compatCache); errRegister != nil {
+		return false, fmt.Errorf("reconcile refreshed models for auth %s: %w", latest.ID, errRegister)
+	}
 	if ctx.Err() != nil {
-		return false
+		return false, ctx.Err()
 	}
 	s.coreManager.ReconcileRegistryModelStates(ctx, latest.ID)
 	s.coreManager.RefreshSchedulerEntry(current.ID)
-	return true
+	return true, nil
 }
 
 // latestAuthForModelRegistration returns the latest auth snapshot regardless of
@@ -748,10 +764,6 @@ type modelCompatEntry interface {
 	GetIsCompat() bool
 }
 
-type modelPricingEntry interface {
-	GetPricing() *registry.ModelPricing
-}
-
 func buildConfiguredModelInfo(model modelEntry, ownedBy, modelType string, created int64, fallbackDisplayName string, userDefined bool) *ModelInfo {
 	name := strings.TrimSpace(model.GetName())
 	alias := strings.TrimSpace(model.GetAlias())
@@ -786,9 +798,6 @@ func buildConfiguredModelInfo(model modelEntry, ownedBy, modelType string, creat
 	if compatModel, okCompat := any(model).(modelCompatEntry); okCompat {
 		info.IsCompat = compatModel.GetIsCompat()
 	}
-	if pricedModel, okPricing := any(model).(modelPricingEntry); okPricing {
-		info.Pricing = pricedModel.GetPricing()
-	}
 	return info
 }
 
@@ -808,6 +817,12 @@ func buildOpenAICompatibilityConfigModels(compat *config.OpenAICompatibility) []
 		if info == nil {
 			continue
 		}
+		info.CatalogProviderID = strings.TrimSpace(model.CatalogProviderID)
+		info.CatalogModelID = strings.TrimSpace(model.CatalogModelID)
+		info.CatalogRouteProviderID = strings.TrimSpace(model.CatalogRouteProviderID)
+		info.CatalogRouteModelID = strings.TrimSpace(model.CatalogRouteModelID)
+		info.VariantID = strings.TrimSpace(model.VariantID)
+		info.Protocols = append([]string(nil), model.Protocols...)
 		thinkingSupport := model.Thinking
 		if thinkingSupport == nil && !model.Image {
 			thinkingSupport = &registry.ThinkingSupport{Levels: []string{"low", "medium", "high"}}
@@ -1098,6 +1113,7 @@ func applyOAuthModelAliasEntries(aliases []config.OAuthModelAlias, models []*Mod
 			seen[aliasKey] = struct{}{}
 			clone := *model
 			clone.ID = mappedID
+			clone.CanonicalModelID = id
 			if entry.displayName != "" {
 				clone.DisplayName = entry.displayName
 			}

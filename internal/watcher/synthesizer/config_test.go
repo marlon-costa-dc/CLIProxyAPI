@@ -720,60 +720,62 @@ func TestConfigSynthesizer_CodexKeys_AllowsEmptyAPIKeyWithBaseURL(t *testing.T) 
 	}
 }
 
+func modelPipelineCompatModel(routeChannel, modelID string) config.OpenAICompatibilityModel {
+	return config.OpenAICompatibilityModel{
+		Name:                   modelID,
+		Alias:                  modelID,
+		CatalogProviderID:      routeChannel,
+		CatalogModelID:         modelID,
+		CatalogRouteProviderID: routeChannel,
+		CatalogRouteModelID:    modelID,
+		Protocols:              []string{"openai_chat"},
+	}
+}
+
+func modelPipelineOpenAICompatibility(name, baseURL string, apiKeys ...string) config.OpenAICompatibility {
+	canonicalName := strings.ToLower(strings.TrimSpace(name))
+	routeChannel := "openai-compatible-" + canonicalName
+	entries := make([]config.OpenAICompatibilityAPIKey, len(apiKeys))
+	for index, apiKey := range apiKeys {
+		entries[index] = config.OpenAICompatibilityAPIKey{APIKey: apiKey, QuotaDomain: routeChannel}
+	}
+	return config.OpenAICompatibility{
+		Name:          name,
+		BaseURL:       baseURL,
+		RouteChannel:  routeChannel,
+		APIKeyEntries: entries,
+		Models:        []config.OpenAICompatibilityModel{modelPipelineCompatModel(routeChannel, canonicalName+"-model")},
+	}
+}
+
 func TestConfigSynthesizer_OpenAICompat(t *testing.T) {
+	withAPIKeyEntries := modelPipelineOpenAICompatibility("CustomProvider", "https://custom.api.com", "key-1", "key-2")
+	withAPIKeyEntries.DisableCooling = boolPointer(true)
 	tests := []struct {
-		name    string
-		compat  []config.OpenAICompatibility
-		wantLen int
+		name      string
+		compat    []config.OpenAICompatibility
+		wantLen   int
+		wantError string
 	}{
 		{
-			name: "with APIKeyEntries",
-			compat: []config.OpenAICompatibility{
-				{
-					Name:           "CustomProvider",
-					BaseURL:        "https://custom.api.com",
-					DisableCooling: boolPointer(true),
-					APIKeyEntries: []config.OpenAICompatibilityAPIKey{
-						{APIKey: "key-1"},
-						{APIKey: "key-2"},
-					},
-				},
-			},
+			name:    "with APIKeyEntries",
+			compat:  []config.OpenAICompatibility{withAPIKeyEntries},
 			wantLen: 2,
 		},
 		{
-			name: "empty APIKeyEntries included (legacy)",
-			compat: []config.OpenAICompatibility{
-				{
-					Name:    "EmptyKeys",
-					BaseURL: "https://empty.api.com",
-					APIKeyEntries: []config.OpenAICompatibilityAPIKey{
-						{APIKey: ""},
-						{APIKey: "   "},
-					},
-				},
-			},
-			wantLen: 2,
+			name:      "empty APIKeyEntries fail loudly",
+			compat:    []config.OpenAICompatibility{modelPipelineOpenAICompatibility("EmptyKeys", "https://empty.api.com", "", "   ")},
+			wantError: "api-key: must be a non-empty canonical string",
 		},
 		{
-			name: "without APIKeyEntries (fallback)",
-			compat: []config.OpenAICompatibility{
-				{
-					Name:    "NoKeyProvider",
-					BaseURL: "https://no-key.api.com",
-				},
-			},
-			wantLen: 1,
+			name:      "without APIKeyEntries fails loudly",
+			compat:    []config.OpenAICompatibility{modelPipelineOpenAICompatibility("NoKeyProvider", "https://no-key.api.com")},
+			wantError: "api-key-entries: must contain at least one explicit credential",
 		},
 		{
-			name: "empty name defaults",
-			compat: []config.OpenAICompatibility{
-				{
-					Name:    "",
-					BaseURL: "https://default.api.com",
-				},
-			},
-			wantLen: 1,
+			name:      "empty name fails loudly",
+			compat:    []config.OpenAICompatibility{modelPipelineOpenAICompatibility("", "https://default.api.com", "key")},
+			wantError: "name: must be a non-empty canonical string",
 		},
 	}
 
@@ -789,6 +791,12 @@ func TestConfigSynthesizer_OpenAICompat(t *testing.T) {
 			}
 
 			auths, err := synth.Synthesize(ctx)
+			if tt.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantError) {
+					t.Fatalf("Synthesize() = (%#v, %v), want error containing %q", auths, err, tt.wantError)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -808,17 +816,10 @@ func TestConfigSynthesizer_OpenAICompat(t *testing.T) {
 
 func TestConfigSynthesizer_OpenAICompat_UsesNamespacedProviderKey(t *testing.T) {
 	synth := NewConfigSynthesizer()
+	compat := modelPipelineOpenAICompatibility("kimi", "https://kimi-compatible.example.com/v1", "test-key")
 	ctx := &SynthesisContext{
 		Config: &config.Config{
-			OpenAICompatibility: []config.OpenAICompatibility{
-				{
-					Name:    "kimi",
-					BaseURL: "https://kimi-compatible.example.com/v1",
-					APIKeyEntries: []config.OpenAICompatibilityAPIKey{
-						{APIKey: "test-key"},
-					},
-				},
-			},
+			OpenAICompatibility: []config.OpenAICompatibility{compat},
 		},
 		Now:         time.Now(),
 		IDGenerator: NewStableIDGenerator(),
@@ -835,14 +836,20 @@ func TestConfigSynthesizer_OpenAICompat_UsesNamespacedProviderKey(t *testing.T) 
 	if auth.Provider != "openai-compatible-kimi" {
 		t.Fatalf("provider = %q, want openai-compatible-kimi", auth.Provider)
 	}
-	if auth.Attributes["provider_key"] != "openai-compatible-kimi" {
-		t.Fatalf("provider_key = %q, want openai-compatible-kimi", auth.Attributes["provider_key"])
+	if auth.RouteChannel != "openai-compatible-kimi" {
+		t.Fatalf("route channel = %q, want openai-compatible-kimi", auth.RouteChannel)
 	}
 	if auth.Attributes["compat_name"] != "kimi" {
 		t.Fatalf("compat_name = %q, want kimi", auth.Attributes["compat_name"])
 	}
-	if auth.Attributes["config_index"] != "0" {
-		t.Fatalf("config_index = %q, want 0", auth.Attributes["config_index"])
+	if auth.OpenAICompatibilityIndex == nil || *auth.OpenAICompatibilityIndex != 0 {
+		t.Fatalf("OpenAICompatibilityIndex = %v, want 0", auth.OpenAICompatibilityIndex)
+	}
+	if _, exists := auth.Attributes["provider_key"]; exists {
+		t.Fatal("legacy provider_key attribute survived typed route-channel cutover")
+	}
+	if _, exists := auth.Attributes["config_index"]; exists {
+		t.Fatal("legacy config_index attribute survived typed config-reference cutover")
 	}
 }
 
@@ -918,21 +925,14 @@ func TestConfigSynthesizer_VertexCompat_SkipsEmptyAndHeaders(t *testing.T) {
 
 func TestConfigSynthesizer_OpenAICompat_WithModelsHash(t *testing.T) {
 	synth := NewConfigSynthesizer()
+	compat := modelPipelineOpenAICompatibility("TestProvider", "https://test.api.com", "key-with-models")
+	compat.Models = []config.OpenAICompatibilityModel{
+		modelPipelineCompatModel(compat.RouteChannel, "model-a"),
+		modelPipelineCompatModel(compat.RouteChannel, "model-b"),
+	}
 	ctx := &SynthesisContext{
 		Config: &config.Config{
-			OpenAICompatibility: []config.OpenAICompatibility{
-				{
-					Name:    "TestProvider",
-					BaseURL: "https://test.api.com",
-					Models: []config.OpenAICompatibilityModel{
-						{Name: "model-a"},
-						{Name: "model-b"},
-					},
-					APIKeyEntries: []config.OpenAICompatibilityAPIKey{
-						{APIKey: "key-with-models"},
-					},
-				},
-			},
+			OpenAICompatibility: []config.OpenAICompatibility{compat},
 		},
 		Now:         time.Now(),
 		IDGenerator: NewStableIDGenerator(),
@@ -953,38 +953,21 @@ func TestConfigSynthesizer_OpenAICompat_WithModelsHash(t *testing.T) {
 	}
 }
 
-func TestConfigSynthesizer_OpenAICompat_FallbackWithModels(t *testing.T) {
+func TestConfigSynthesizer_OpenAICompat_RejectsMissingCredentials(t *testing.T) {
 	synth := NewConfigSynthesizer()
+	compat := modelPipelineOpenAICompatibility("NoKeyWithModels", "https://nokey.api.com")
+	compat.Headers = map[string]string{"X-API": "header-value"}
 	ctx := &SynthesisContext{
 		Config: &config.Config{
-			OpenAICompatibility: []config.OpenAICompatibility{
-				{
-					Name:    "NoKeyWithModels",
-					BaseURL: "https://nokey.api.com",
-					Models: []config.OpenAICompatibilityModel{
-						{Name: "model-x"},
-					},
-					Headers: map[string]string{"X-API": "header-value"},
-					// No APIKeyEntries - should use fallback path
-				},
-			},
+			OpenAICompatibility: []config.OpenAICompatibility{compat},
 		},
 		Now:         time.Now(),
 		IDGenerator: NewStableIDGenerator(),
 	}
 
 	auths, err := synth.Synthesize(ctx)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(auths) != 1 {
-		t.Fatalf("expected 1 auth, got %d", len(auths))
-	}
-	if _, ok := auths[0].Attributes["models_hash"]; !ok {
-		t.Error("expected models_hash in fallback path")
-	}
-	if auths[0].Attributes["header:X-API"] != "header-value" {
-		t.Errorf("expected header:X-API=header-value, got %s", auths[0].Attributes["header:X-API"])
+	if err == nil || !strings.Contains(err.Error(), "api-key-entries: must contain at least one explicit credential") {
+		t.Fatalf("Synthesize() = (%#v, %v), want missing-credentials error", auths, err)
 	}
 }
 
@@ -1152,22 +1135,17 @@ func TestConfigSynthesizer_NormalizesNonPositiveWeightToZero(t *testing.T) {
 func TestConfigSynthesizer_PropagatesWeightsForAllAPIKeyTypes(t *testing.T) {
 	weight := func(value int) *int { return &value }
 	synth := NewConfigSynthesizer()
+	compat := modelPipelineOpenAICompatibility("compat", "https://compat.example.com", "compat")
+	compat.APIKeyEntries[0].Weight = weight(6)
 	ctx := &SynthesisContext{
 		Config: &config.Config{
-			GeminiKey:       []config.GeminiKey{{APIKey: "gemini", Weight: weight(1)}},
-			InteractionsKey: []config.GeminiKey{{APIKey: "interactions", Weight: weight(2)}},
-			ClaudeKey:       []config.ClaudeKey{{APIKey: "claude", Weight: weight(3)}},
-			CodexKey:        []config.CodexKey{{APIKey: "codex", Weight: weight(4)}},
-			XAIKey:          []config.XAIKey{{APIKey: "xai", Weight: weight(5)}},
-			OpenAICompatibility: []config.OpenAICompatibility{{
-				Name:    "compat",
-				BaseURL: "https://compat.example.com",
-				APIKeyEntries: []config.OpenAICompatibilityAPIKey{{
-					APIKey: "compat",
-					Weight: weight(6),
-				}},
-			}},
-			VertexCompatAPIKey: []config.VertexCompatKey{{APIKey: "vertex", Weight: weight(7)}},
+			GeminiKey:           []config.GeminiKey{{APIKey: "gemini", Weight: weight(1)}},
+			InteractionsKey:     []config.GeminiKey{{APIKey: "interactions", Weight: weight(2)}},
+			ClaudeKey:           []config.ClaudeKey{{APIKey: "claude", Weight: weight(3)}},
+			CodexKey:            []config.CodexKey{{APIKey: "codex", Weight: weight(4)}},
+			XAIKey:              []config.XAIKey{{APIKey: "xai", Weight: weight(5)}},
+			OpenAICompatibility: []config.OpenAICompatibility{compat},
+			VertexCompatAPIKey:  []config.VertexCompatKey{{APIKey: "vertex", Weight: weight(7)}},
 		},
 		Now:         time.Now(),
 		IDGenerator: NewStableIDGenerator(),
@@ -1190,6 +1168,7 @@ func TestConfigSynthesizer_PropagatesWeightsForAllAPIKeyTypes(t *testing.T) {
 
 func TestConfigSynthesizer_AllProviders(t *testing.T) {
 	synth := NewConfigSynthesizer()
+	compat := modelPipelineOpenAICompatibility("compat", "https://compat.api", "compat-key")
 	ctx := &SynthesisContext{
 		Config: &config.Config{
 			GeminiKey: []config.GeminiKey{
@@ -1204,9 +1183,7 @@ func TestConfigSynthesizer_AllProviders(t *testing.T) {
 			XAIKey: []config.XAIKey{
 				{APIKey: "xai-key"},
 			},
-			OpenAICompatibility: []config.OpenAICompatibility{
-				{Name: "compat", BaseURL: "https://compat.api"},
-			},
+			OpenAICompatibility: []config.OpenAICompatibility{compat},
 			VertexCompatAPIKey: []config.VertexCompatKey{
 				{APIKey: "vertex-key", BaseURL: "https://vertex.api"},
 			},
@@ -1241,6 +1218,8 @@ func TestConfigSynthesizer_RequestRetry(t *testing.T) {
 	positive := 2
 	negative := -1
 	synth := NewConfigSynthesizer()
+	compat := modelPipelineOpenAICompatibility("compat", "https://compat.api", "compat-key")
+	compat.RequestRetry = &zero
 	ctx := &SynthesisContext{
 		Config: &config.Config{
 			GeminiKey: []config.GeminiKey{
@@ -1261,16 +1240,7 @@ func TestConfigSynthesizer_RequestRetry(t *testing.T) {
 			XAIKey: []config.XAIKey{
 				{APIKey: "xai-positive", RequestRetry: &positive},
 			},
-			OpenAICompatibility: []config.OpenAICompatibility{
-				{
-					Name:         "compat",
-					BaseURL:      "https://compat.api",
-					RequestRetry: &zero,
-					APIKeyEntries: []config.OpenAICompatibilityAPIKey{
-						{APIKey: "compat-key"},
-					},
-				},
-			},
+			OpenAICompatibility: []config.OpenAICompatibility{compat},
 			VertexCompatAPIKey: []config.VertexCompatKey{
 				{APIKey: "vertex-positive", BaseURL: "https://vertex.api", RequestRetry: &positive},
 			},
@@ -1329,6 +1299,8 @@ func TestConfigSynthesizer_RequestScopedErrors(t *testing.T) {
 			Action: "stop",
 		},
 	}
+	compat := modelPipelineOpenAICompatibility("compat", "https://compat.api", "compat-key")
+	compat.RequestScopedErrors = rules
 
 	ctx := &SynthesisContext{
 		Config: &config.Config{
@@ -1347,16 +1319,7 @@ func TestConfigSynthesizer_RequestScopedErrors(t *testing.T) {
 			XAIKey: []config.CodexKey{
 				{APIKey: "xai-key", BaseURL: "https://xai.api", RequestScopedErrors: rules},
 			},
-			OpenAICompatibility: []config.OpenAICompatibility{
-				{
-					Name:                "compat",
-					BaseURL:             "https://compat.api",
-					RequestScopedErrors: rules,
-					APIKeyEntries: []config.OpenAICompatibilityAPIKey{
-						{APIKey: "compat-key"},
-					},
-				},
-			},
+			OpenAICompatibility: []config.OpenAICompatibility{compat},
 		},
 		Now:         time.Now(),
 		IDGenerator: NewStableIDGenerator(),

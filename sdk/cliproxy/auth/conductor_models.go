@@ -871,10 +871,15 @@ func resolveOpenAICompatConfigForAuth(cfg *internalconfig.Config, auth *Auth, pr
 	if cfg == nil {
 		return nil
 	}
-	if auth != nil && auth.AuthSourceKind() == AuthSourceConfig && auth.Attributes != nil {
-		if index, errIndex := strconv.Atoi(strings.TrimSpace(auth.Attributes[AttributeConfigIndex])); errIndex == nil && index >= 0 && index < len(cfg.OpenAICompatibility) && !cfg.OpenAICompatibility[index].Disabled {
-			return &cfg.OpenAICompatibility[index]
+	if auth != nil && auth.AuthSourceKind() == AuthSourceConfig {
+		if auth.OpenAICompatibilityIndex == nil {
+			return nil
 		}
+		index := *auth.OpenAICompatibilityIndex
+		if index < 0 || index >= len(cfg.OpenAICompatibility) || cfg.OpenAICompatibility[index].Disabled {
+			return nil
+		}
+		return &cfg.OpenAICompatibility[index]
 	}
 	authProvider := ""
 	if auth != nil {

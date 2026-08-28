@@ -2,21 +2,25 @@ package cliproxy
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher/synthesizer"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
-	log "github.com/sirupsen/logrus"
 )
 
 func (s *Service) applyConfigUpdate(newCfg *config.Config) {
-	s.applyConfigUpdateWithAuthSynthesis(context.Background(), newCfg, true)
+	if errApply := s.applyConfigUpdateWithAuthSynthesis(context.Background(), newCfg, true); errApply != nil {
+		s.reportRuntimeError(fmt.Errorf("config update failed: %w", errApply))
+	}
 }
 
 func (s *Service) applyWatcherConfigUpdate(newCfg *config.Config) {
-	s.applyConfigUpdateWithAuthSynthesis(context.Background(), newCfg, false)
+	if errApply := s.applyConfigUpdateWithAuthSynthesis(context.Background(), newCfg, false); errApply != nil {
+		s.reportRuntimeError(fmt.Errorf("watcher config update failed: %w", errApply))
+	}
 }
 
 type configCommit struct {
@@ -73,19 +77,30 @@ func newRoutingSelector(state routingRuntimeState) coreauth.Selector {
 	return selector
 }
 
-func (s *Service) applyConfigUpdateWithAuthSynthesis(ctx context.Context, newCfg *config.Config, synthesizeConfigAuths bool) bool {
-	commit := s.commitConfigUpdate(newCfg)
-	if commit.cfg == nil {
-		return false
+func (s *Service) applyConfigUpdateWithAuthSynthesis(ctx context.Context, newCfg *config.Config, synthesizeConfigAuths bool) error {
+	if s == nil {
+		return fmt.Errorf("apply config update: service is nil")
+	}
+	if newCfg == nil {
+		s.cfgMu.RLock()
+		newCfg = s.cfg
+		s.cfgMu.RUnlock()
+	}
+	if errRouting := s.validateAppliedModelRouting(newCfg); errRouting != nil {
+		return fmt.Errorf("validate model-routing ownership: %w", errRouting)
+	}
+	commit, errCommit := s.commitConfigUpdate(newCfg)
+	if errCommit != nil {
+		return errCommit
 	}
 	return s.applyConfigRuntime(ctx, commit, synthesizeConfigAuths)
 }
 
 // commitConfigUpdate applies only in-memory configuration state. Runtime work that
 // may block on plugins, models, storage, or networking is deliberately deferred.
-func (s *Service) commitConfigUpdate(newCfg *config.Config) configCommit {
+func (s *Service) commitConfigUpdate(newCfg *config.Config) (configCommit, error) {
 	if s == nil {
-		return configCommit{}
+		return configCommit{}, fmt.Errorf("commit config update: service is nil")
 	}
 
 	s.configUpdateMu.Lock()
@@ -97,18 +112,17 @@ func (s *Service) commitConfigUpdate(newCfg *config.Config) configCommit {
 		s.cfgMu.RUnlock()
 	}
 	if newCfg == nil {
-		return configCommit{}
+		return configCommit{}, fmt.Errorf("commit config update: config is nil")
 	}
 	if errValidate := newCfg.ValidateRuntimeConfig(); errValidate != nil {
-		log.WithError(errValidate).Warn("rejected config update with invalid runtime config")
-		return configCommit{}
+		return configCommit{}, fmt.Errorf("validate config update: %w", errValidate)
 	}
 
 	s.cfgMu.Lock()
 	s.cfg = newCfg
 	s.cfgMu.Unlock()
 	s.configSequence++
-	return configCommit{cfg: newCfg, sequence: s.configSequence}
+	return configCommit{cfg: newCfg, sequence: s.configSequence}, nil
 }
 
 func (s *Service) configCommitCurrent(commit configCommit) bool {
@@ -121,46 +135,48 @@ func (s *Service) configCommitCurrent(commit configCommit) bool {
 	return current
 }
 
-func (s *Service) applyConfigRuntime(ctx context.Context, commit configCommit, synthesizeConfigAuths bool) bool {
+func (s *Service) applyConfigRuntime(ctx context.Context, commit configCommit, synthesizeConfigAuths bool) error {
 	cfg := commit.cfg
 	if s == nil || cfg == nil {
-		return false
+		return fmt.Errorf("apply config runtime: service or config is nil")
 	}
 	s.configRuntimeMu.Lock()
 	defer s.configRuntimeMu.Unlock()
 	if !s.configCommitCurrent(commit) {
-		return false
+		return fmt.Errorf("apply config runtime: config commit is stale")
 	}
 	if ctx == nil {
-		ctx = context.Background()
+		return fmt.Errorf("apply config runtime: context is nil")
 	}
 	if errContext := ctx.Err(); errContext != nil {
-		return false
+		return errContext
 	}
 
-	if !s.applyManagerConfig(ctx, commit) {
-		return false
+	if errManager := s.applyManagerConfig(ctx, commit); errManager != nil {
+		return errManager
 	}
 	if errContext := ctx.Err(); errContext != nil {
-		return false
+		return errContext
 	}
 	if !s.applyPprofConfigContext(ctx, cfg) {
-		return false
+		return fmt.Errorf("apply pprof config")
 	}
 	if errContext := ctx.Err(); errContext != nil {
-		return false
+		return errContext
 	}
 	if !s.updateServerClientsContext(ctx, cfg) {
-		return false
+		return fmt.Errorf("update server clients")
 	}
 	if errContext := ctx.Err(); errContext != nil {
-		return false
+		return errContext
 	}
 
 	registrationCtx := coreauth.WithSkipPersist(ctx)
-	s.syncPluginRuntimeConfigForConfig(registrationCtx, cfg)
+	if _, errPluginConfig := s.syncPluginRuntimeConfigForConfig(registrationCtx, cfg); errPluginConfig != nil {
+		return fmt.Errorf("sync plugin runtime config: %w", errPluginConfig)
+	}
 	if errContext := ctx.Err(); errContext != nil {
-		return false
+		return errContext
 	}
 	var auths []*coreauth.Auth
 	if s.coreManager != nil {
@@ -172,35 +188,45 @@ func (s *Service) applyConfigRuntime(ctx context.Context, commit configCommit, s
 		auths:             auths,
 	})
 	if errContext := ctx.Err(); errContext != nil {
-		return false
+		return errContext
 	}
-	if synthesizeConfigAuths {
-		s.registerConfigAPIKeyAuths(registrationCtx, cfg)
-	}
-	if errContext := ctx.Err(); errContext != nil {
-		return false
-	}
-	if s.coreManager != nil && !cfg.Home.Enabled && cfg.SaveCooldownStatus {
-		if errRestoreCooldown := s.coreManager.RestoreCooldownStates(registrationCtx); errRestoreCooldown != nil && ctx.Err() == nil {
-			log.Warnf("failed to restore cooldown state after config update: %v", errRestoreCooldown)
+	if synthesizeConfigAuths && s.coreManager != nil {
+		if errRegister := s.registerConfigAPIKeyAuths(registrationCtx, cfg); errRegister != nil {
+			return errRegister
 		}
 	}
 	if errContext := ctx.Err(); errContext != nil {
-		return false
+		return errContext
 	}
-	s.syncPluginModelRuntime(registrationCtx)
-	return ctx.Err() == nil
+	if s.coreManager != nil && !cfg.Home.Enabled && cfg.SaveCooldownStatus {
+		if errRestoreCooldown := s.coreManager.RestoreCooldownStates(registrationCtx); errRestoreCooldown != nil {
+			return fmt.Errorf("restore cooldown state after config update: %w", errRestoreCooldown)
+		}
+	}
+	if errContext := ctx.Err(); errContext != nil {
+		return errContext
+	}
+	if errPluginModels := s.syncPluginModelRuntime(registrationCtx); errPluginModels != nil {
+		return fmt.Errorf("sync plugin model runtime: %w", errPluginModels)
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return nil
 }
 
-func (s *Service) applyManagerConfig(ctx context.Context, commit configCommit) bool {
+func (s *Service) applyManagerConfig(ctx context.Context, commit configCommit) error {
 	if s == nil || s.coreManager == nil || commit.cfg == nil {
-		return s != nil && commit.cfg != nil
+		if s != nil && commit.cfg != nil {
+			return nil
+		}
+		return fmt.Errorf("apply manager config: service or config is nil")
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if errContext := ctx.Err(); errContext != nil {
-		return false
+		return errContext
 	}
 	routingState := normalizedRoutingRuntimeState(commit.cfg)
 	if s.appliedRoutingState == nil || *s.appliedRoutingState != routingState {
@@ -208,12 +234,15 @@ func (s *Service) applyManagerConfig(ctx context.Context, commit configCommit) b
 		s.appliedRoutingState = &routingState
 	}
 	s.applyRetryConfig(commit.cfg)
-	store := s.resolveCooldownStateStore(commit.cfg)
-	if !s.coreManager.ApplyConfigWithCooldownStateStore(ctx, commit.cfg, store) {
-		return false
+	store, errStore := s.resolveCooldownStateStore(commit.cfg)
+	if errStore != nil {
+		return errStore
+	}
+	if errApply := s.coreManager.ApplyConfigWithCooldownStateStore(ctx, commit.cfg, store); errApply != nil {
+		return fmt.Errorf("apply auth manager config: %w", errApply)
 	}
 	s.coreManager.SetOAuthModelAlias(commit.cfg.OAuthModelAlias)
-	return true
+	return nil
 }
 
 func (s *Service) updateServerClientsContext(ctx context.Context, cfg *config.Config) bool {
@@ -236,9 +265,9 @@ func (s *Service) reloadConfigFromWatcher() bool {
 	return s.watcher.ReloadConfigIfChanged()
 }
 
-func (s *Service) registerConfigAPIKeyAuths(ctx context.Context, cfg *config.Config) {
+func (s *Service) registerConfigAPIKeyAuths(ctx context.Context, cfg *config.Config) error {
 	if s == nil || s.coreManager == nil || cfg == nil {
-		return
+		return fmt.Errorf("register config API key auths: service, auth manager, and config are required")
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -250,8 +279,7 @@ func (s *Service) registerConfigAPIKeyAuths(ctx context.Context, cfg *config.Con
 		IDGenerator: synthesizer.NewStableIDGenerator(),
 	})
 	if errSynthesize != nil {
-		log.Warnf("failed to synthesize config API key auths: %v", errSynthesize)
-		return
+		return fmt.Errorf("synthesize config API key auths: %w", errSynthesize)
 	}
 
 	registrationCtx := coreauth.WithDeferredAPIKeyModelAliasRebuild(ctx)
@@ -261,24 +289,27 @@ func (s *Service) registerConfigAPIKeyAuths(ctx context.Context, cfg *config.Con
 		if !coreauth.IsConfigAPIKeyAuth(auth) {
 			continue
 		}
-		prepared := s.prepareCoreAuthForModelRegistration(registrationCtx, auth)
+		prepared, errPrepare := s.prepareCoreAuthForModelRegistration(registrationCtx, auth)
+		if errPrepare != nil {
+			return errPrepare
+		}
 		if prepared == nil {
-			continue
+			return fmt.Errorf("prepare config API key auth %s: no auth returned", auth.ID)
 		}
 		needsAliasRebuild = true
 		authForRegistration := prepared
 		tasks = append(tasks, modelRegistrationTask{
 			phase:    modelRegistrationPhaseConfigAPIKey,
 			category: modelRegistrationCategory(authForRegistration),
-			run: func(compatCache *openAICompatibilityRegistrationCache) {
-				s.completeModelRegistrationForAuthWithCache(registrationCtx, authForRegistration, compatCache)
+			run: func(compatCache *openAICompatibilityRegistrationCache) error {
+				return s.completeModelRegistrationForAuthWithCache(registrationCtx, authForRegistration, compatCache)
 			},
 		})
 	}
 	if needsAliasRebuild {
 		s.coreManager.RefreshAPIKeyModelAlias()
 	}
-	s.runModelRegistrationTasks(registrationCtx, tasks)
+	return s.runModelRegistrationTasks(registrationCtx, tasks)
 }
 
 func forceHomeRuntimeConfig(cfg *config.Config) {

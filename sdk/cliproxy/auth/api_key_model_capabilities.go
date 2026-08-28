@@ -7,6 +7,7 @@ import (
 
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/modelconfig"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/modelrouting"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
@@ -15,6 +16,7 @@ import (
 const resolvedAPIKeyModelInfoMetadataKey = "cliproxy.resolved_api_key_model_info"
 
 type resolvedModelPricingContextKey struct{}
+type resolvedProjectionDigestContextKey struct{}
 
 type apiKeyModelCapabilityRoute struct {
 	upstreamModel string
@@ -64,18 +66,31 @@ func ResolvedAPIKeyModelInfo(req cliproxyexecutor.Request) (*registry.ModelInfo,
 func WithResolvedModelPricing(ctx context.Context, req cliproxyexecutor.Request) context.Context {
 	modelInfo, ok := ResolvedAPIKeyModelInfo(req)
 	if !ok {
-		return context.WithValue(ctx, resolvedModelPricingContextKey{}, (*registry.ModelPricing)(nil))
+		ctx = context.WithValue(ctx, resolvedModelPricingContextKey{}, (*modelrouting.Pricing)(nil))
+		return context.WithValue(ctx, resolvedProjectionDigestContextKey{}, "")
 	}
-	return context.WithValue(ctx, resolvedModelPricingContextKey{}, modelInfo.Pricing)
+	ctx = context.WithValue(ctx, resolvedModelPricingContextKey{}, modelInfo.Pricing)
+	digest, _ := req.Metadata[routingProjectionDigestMetadataKey].(string)
+	return context.WithValue(ctx, resolvedProjectionDigestContextKey{}, digest)
 }
 
 // ResolvedModelPricingFromContext returns the selected model pricing snapshot.
-func ResolvedModelPricingFromContext(ctx context.Context) (*registry.ModelPricing, bool) {
+func ResolvedModelPricingFromContext(ctx context.Context) (*modelrouting.Pricing, bool) {
 	if ctx == nil {
 		return nil, false
 	}
-	pricing, ok := ctx.Value(resolvedModelPricingContextKey{}).(*registry.ModelPricing)
+	pricing, ok := ctx.Value(resolvedModelPricingContextKey{}).(*modelrouting.Pricing)
 	return pricing, ok && pricing != nil
+}
+
+// ResolvedProjectionDigestFromContext returns the projection that supplied the
+// exact pricing bound to this attempt.
+func ResolvedProjectionDigestFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	digest, _ := ctx.Value(resolvedProjectionDigestContextKey{}).(string)
+	return digest
 }
 
 // CodexAPIKeyModelIsCompat reports whether the selected codex-api-key model has

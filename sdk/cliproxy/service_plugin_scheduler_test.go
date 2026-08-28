@@ -36,7 +36,11 @@ func TestServiceSyncPluginRuntimeConfigInjectsPluginHostScheduler(t *testing.T) 
 		pluginHost:  host,
 	}
 
-	if ok := service.syncPluginRuntimeConfig(context.Background()); !ok {
+	ok, errSync := service.syncPluginRuntimeConfig(context.Background())
+	if errSync != nil {
+		t.Fatalf("syncPluginRuntimeConfig() error = %v", errSync)
+	}
+	if !ok {
 		t.Fatal("syncPluginRuntimeConfig() = false, want true")
 	}
 
@@ -56,7 +60,11 @@ func TestServiceSyncPluginRuntimeConfigClearsPluginSchedulerWithoutHost(t *testi
 	service.coreManager.SetPluginScheduler(host)
 	service.pluginHost = nil
 
-	if ok := service.syncPluginRuntimeConfig(context.Background()); ok {
+	ok, errSync := service.syncPluginRuntimeConfig(context.Background())
+	if errSync != nil {
+		t.Fatalf("syncPluginRuntimeConfig() error = %v", errSync)
+	}
+	if ok {
 		t.Fatal("syncPluginRuntimeConfig() = true, want false")
 	}
 

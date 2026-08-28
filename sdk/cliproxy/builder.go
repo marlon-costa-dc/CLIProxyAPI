@@ -263,7 +263,9 @@ func (b *Builder) Build() (*Service, error) {
 	}
 	// Attach a default RoundTripper provider so providers can opt-in per-auth transports.
 	coreManager.SetRoundTripperProvider(newDefaultRoundTripperProvider())
-	coreManager.SetConfig(b.cfg)
+	if errConfig := coreManager.SetConfig(b.cfg); errConfig != nil {
+		return nil, fmt.Errorf("apply auth manager config: %w", errConfig)
+	}
 	coreManager.SetOAuthModelAlias(b.cfg.OAuthModelAlias)
 	if pluginHost != nil {
 		coreManager.SetPluginScheduler(pluginHost)
@@ -290,9 +292,11 @@ func (b *Builder) Build() (*Service, error) {
 	service.serverOptions = append(service.serverOptions,
 		api.WithPostAuthPersistHook(service.runtimeAuthSyncHook()),
 		api.WithPluginHost(pluginHost),
-		api.WithConfigReloadHook(func(_ context.Context, _ *config.Config) {
-			service.reloadConfigFromWatcher()
+		api.WithConfigReloadHook(func(ctx context.Context, cfg *config.Config) error {
+			return service.applyConfigUpdateWithAuthSynthesis(ctx, cfg, true)
 		}),
+		api.WithConfigPublishHook(service.publishModelRoutingConfig),
+		api.WithModelRoutingStateHook(service.modelRoutingState),
 	)
 	return service, nil
 }
@@ -316,7 +320,6 @@ func (s *Service) runtimeAuthSyncHook() coreauth.PostAuthHook {
 		if s.watcher != nil && s.watcher.DispatchPersistedAuthUpdate(update) {
 			return nil
 		}
-		s.handleAuthUpdate(coreauth.WithSkipPersist(ctx), update)
-		return nil
+		return s.handleAuthUpdate(coreauth.WithSkipPersist(ctx), update)
 	}
 }

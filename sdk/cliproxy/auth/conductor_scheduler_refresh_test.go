@@ -173,7 +173,7 @@ func TestManager_PickNext_RebuildsSchedulerAfterModelCooldownError(t *testing.T)
 		t.Fatalf("register old auth: %v", errRegister)
 	}
 
-	manager.MarkResult(ctx, Result{
+	mustMarkResult(t, manager, ctx, Result{
 		AuthID:   oldAuth.ID,
 		Provider: "gemini",
 		Model:    "scheduler-cooldown-rebuild-model",

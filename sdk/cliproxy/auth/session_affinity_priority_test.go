@@ -79,7 +79,7 @@ func TestManagerSessionAffinityPreservesBindingAcrossHigherPriorityRecovery(t *t
 			if highAuth.ID != highID {
 				t.Fatalf("cold binding = %q, want high priority %q", highAuth.ID, highID)
 			}
-			manager.MarkResult(ctx, Result{
+			mustMarkResult(t, manager, ctx, Result{
 				AuthID:   highAuth.ID,
 				Provider: highAuth.Provider,
 				Model:    model,
@@ -87,7 +87,7 @@ func TestManagerSessionAffinityPreservesBindingAcrossHigherPriorityRecovery(t *t
 				Options:  opts,
 			})
 
-			manager.MarkResult(ctx, Result{
+			mustMarkResult(t, manager, ctx, Result{
 				AuthID:   highAuth.ID,
 				Provider: highAuth.Provider,
 				Model:    model,
@@ -99,7 +99,7 @@ func TestManagerSessionAffinityPreservesBindingAcrossHigherPriorityRecovery(t *t
 			if lowAuth.ID != lowID {
 				t.Fatalf("failover binding = %q, want %q", lowAuth.ID, lowID)
 			}
-			manager.MarkResult(ctx, Result{
+			mustMarkResult(t, manager, ctx, Result{
 				AuthID:   lowAuth.ID,
 				Provider: lowAuth.Provider,
 				Model:    model,
@@ -122,7 +122,7 @@ func TestManagerSessionAffinityPreservesBindingAcrossHigherPriorityRecovery(t *t
 				t.Fatalf("cold binding for new session = %q, want high priority %q", got.ID, highID)
 			}
 
-			manager.MarkResult(ctx, Result{
+			mustMarkResult(t, manager, ctx, Result{
 				AuthID:   lowAuth.ID,
 				Provider: lowAuth.Provider,
 				Model:    model,

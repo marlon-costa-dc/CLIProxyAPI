@@ -2,6 +2,8 @@ package cliproxy
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -31,7 +33,7 @@ const (
 type modelRegistrationTask struct {
 	phase    int
 	category string
-	run      func(*openAICompatibilityRegistrationCache)
+	run      func(*openAICompatibilityRegistrationCache) error
 }
 
 type executorRegistrationOptions struct {
@@ -68,17 +70,21 @@ func (s *Service) registerPluginAuthParser() {
 	}
 }
 
-func (s *Service) syncPluginRuntime(ctx context.Context) {
-	if !s.syncPluginRuntimeConfig(ctx) {
-		return
+func (s *Service) syncPluginRuntime(ctx context.Context) error {
+	configured, errConfig := s.syncPluginRuntimeConfig(ctx)
+	if errConfig != nil {
+		return errConfig
 	}
-	s.syncPluginModelRuntime(ctx)
+	if !configured {
+		return nil
+	}
+	return s.syncPluginModelRuntime(ctx)
 }
 
-func (s *Service) syncPluginRuntimeConfig(ctx context.Context) bool {
+func (s *Service) syncPluginRuntimeConfig(ctx context.Context) (bool, error) {
 	if s == nil {
 		sdkAuth.RegisterPluginAuthParser(nil)
-		return false
+		return false, nil
 	}
 	s.cfgMu.RLock()
 	cfg := s.cfg
@@ -86,34 +92,34 @@ func (s *Service) syncPluginRuntimeConfig(ctx context.Context) bool {
 	return s.syncPluginRuntimeConfigForConfig(ctx, cfg)
 }
 
-func (s *Service) syncPluginRuntimeConfigForConfig(ctx context.Context, cfg *config.Config) bool {
+func (s *Service) syncPluginRuntimeConfigForConfig(ctx context.Context, cfg *config.Config) (bool, error) {
 	if s == nil {
 		sdkAuth.RegisterPluginAuthParser(nil)
-		return false
+		return false, nil
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if errContext := ctx.Err(); errContext != nil {
-		return false
+		return false, errContext
 	}
 
 	if s.pluginHost != nil {
 		s.pluginHost.ApplyConfig(ctx, cfg)
 	}
 	if errContext := ctx.Err(); errContext != nil {
-		return false
+		return false, errContext
 	}
 	if s.coreManager != nil {
 		s.coreManager.SetPluginScheduler(s.pluginHost)
 	}
 	s.registerPluginAuthParser()
 	if s.pluginHost == nil {
-		return false
+		return false, nil
 	}
 	s.pluginHost.RegisterFrontendAuthProviders()
 	if errContext := ctx.Err(); errContext != nil {
-		return false
+		return false, errContext
 	}
 	if s.accessManager != nil {
 		s.accessManager.SetProviders(sdkaccess.RegisteredProviders())
@@ -123,19 +129,22 @@ func (s *Service) syncPluginRuntimeConfigForConfig(ctx context.Context, cfg *con
 	if s.server != nil {
 		s.server.RefreshPluginManagementRoutes()
 	}
-	return ctx.Err() == nil
+	if errContext := ctx.Err(); errContext != nil {
+		return false, errContext
+	}
+	return true, nil
 }
 
-func (s *Service) syncPluginModelRuntime(ctx context.Context) {
+func (s *Service) syncPluginModelRuntime(ctx context.Context) error {
 	if s == nil || s.pluginHost == nil || s.coreManager == nil {
-		return
+		return nil
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	s.pluginHost.RegisterModels(ctx, registry.GetGlobalRegistry())
 	if ctx.Err() != nil {
-		return
+		return ctx.Err()
 	}
 	s.cfgMu.RLock()
 	homeEnabled := s.cfg != nil && s.cfg.Home.Enabled
@@ -146,23 +155,26 @@ func (s *Service) syncPluginModelRuntime(ctx context.Context) {
 		forceReplaceAuths: false,
 		auths:             s.coreManager.List(),
 	})
-	s.refreshPluginModelRegistrations(ctx)
+	if errRefresh := s.refreshPluginModelRegistrations(ctx); errRefresh != nil {
+		return errRefresh
+	}
 	if ctx.Err() != nil {
-		return
+		return ctx.Err()
 	}
 	s.coreManager.RefreshSchedulerAll()
+	return nil
 }
 
-func (s *Service) refreshPluginModelRegistrations(ctx context.Context) {
+func (s *Service) refreshPluginModelRegistrations(ctx context.Context) error {
 	if s == nil || s.pluginHost == nil || s.coreManager == nil {
-		return
+		return nil
 	}
-	s.registerModelsForAuthBatch(ctx, s.coreManager.List())
+	return s.registerModelsForAuthBatch(ctx, s.coreManager.List())
 }
 
-func (s *Service) registerModelsForAuthBatch(ctx context.Context, auths []*coreauth.Auth) {
+func (s *Service) registerModelsForAuthBatch(ctx context.Context, auths []*coreauth.Auth) error {
 	if s == nil || s.coreManager == nil || len(auths) == 0 {
-		return
+		return nil
 	}
 	tasks := make([]modelRegistrationTask, 0, len(auths))
 	for _, auth := range auths {
@@ -173,17 +185,17 @@ func (s *Service) registerModelsForAuthBatch(ctx context.Context, auths []*corea
 		tasks = append(tasks, modelRegistrationTask{
 			phase:    modelRegistrationPhase(authForRegistration),
 			category: modelRegistrationCategory(authForRegistration),
-			run: func(compatCache *openAICompatibilityRegistrationCache) {
-				s.completeModelRegistrationForAuthWithCache(ctx, authForRegistration, compatCache)
+			run: func(compatCache *openAICompatibilityRegistrationCache) error {
+				return s.completeModelRegistrationForAuthWithCache(ctx, authForRegistration, compatCache)
 			},
 		})
 	}
-	s.runModelRegistrationTasks(ctx, tasks)
+	return s.runModelRegistrationTasks(ctx, tasks)
 }
 
-func (s *Service) runModelRegistrationTasks(ctx context.Context, tasks []modelRegistrationTask) {
+func (s *Service) runModelRegistrationTasks(ctx context.Context, tasks []modelRegistrationTask) error {
 	if len(tasks) == 0 {
-		return
+		return nil
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -200,13 +212,18 @@ func (s *Service) runModelRegistrationTasks(ctx context.Context, tasks []modelRe
 	}
 
 	compatCache := s.newOpenAICompatibilityRegistrationCache()
-	s.runModelRegistrationTaskPhase(ctx, configAPIKeyTasks, compatCache)
-	s.runModelRegistrationTaskPhase(ctx, otherTasks, compatCache)
+	if errPhase := s.runModelRegistrationTaskPhase(ctx, configAPIKeyTasks, compatCache); errPhase != nil {
+		return fmt.Errorf("register config API key models: %w", errPhase)
+	}
+	if errPhase := s.runModelRegistrationTaskPhase(ctx, otherTasks, compatCache); errPhase != nil {
+		return fmt.Errorf("register runtime auth models: %w", errPhase)
+	}
+	return nil
 }
 
-func (s *Service) runModelRegistrationTaskPhase(ctx context.Context, tasks []modelRegistrationTask, compatCache *openAICompatibilityRegistrationCache) {
+func (s *Service) runModelRegistrationTaskPhase(ctx context.Context, tasks []modelRegistrationTask, compatCache *openAICompatibilityRegistrationCache) error {
 	if len(tasks) == 0 {
-		return
+		return nil
 	}
 
 	grouped := make(map[string][]modelRegistrationTask)
@@ -226,7 +243,9 @@ func (s *Service) runModelRegistrationTaskPhase(ctx context.Context, tasks []mod
 	}
 
 	var wg sync.WaitGroup
-	for _, category := range order {
+	phaseErrors := make([]error, len(order))
+	phaseErrorMu := make([]sync.Mutex, len(order))
+	for categoryIndex, category := range order {
 		group := grouped[category]
 		workers := len(group)
 		maxWorkers := modelRegistrationMaxWorkersForCategory(category)
@@ -248,7 +267,11 @@ func (s *Service) runModelRegistrationTaskPhase(ctx context.Context, tasks []mod
 						return
 					default:
 					}
-					task.run(compatCache)
+					if errRun := task.run(compatCache); errRun != nil {
+						phaseErrorMu[categoryIndex].Lock()
+						phaseErrors[categoryIndex] = errors.Join(phaseErrors[categoryIndex], errRun)
+						phaseErrorMu[categoryIndex].Unlock()
+					}
 				}
 			}()
 		}
@@ -264,6 +287,10 @@ func (s *Service) runModelRegistrationTaskPhase(ctx context.Context, tasks []mod
 		}(group)
 	}
 	wg.Wait()
+	if errContext := ctx.Err(); errContext != nil {
+		return errors.Join(errContext, errors.Join(phaseErrors...))
+	}
+	return errors.Join(phaseErrors...)
 }
 
 func modelRegistrationPhase(auth *coreauth.Auth) int {
@@ -339,16 +366,24 @@ func (s *Service) registerModelRefreshCallback() {
 			tasks = append(tasks, modelRegistrationTask{
 				phase:    modelRegistrationPhase(authForRefresh),
 				category: modelRegistrationCategory(authForRefresh),
-				run: func(compatCache *openAICompatibilityRegistrationCache) {
-					if s.refreshModelRegistrationForAuthWithCache(authForRefresh, compatCache) {
+				run: func(compatCache *openAICompatibilityRegistrationCache) error {
+					refreshedAuth, errRefresh := s.refreshModelRegistrationForAuthWithCache(authForRefresh, compatCache)
+					if errRefresh != nil {
+						return errRefresh
+					}
+					if refreshedAuth {
 						refreshedMu.Lock()
 						refreshed++
 						refreshedMu.Unlock()
 					}
+					return nil
 				},
 			})
 		}
-		s.runModelRegistrationTasks(context.Background(), tasks)
+		if errRegister := s.runModelRegistrationTasks(context.Background(), tasks); errRegister != nil {
+			s.reportRuntimeError(fmt.Errorf("refresh model catalog registrations: %w", errRegister))
+			return
+		}
 
 		if refreshed > 0 {
 			log.Infof("re-registered models for %d auth(s) due to model catalog changes: %v", refreshed, changedProviders)

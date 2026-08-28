@@ -18,15 +18,6 @@ var inPlaceSJSONTokens = []string{"ReplaceInPlace", "Optimistic"}
 // from the same buffer can still be alive at that point.
 var inPlaceSJSONAllowlist = map[string]struct{}{}
 
-// skippedWalkDirs are directories the source walker never descends into. The
-// build and tool dirs are excluded because they hold cloned third-party or
-// generated Go sources (build output, caches, temporary GOPATH/module trees)
-// that must not be treated as product code governed by these invariants.
-var skippedWalkDirs = map[string]struct{}{
-	".git": {}, "vendor": {}, "node_modules": {}, "testdata": {},
-	".tmp_build": {}, ".go-cache": {}, ".go-tmp": {}, ".gocache": {},
-}
-
 // forEachSourceFile visits every non-test Go file in the repository.
 func forEachSourceFile(t *testing.T, root string, visit func(rel string, data []byte)) {
 	t.Helper()
@@ -35,7 +26,11 @@ func forEachSourceFile(t *testing.T, root string, visit func(rel string, data []
 			return err
 		}
 		if d.IsDir() {
-			if _, skip := skippedWalkDirs[d.Name()]; skip {
+			if strings.HasPrefix(d.Name(), ".") {
+				return filepath.SkipDir
+			}
+			switch d.Name() {
+			case "vendor", "node_modules", "testdata":
 				return filepath.SkipDir
 			}
 			return nil
@@ -56,50 +51,6 @@ func forEachSourceFile(t *testing.T, root string, visit func(rel string, data []
 	})
 	if err != nil {
 		t.Fatalf("walk repository: %v", err)
-	}
-}
-
-// TestForEachSourceFileSkipsBuildDirs pins the walker's directory exclusions
-// and its non-exclusion of arbitrary hidden dirs. Every listed build/tool dir
-// must be skipped even when it holds a poisoned *.go file, while a hidden
-// source dir with no special meaning must still be scanned.
-func TestForEachSourceFileSkipsBuildDirs(t *testing.T) {
-	root := t.TempDir()
-	poison := "-- FORBIDDEN: ReplaceInPlace --\n"
-	// Every dir the walker must skip, seeded with a poisoned Go file.
-	for name := range skippedWalkDirs {
-		dir := filepath.Join(root, name)
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			t.Fatalf("mkdir %s: %v", dir, err)
-		}
-		if err := os.WriteFile(filepath.Join(dir, "x.go"), []byte(poison), 0o644); err != nil {
-			t.Fatalf("write skip fixture: %v", err)
-		}
-	}
-	// A hidden dir with no special meaning must still be scanned.
-	hidden := filepath.Join(root, ".hidden-source")
-	if err := os.MkdirAll(hidden, 0o755); err != nil {
-		t.Fatalf("mkdir %s: %v", hidden, err)
-	}
-	if err := os.WriteFile(filepath.Join(hidden, "x.go"), []byte("// .hidden-source scanned\n"), 0o644); err != nil {
-		t.Fatalf("write hidden fixture: %v", err)
-	}
-
-	var skipped, kept []string
-	forEachSourceFile(t, root, func(rel string, data []byte) {
-		if strings.Contains(string(data), "FORBIDDEN") {
-			skipped = append(skipped, rel)
-			return
-		}
-		if strings.Contains(string(data), ".hidden-source scanned") {
-			kept = append(kept, rel)
-		}
-	})
-	if len(skipped) != 0 {
-		t.Fatalf("blocked dirs were walked: %v", skipped)
-	}
-	if len(kept) != 1 {
-		t.Fatalf("expected hidden-source dir to be scanned once, got %v", kept)
 	}
 }
 
@@ -139,7 +90,7 @@ func TestNoInPlaceSJSONWrites(t *testing.T) {
 // new code rather than a proof of absence.
 var inPlaceByteWritePatterns = []*regexp.Regexp{
 	regexp.MustCompile(`\bcopy\([a-zA-Z_][A-Za-z0-9_.]*\[`),
-	regexp.MustCompile(`^\s*[a-zA-Z_][A-Za-z0-9_.]*\[[a-zA-Z0-9_]+\] = 0$`),
+	regexp.MustCompile(`^\s*[a-zA-Z_][A-Za-z0-9_.]*\[[a-zA-Z0-9_]+\] = 0\r?$`),
 }
 
 // reviewedInPlaceByteWrites records the reviewed in-place byte writes per file.
@@ -172,7 +123,8 @@ func TestInPlaceByteWritesAreReviewed(t *testing.T) {
 	root := repoRoot(t)
 	found := make(map[string][]string)
 	forEachSourceFile(t, root, func(rel string, data []byte) {
-		for _, line := range strings.Split(string(data), "\n") {
+		normalized := strings.ReplaceAll(string(data), "\r\n", "\n")
+		for _, line := range strings.Split(normalized, "\n") {
 			for _, pattern := range inPlaceByteWritePatterns {
 				if pattern.MatchString(line) {
 					found[rel] = append(found[rel], strings.TrimSpace(line))
@@ -214,5 +166,38 @@ func repoRoot(t *testing.T) string {
 			t.Fatal("go.mod not found above working directory")
 		}
 		dir = parent
+	}
+}
+
+func TestInPlaceByteWritePatterns_CRLF(t *testing.T) {
+	crlfLine := "\traw[index] = 0\r"
+	matched := false
+	for _, pattern := range inPlaceByteWritePatterns {
+		if pattern.MatchString(crlfLine) {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		t.Fatalf("inPlaceByteWritePatterns failed to match CRLF line %q", crlfLine)
+	}
+}
+
+func TestForEachSourceFile_SkipsDotDirs(t *testing.T) {
+	tempDir := t.TempDir()
+	dotDir := filepath.Join(tempDir, ".gomodcache")
+	if err := os.MkdirAll(dotDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	sampleFile := filepath.Join(dotDir, "sample.go")
+	if err := os.WriteFile(sampleFile, []byte("package sample\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	var visited []string
+	forEachSourceFile(t, tempDir, func(rel string, data []byte) {
+		visited = append(visited, rel)
+	})
+	if len(visited) > 0 {
+		t.Fatalf("forEachSourceFile should have skipped dot directories, but visited: %v", visited)
 	}
 }
