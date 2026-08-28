@@ -25,9 +25,19 @@ claude-api-key:
 openai-compatibility:
   - name: "compat"
     base-url: "https://compat.example.com/v1"
+    route-channel: "compat"
     request-retry: 0
     api-key-entries:
       - api-key: "compat-key"
+        quota-domain: "compat"
+    models:
+      - name: "compat-model"
+        alias: "compat-model"
+        catalog-provider-id: "compat"
+        catalog-model-id: "compat-model"
+        catalog-route-provider-id: "compat"
+        catalog-route-model-id: "compat-model"
+        protocols: [openai_chat]
 vertex-api-key:
   - api-key: "vertex-four"
     request-retry: 4

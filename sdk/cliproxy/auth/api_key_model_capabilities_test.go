@@ -150,6 +150,7 @@ func TestAPIKeyModelRoutingKeepsOneExecutionSnapshotAcrossReload(t *testing.T) {
 
 func TestAttachResolvedAPIKeyModelInfoSupportsKeylessOpenAICompatibility(t *testing.T) {
 	manager := NewManager(nil, nil, nil)
+	configIndex := 0
 	manager.SetConfig(&internalconfig.Config{OpenAICompatibility: []internalconfig.OpenAICompatibility{{
 		Name:    "keyless",
 		Prefix:  "tenant",
@@ -166,9 +167,10 @@ func TestAttachResolvedAPIKeyModelInfoSupportsKeylessOpenAICompatibility(t *test
 		},
 	}}})
 	auth := &Auth{
-		ID:       "auth-keyless",
-		Provider: "openai-compatibility:keyless",
-		Prefix:   "tenant",
+		ID:                       "auth-keyless",
+		Provider:                 "openai-compatibility:keyless",
+		Prefix:                   "tenant",
+		OpenAICompatibilityIndex: &configIndex,
 		Attributes: map[string]string{
 			AttributeSource: "config:keyless[0]",
 			"compat_name":   "keyless",

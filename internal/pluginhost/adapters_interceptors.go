@@ -3,14 +3,12 @@ package pluginhost
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"reflect"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
@@ -346,42 +344,33 @@ func (h *Host) HasRequestInterceptors() bool {
 	return false
 }
 
-func (h *Host) commitModelClients(snap *Snapshot, modelRegistry modelRegistry, registrations []modelClientRegistration, nextClients map[string]struct{}, nextProviders map[string]string, nextModelRegistrations map[string]pluginModelRegistration) error {
+func (h *Host) commitModelClients(snap *Snapshot, modelRegistry modelRegistry, registrations []modelClientRegistration, nextClients map[string]struct{}, nextProviders map[string]string, nextModelRegistrations map[string]pluginModelRegistration) {
 	if h == nil || modelRegistry == nil {
-		return fmt.Errorf("commit plugin model clients: host and registry are required")
+		return
 	}
 
 	staleClients := make([]string, 0)
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	if h.Snapshot() != snap {
-		return fmt.Errorf("commit plugin model clients: plugin snapshot changed")
+		h.mu.Unlock()
+		return
 	}
 	for clientID := range h.modelClientIDs {
 		if _, okClient := nextClients[clientID]; !okClient {
 			staleClients = append(staleClients, clientID)
 		}
 	}
-	batch := registry.ClientBatch{
-		Registrations: make([]registry.ClientRegistration, len(registrations)),
-		Unregister:    staleClients,
-	}
-	for index, registration := range registrations {
-		batch.Registrations[index] = registry.ClientRegistration{
-			ClientID: registration.clientID,
-			Provider: registration.provider,
-			Models:   registration.models,
-		}
-	}
-	if len(batch.Registrations) > 0 || len(batch.Unregister) > 0 {
-		if errApply := modelRegistry.ApplyClientBatch(batch); errApply != nil {
-			return fmt.Errorf("commit plugin model registry batch: %w", errApply)
-		}
-	}
 	h.modelClientIDs = nextClients
 	h.modelProviders = nextProviders
 	h.modelRegistrations = nextModelRegistrations
-	return nil
+	h.mu.Unlock()
+
+	for _, registration := range registrations {
+		modelRegistry.RegisterClient(registration.clientID, registration.provider, registration.models)
+	}
+	for _, clientID := range staleClients {
+		modelRegistry.UnregisterClient(clientID)
+	}
 }
 
 func readAndRestoreRequestBody(r *http.Request) ([]byte, error) {

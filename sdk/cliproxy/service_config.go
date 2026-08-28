@@ -182,17 +182,15 @@ func (s *Service) applyConfigRuntime(ctx context.Context, commit configCommit, s
 	if s.coreManager != nil {
 		auths = s.coreManager.List()
 	}
-	if errExecutors := s.registerAvailableExecutors(registrationCtx, executorRegistrationOptions{
+	s.registerAvailableExecutors(registrationCtx, executorRegistrationOptions{
 		includeBaseline:   cfg.Home.Enabled,
 		forceReplaceAuths: true,
 		auths:             auths,
-	}); errExecutors != nil {
-		return fmt.Errorf("register executors for config: %w", errExecutors)
-	}
+	})
 	if errContext := ctx.Err(); errContext != nil {
 		return errContext
 	}
-	if synthesizeConfigAuths {
+	if synthesizeConfigAuths && s.coreManager != nil {
 		if errRegister := s.registerConfigAPIKeyAuths(registrationCtx, cfg); errRegister != nil {
 			return errRegister
 		}

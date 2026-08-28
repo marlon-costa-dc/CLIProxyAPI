@@ -793,10 +793,8 @@ type OpenAICompatibilityModel struct {
 	// Alias is the model name alias that clients will use to reference this model.
 	Alias string `yaml:"alias" json:"alias"`
 
-	// CatalogProviderID and CatalogModelID form the models.dev ModelKey.
-	// They are optional only for configurations that do not participate in the
-	// model-pipeline inventory. Supplying any catalog fact requires the complete
-	// catalog contract during runtime validation.
+	// CatalogProviderID and CatalogModelID form the required models.dev ModelKey.
+	// Every enabled OpenAI-compatible route participates in the model inventory.
 	CatalogProviderID string `yaml:"catalog-provider-id,omitempty" json:"catalog-provider-id,omitempty"`
 	CatalogModelID    string `yaml:"catalog-model-id,omitempty" json:"catalog-model-id,omitempty"`
 

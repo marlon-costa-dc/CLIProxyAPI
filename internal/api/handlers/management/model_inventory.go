@@ -193,29 +193,11 @@ type bootstrapModel struct {
 func bootstrapInventoryModels(registered []registry.RegisteredRouteSnapshot, auths map[string]*coreauth.Auth, now time.Time) ([]modelrouting.InventoryModel, error) {
 	models := make(map[string]*bootstrapModel)
 	for routeIndex, registeredRoute := range registered {
-		if registeredRoute.Model == nil || strings.HasPrefix(strings.ToLower(registeredRoute.RuntimeModelID), "aihub-") {
-			continue
+		routeKey, errRoute := registeredRoute.ModelRoutingKey(routeIndex)
+		if errRoute != nil {
+			return nil, errRoute
 		}
 		info := registeredRoute.Model
-		facts := []struct {
-			name  string
-			value string
-		}{
-			{name: "catalog provider", value: info.CatalogProviderID},
-			{name: "catalog model", value: info.CatalogModelID},
-			{name: "catalog route provider", value: info.CatalogRouteProviderID},
-			{name: "catalog route model", value: info.CatalogRouteModelID},
-			{name: "route channel", value: registeredRoute.RouteChannel},
-			{name: "runtime model", value: registeredRoute.RuntimeModelID},
-		}
-		for _, fact := range facts {
-			if fact.value == "" || strings.TrimSpace(fact.value) != fact.value || fact.value == "unknown" {
-				return nil, fmt.Errorf("registered route %d has invalid %s fact", routeIndex, fact.name)
-			}
-		}
-		if len(info.Protocols) == 0 {
-			return nil, fmt.Errorf("registered route %d has no explicit protocols", routeIndex)
-		}
 		auth := auths[registeredRoute.ClientID]
 		if auth == nil {
 			return nil, fmt.Errorf("registered route %d has no matching credential", routeIndex)
@@ -226,8 +208,8 @@ func bootstrapInventoryModels(registered []registry.RegisteredRouteSnapshot, aut
 		if kind := inventoryAuthKind(auth.AuthKind()); kind != "api_key" && kind != "oauth" {
 			return nil, fmt.Errorf("registered route %d has no supported credential kind", routeIndex)
 		}
-		canonicalModelID := info.CatalogModelID
-		catalogProviderID := info.CatalogProviderID
+		canonicalModelID := routeKey.ModelKey.CanonicalModelID
+		catalogProviderID := routeKey.ModelKey.CatalogProviderID
 		modelKey := modelrouting.ModelKeyJSON{CatalogProviderID: catalogProviderID, CanonicalModelID: canonicalModelID}
 		modelID := catalogProviderID + "\x00" + canonicalModelID
 		built := models[modelID]
@@ -249,10 +231,6 @@ func bootstrapInventoryModels(registered []registry.RegisteredRouteSnapshot, aut
 		routeID := routeChannel + "\x00" + registeredRoute.RuntimeModelID
 		route := built.routes[routeID]
 		if route == nil {
-			routeKey := modelrouting.RouteKey{
-				ModelKey:     modelrouting.ModelKey{CatalogProviderID: catalogProviderID, CanonicalModelID: canonicalModelID},
-				RouteChannel: routeChannel,
-			}
 			protocols := append([]string(nil), info.Protocols...)
 			route = &modelrouting.InventoryRoute{
 				RouteKey: modelrouting.RouteKeyJSON{

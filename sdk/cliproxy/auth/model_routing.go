@@ -421,6 +421,13 @@ func (m *Manager) modelRoutingCandidates(requestedModel string, opts cliproxyexe
 	variantHeader := strings.TrimSpace(opts.Headers.Get(probeVariantIDHeader))
 	if selector != "" {
 		route, exists := table.routes[selector]
+		if !exists && !table.projected {
+			var errBootstrap error
+			route, exists, errBootstrap = m.bootstrapRoutingCandidate(selector, requestedModel)
+			if errBootstrap != nil {
+				return nil, true, errBootstrap
+			}
+		}
 		if !exists || route.RuntimeModelID != requestedModel {
 			return nil, true, routingContractError("route_not_selectable", "route selector is not bound to the requested runtime model", http.StatusServiceUnavailable)
 		}
@@ -454,17 +461,85 @@ func (m *Manager) modelRoutingCandidates(requestedModel string, opts cliproxyexe
 	return nil, false, nil
 }
 
+// bootstrapRoutingCandidate resolves one inventory selector directly from the
+// live registry before CCS has published a routing projection. It never creates
+// an alias, ranks routes, or permits movement to another route.
+func (m *Manager) bootstrapRoutingCandidate(selector, requestedModel string) (RoutingCandidate, bool, error) {
+	if m == nil {
+		return RoutingCandidate{}, false, nil
+	}
+	var candidate RoutingCandidate
+	var catalogRouteProviderID, catalogRouteModelID string
+	credentialRefs := make(map[string]struct{})
+	matched := false
+	for index, registered := range registry.GetGlobalRegistry().RegisteredRouteSnapshots() {
+		if registered.RuntimeModelID != requestedModel {
+			continue
+		}
+		key, errKey := registered.ModelRoutingKey(index)
+		if errKey != nil {
+			return RoutingCandidate{}, true, routingContractError("route_not_selectable", errKey.Error(), http.StatusServiceUnavailable)
+		}
+		if modelrouting.SelectorForRoute(key, registered.RuntimeModelID) != selector {
+			continue
+		}
+		info := registered.Model
+
+		if !matched {
+			candidate = RoutingCandidate{
+				Channel:           registered.RouteChannel,
+				RuntimeModelID:    registered.RuntimeModelID,
+				RouteSelector:     selector,
+				Protocols:         append([]string(nil), info.Protocols...),
+				CatalogProviderID: key.ModelKey.CatalogProviderID,
+				CanonicalModelID:  key.ModelKey.CanonicalModelID,
+				bootstrap:         true,
+			}
+			catalogRouteProviderID = info.CatalogRouteProviderID
+			catalogRouteModelID = info.CatalogRouteModelID
+			matched = true
+		} else if candidate.Channel != registered.RouteChannel ||
+			candidate.RuntimeModelID != registered.RuntimeModelID ||
+			candidate.CatalogProviderID != key.ModelKey.CatalogProviderID ||
+			candidate.CanonicalModelID != key.ModelKey.CanonicalModelID ||
+			catalogRouteProviderID != info.CatalogRouteProviderID ||
+			catalogRouteModelID != info.CatalogRouteModelID ||
+			!equalStrings(candidate.Protocols, info.Protocols) {
+			return RoutingCandidate{}, true, routingContractError("route_not_selectable", "registered routes conflict for the requested selector", http.StatusServiceUnavailable)
+		}
+
+		auth, exists := m.GetByID(registered.ClientID)
+		if !exists || auth == nil {
+			return RoutingCandidate{}, true, routingContractError("route_not_selectable", "registered route has no live credential", http.StatusServiceUnavailable)
+		}
+		if executorKeyFromAuth(auth) != candidate.Channel {
+			return RoutingCandidate{}, true, routingContractError("route_not_selectable", "registered route channel differs from its credential channel", http.StatusServiceUnavailable)
+		}
+		ref := credentialReference(auth)
+		if ref.Kind != "api_key" && ref.Kind != AuthKindOAuth {
+			return RoutingCandidate{}, true, routingContractError("route_not_selectable", "registered route has an unsupported credential kind", http.StatusServiceUnavailable)
+		}
+		identity := ref.ID + "\x00" + ref.Kind
+		if _, exists := credentialRefs[identity]; !exists {
+			credentialRefs[identity] = struct{}{}
+			candidate.CredentialRefs = append(candidate.CredentialRefs, ref)
+		}
+	}
+	sort.Slice(candidate.CredentialRefs, func(i, j int) bool {
+		if candidate.CredentialRefs[i].ID != candidate.CredentialRefs[j].ID {
+			return candidate.CredentialRefs[i].ID < candidate.CredentialRefs[j].ID
+		}
+		return candidate.CredentialRefs[i].Kind < candidate.CredentialRefs[j].Kind
+	})
+	return candidate, matched, nil
+}
+
 func cloneRoutingCandidates(values []RoutingCandidate) []RoutingCandidate {
 	result := make([]RoutingCandidate, len(values))
 	for index := range values {
 		result[index] = cloneRoutingCandidate(values[index])
 	}
 	return result
-}
-
-func (m *Manager) isModelRoutingRequest(requestedModel string, opts cliproxyexecutor.Options) bool {
-	_, matched, _ := m.modelRoutingCandidates(requestedModel, opts)
-	return matched
 }
 
 // ModelRoutingProviders resolves only the executor channels already projected by

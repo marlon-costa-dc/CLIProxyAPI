@@ -319,117 +319,25 @@ func (r *ModelRegistry) triggerModelsUnregistered(provider, clientID string) {
 	}()
 }
 
-// ClientRegistration is one complete client/model binding in a registry batch.
-type ClientRegistration struct {
-	ClientID string
-	Provider string
-	Models   []*ModelInfo
-}
-
-// ClientBatch applies registrations and removals as one validated mutation.
-// A client may occur in exactly one side of the batch.
-type ClientBatch struct {
-	Registrations []ClientRegistration
-	Unregister    []string
-}
-
-// RegisterClient registers a complete client model set. Empty or malformed
-// input is rejected; callers must use UnregisterClient for explicit removal.
-func (r *ModelRegistry) RegisterClient(clientID, clientProvider string, models []*ModelInfo) error {
-	return r.ApplyClientBatch(ClientBatch{Registrations: []ClientRegistration{{
-		ClientID: clientID,
-		Provider: clientProvider,
-		Models:   models,
-	}}})
-}
-
-// ApplyClientBatch validates and clones every item before taking the registry
-// lock, then publishes the whole batch under one lock with no partial mutation.
-func (r *ModelRegistry) ApplyClientBatch(batch ClientBatch) error {
-	if r == nil {
-		return fmt.Errorf("apply model registry batch: registry is nil")
-	}
-	validated, removals, errValidate := validateClientBatch(batch)
-	if errValidate != nil {
-		return errValidate
-	}
+// RegisterClient registers a client and its supported models
+// Parameters:
+//   - clientID: Unique identifier for the client
+//   - clientProvider: Provider name (e.g., "gemini", "claude", "openai")
+//   - models: List of models that this client can provide
+func (r *ModelRegistry) RegisterClient(clientID, clientProvider string, models []*ModelInfo) {
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
 	r.ensureAvailableModelsCacheLocked()
-	for _, registration := range validated {
-		r.registerClientLocked(registration.ClientID, registration.Provider, registration.Models)
-	}
-	for _, clientID := range removals {
-		r.unregisterClientInternal(clientID)
-	}
-	r.invalidateAvailableModelsCacheLocked()
-	return nil
-}
 
-func validateClientBatch(batch ClientBatch) ([]ClientRegistration, []string, error) {
-	if len(batch.Registrations) == 0 && len(batch.Unregister) == 0 {
-		return nil, nil, fmt.Errorf("apply model registry batch: empty batch")
-	}
-	seenClients := make(map[string]string, len(batch.Registrations)+len(batch.Unregister))
-	validated := make([]ClientRegistration, len(batch.Registrations))
-	for registrationIndex, registration := range batch.Registrations {
-		path := fmt.Sprintf("model registry registration[%d]", registrationIndex)
-		clientID := strings.TrimSpace(registration.ClientID)
-		if clientID == "" || clientID != registration.ClientID {
-			return nil, nil, fmt.Errorf("%s has invalid client ID", path)
-		}
-		provider := strings.ToLower(strings.TrimSpace(registration.Provider))
-		if provider == "" {
-			return nil, nil, fmt.Errorf("%s has empty provider", path)
-		}
-		if previous := seenClients[clientID]; previous != "" {
-			return nil, nil, fmt.Errorf("%s duplicates client %q from %s", path, clientID, previous)
-		}
-		seenClients[clientID] = path
-		if len(registration.Models) == 0 {
-			return nil, nil, fmt.Errorf("%s has no models; use explicit unregister", path)
-		}
-		models := make([]*ModelInfo, len(registration.Models))
-		seenModels := make(map[string]struct{}, len(registration.Models))
-		for modelIndex, model := range registration.Models {
-			modelPath := fmt.Sprintf("%s model[%d]", path, modelIndex)
-			if model == nil {
-				return nil, nil, fmt.Errorf("%s is nil", modelPath)
-			}
-			modelID := strings.TrimSpace(model.ID)
-			if modelID == "" || modelID != model.ID {
-				return nil, nil, fmt.Errorf("%s has invalid model ID", modelPath)
-			}
-			if _, duplicate := seenModels[modelID]; duplicate {
-				return nil, nil, fmt.Errorf("%s duplicates model %q", modelPath, modelID)
-			}
-			seenModels[modelID] = struct{}{}
-			models[modelIndex] = cloneModelInfo(model)
-		}
-		validated[registrationIndex] = ClientRegistration{ClientID: clientID, Provider: provider, Models: models}
-	}
-	removals := make([]string, len(batch.Unregister))
-	for index, rawClientID := range batch.Unregister {
-		path := fmt.Sprintf("model registry unregister[%d]", index)
-		clientID := strings.TrimSpace(rawClientID)
-		if clientID == "" || clientID != rawClientID {
-			return nil, nil, fmt.Errorf("%s has invalid client ID", path)
-		}
-		if previous := seenClients[clientID]; previous != "" {
-			return nil, nil, fmt.Errorf("%s duplicates client %q from %s", path, clientID, previous)
-		}
-		seenClients[clientID] = path
-		removals[index] = clientID
-	}
-	return validated, removals, nil
-}
-
-func (r *ModelRegistry) registerClientLocked(clientID, provider string, models []*ModelInfo) {
+	provider := strings.ToLower(clientProvider)
 	uniqueModelIDs := make([]string, 0, len(models))
 	rawModelIDs := make([]string, 0, len(models))
 	newModels := make(map[string]*ModelInfo, len(models))
 	newCounts := make(map[string]int, len(models))
 	for _, model := range models {
+		if model == nil || model.ID == "" {
+			continue
+		}
 		rawModelIDs = append(rawModelIDs, model.ID)
 		newCounts[model.ID]++
 		if _, exists := newModels[model.ID]; exists {
@@ -437,6 +345,17 @@ func (r *ModelRegistry) registerClientLocked(clientID, provider string, models [
 		}
 		newModels[model.ID] = model
 		uniqueModelIDs = append(uniqueModelIDs, model.ID)
+	}
+
+	if len(uniqueModelIDs) == 0 {
+		// No models supplied; unregister existing client state if present.
+		r.unregisterClientInternal(clientID)
+		delete(r.clientModels, clientID)
+		delete(r.clientModelInfos, clientID)
+		delete(r.clientProviders, clientID)
+		r.invalidateAvailableModelsCacheLocked()
+		misc.LogCredentialSeparator()
+		return
 	}
 
 	now := time.Now()
@@ -464,7 +383,7 @@ func (r *ModelRegistry) registerClientLocked(clientID, provider string, models [
 		}
 		r.invalidateAvailableModelsCacheLocked()
 		r.triggerModelsRegistered(provider, clientID, models)
-		log.Debugf("Registered client %s from provider %s with %d models", clientID, provider, len(rawModelIDs))
+		log.Debugf("Registered client %s from provider %s with %d models", clientID, clientProvider, len(rawModelIDs))
 		misc.LogCredentialSeparator()
 		return
 	}

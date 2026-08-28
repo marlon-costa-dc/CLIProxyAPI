@@ -29,9 +29,9 @@ type executorRegistration struct {
 	adapter  *executorAdapter
 }
 
-func (h *Host) RegisterExecutors(manager executorManager, modelRegistry modelProviderRegistry) error {
+func (h *Host) RegisterExecutors(manager executorManager, modelRegistry modelProviderRegistry) {
 	if h == nil || manager == nil {
-		return fmt.Errorf("register plugin executors: host and manager are required")
+		return
 	}
 
 	snap := h.Snapshot()
@@ -123,22 +123,22 @@ func (h *Host) RegisterExecutors(manager executorManager, modelRegistry modelPro
 			nextModelClients[clientID] = struct{}{}
 		}
 	}
-	return h.commitExecutorState(snap, manager, modelRegistry, providerModels, executorRegistrations, nextProviders, modelClientRegistrations, nextModelClients)
+	h.commitExecutorState(snap, manager, modelRegistry, providerModels, executorRegistrations, nextProviders, modelClientRegistrations, nextModelClients)
 }
 
 func pluginExecutorModelClientID(pluginID, provider string) string {
 	return "plugin:" + pluginID + ":" + provider + ":executor"
 }
 
-func (h *Host) commitExecutorState(snap *Snapshot, manager executorManager, modelRegistry modelRegistry, providerModels map[string][]*registry.ModelInfo, registrations []executorRegistration, nextProviders map[string]struct{}, modelClientRegistrations []modelClientRegistration, nextModelClients map[string]struct{}) error {
+func (h *Host) commitExecutorState(snap *Snapshot, manager executorManager, modelRegistry modelRegistry, providerModels map[string][]*registry.ModelInfo, registrations []executorRegistration, nextProviders map[string]struct{}, modelClientRegistrations []modelClientRegistration, nextModelClients map[string]struct{}) {
 	if h == nil || manager == nil {
-		return fmt.Errorf("commit plugin executor state: host and manager are required")
+		return
 	}
 
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	if h.Snapshot() != snap {
-		return fmt.Errorf("commit plugin executor state: plugin snapshot changed")
+		h.mu.Unlock()
+		return
 	}
 
 	h.providerModels = make(map[string][]*registryModelInfo, len(providerModels))
@@ -162,24 +162,6 @@ func (h *Host) commitExecutorState(snap *Snapshot, manager executorManager, mode
 			staleModelClients = append(staleModelClients, clientID)
 		}
 	}
-	if modelRegistry != nil {
-		batch := registry.ClientBatch{
-			Registrations: make([]registry.ClientRegistration, len(modelClientRegistrations)),
-			Unregister:    staleModelClients,
-		}
-		for index, registration := range modelClientRegistrations {
-			batch.Registrations[index] = registry.ClientRegistration{
-				ClientID: registration.clientID,
-				Provider: registration.provider,
-				Models:   registration.models,
-			}
-		}
-		if len(batch.Registrations) > 0 || len(batch.Unregister) > 0 {
-			if errApply := modelRegistry.ApplyClientBatch(batch); errApply != nil {
-				return fmt.Errorf("commit plugin executor model batch: %w", errApply)
-			}
-		}
-	}
 	h.executorModelClientIDs = nextModelClients
 
 	for _, registration := range registrations {
@@ -195,7 +177,17 @@ func (h *Host) commitExecutorState(snap *Snapshot, manager executorManager, mode
 		}
 		manager.UnregisterExecutor(provider)
 	}
-	return nil
+	h.mu.Unlock()
+
+	if modelRegistry == nil {
+		return
+	}
+	for _, registration := range modelClientRegistrations {
+		modelRegistry.RegisterClient(registration.clientID, registration.provider, registration.models)
+	}
+	for _, clientID := range staleModelClients {
+		modelRegistry.UnregisterClient(clientID)
+	}
 }
 
 func newExecutorAdapterRegistration(h *Host, record capabilityRecord, provider string, executor pluginapi.ProviderExecutor) executorRegistration {

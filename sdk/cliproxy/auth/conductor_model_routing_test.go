@@ -5,11 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -127,12 +130,20 @@ func newModelRoutingTestRuntime(t *testing.T, first, second *modelRoutingAttempt
 	manager.SetRetryConfig(5, time.Second, 10)
 	manager.RegisterExecutor(first)
 	manager.RegisterExecutor(second)
+	modelKey := modelrouting.ModelKey{CatalogProviderID: "catalog-provider", CanonicalModelID: requestedModel}
 
 	register := func(id, provider string) {
-		registry.GetGlobalRegistry().RegisterClient(id, provider, []*registry.ModelInfo{{ID: requestedModel}})
+		registry.GetGlobalRegistry().RegisterClient(id, provider, []*registry.ModelInfo{{
+			ID:                     requestedModel,
+			CatalogProviderID:      modelKey.CatalogProviderID,
+			CatalogModelID:         modelKey.CanonicalModelID,
+			CatalogRouteProviderID: provider,
+			CatalogRouteModelID:    requestedModel,
+			Protocols:              []string{"openai_chat"},
+		}})
 		t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(id) })
 		_, errRegister := manager.Register(context.Background(), &Auth{
-			ID: id, Provider: provider, Status: StatusActive,
+			ID: id, Provider: provider, RouteChannel: provider, QuotaDomain: provider + "-quota", Status: StatusActive,
 			Attributes: map[string]string{"auth_kind": "oauth", "quota_domain": provider + "-quota"},
 			Metadata:   map[string]any{"disable_cooling": true},
 		})
@@ -145,7 +156,6 @@ func newModelRoutingTestRuntime(t *testing.T, first, second *modelRoutingAttempt
 	register(firstAlternateCredential, first.identifier)
 	register(secondCredential, second.identifier)
 
-	modelKey := modelrouting.ModelKey{CatalogProviderID: "catalog-provider", CanonicalModelID: requestedModel}
 	health := modelrouting.Health{Status: "healthy", Selectable: true, ObservedAt: "2026-08-27T18:45:00Z"}
 	credentialRefs := func(ids ...string) []modelrouting.CredentialRef {
 		refs := make([]modelrouting.CredentialRef, 0, len(ids))
@@ -158,7 +168,7 @@ func newModelRoutingTestRuntime(t *testing.T, first, second *modelRoutingAttempt
 	firstRefs := credentialRefs(firstCredential, firstAlternateCredential)
 	secondRefs := credentialRefs(secondCredential)
 	route := func(provider string, refs []modelrouting.CredentialRef) modelrouting.DirectRoute {
-		key := modelrouting.RouteKey{CatalogProviderID: modelKey.CatalogProviderID, CanonicalModelID: modelKey.CanonicalModelID, RouteChannel: provider}
+		key := modelrouting.RouteKey{ModelKey: modelKey, RouteChannel: provider}
 		return modelrouting.DirectRoute{
 			RouteKey: key, CatalogRouteProviderID: provider, CatalogRouteModelID: requestedModel,
 			RuntimeModelID: requestedModel, RouteSelector: modelrouting.SelectorForRoute(key, requestedModel),
@@ -171,9 +181,9 @@ func newModelRoutingTestRuntime(t *testing.T, first, second *modelRoutingAttempt
 	secondRoute := route(second.identifier, secondRefs)
 	candidate := func(rank int, route modelrouting.DirectRoute) modelrouting.Candidate {
 		return modelrouting.Candidate{
-			ModelKey: modelKey, RouteChannel: route.RouteKey.RouteChannel,
+			RouteKey:               route.RouteKey,
 			CatalogRouteProviderID: route.CatalogRouteProviderID, CatalogRouteModelID: route.CatalogRouteModelID,
-			RuntimeModelID: route.RuntimeModelID, RouteSelector: route.RouteSelector, Rank: rank,
+			RuntimeModelID: route.RuntimeModelID, RouteSelector: route.RouteSelector, RouteRank: rank,
 			QuotaDomains:   append([]string(nil), route.QuotaDomains...),
 			CredentialRefs: append([]modelrouting.CredentialRef(nil), route.CredentialRefs...),
 			Protocols:      append([]string(nil), route.Protocols...), Health: health,
@@ -181,7 +191,7 @@ func newModelRoutingTestRuntime(t *testing.T, first, second *modelRoutingAttempt
 		}
 	}
 	projection := &modelrouting.Config{
-		SchemaVersion: 1, Generation: 1,
+		SchemaVersion: 2, Generation: 1,
 		SnapshotDigest:   "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		ProjectionDigest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 		DirectModels: []modelrouting.DirectModel{{
@@ -190,7 +200,10 @@ func newModelRoutingTestRuntime(t *testing.T, first, second *modelRoutingAttempt
 		}},
 		Aliases: []modelrouting.Alias{{
 			Name: "aihub-primary", TierID: "primary", Selectable: true, Reason: "selected",
-			Candidates: []modelrouting.Candidate{candidate(1, firstRoute), candidate(2, secondRoute)},
+			Members: []modelrouting.Member{{
+				ModelKey: modelKey, MemberRank: 1, ModelScore: "1", SelectionReason: "selected member",
+				Candidates: []modelrouting.Candidate{candidate(1, firstRoute), candidate(2, secondRoute)},
+			}},
 		}},
 		FailurePolicy: modelrouting.FailurePolicy{
 			Mode: "classified_candidate_failover", CredentialAcquisitionTimeoutSeconds: acquisitionTimeoutSeconds,
@@ -207,11 +220,20 @@ func newModelRoutingTestRuntime(t *testing.T, first, second *modelRoutingAttempt
 			PreserveFirstError: true, TerminateOwnedRequestOnCancel: true,
 		},
 	}
+	digest, errDigest := modelrouting.ProjectionDigest(projection)
+	if errDigest != nil {
+		t.Fatalf("ProjectionDigest() error = %v", errDigest)
+	}
+	projection.ProjectionDigest = digest
 	if errValidate := projection.Validate(); errValidate != nil {
 		t.Fatalf("projection.Validate() error = %v", errValidate)
 	}
-	if errRouting := manager.SetModelRouting(projection); errRouting != nil {
-		t.Fatalf("SetModelRouting() error = %v", errRouting)
+	prepared, errPrepare := manager.PrepareModelRouting(projection)
+	if errPrepare != nil {
+		t.Fatalf("PrepareModelRouting() error = %v", errPrepare)
+	}
+	if errActivate := manager.ActivatePreparedModelRouting(prepared); errActivate != nil {
+		t.Fatalf("ActivatePreparedModelRouting() error = %v", errActivate)
 	}
 	return modelRoutingTestRuntime{
 		manager: manager, projection: projection, requestedModel: "aihub-primary", firstExecutor: first, secondExecutor: second,
@@ -219,7 +241,7 @@ func newModelRoutingTestRuntime(t *testing.T, first, second *modelRoutingAttempt
 	}
 }
 
-func TestSetModelRoutingRejectsInvalidProjectionWithoutReplacingActive(t *testing.T) {
+func TestPrepareModelRoutingRejectsInvalidProjectionWithoutReplacingActive(t *testing.T) {
 	first := &modelRoutingAttemptExecutor{identifier: "route-first"}
 	second := &modelRoutingAttemptExecutor{identifier: "route-second"}
 	runtime := newModelRoutingTestRuntime(t, first, second, 2)
@@ -230,8 +252,13 @@ func TestSetModelRoutingRejectsInvalidProjectionWithoutReplacingActive(t *testin
 
 	invalid := *runtime.projection
 	invalid.FailurePolicy.AutomaticFailover = false
-	if errRouting := runtime.manager.SetModelRouting(&invalid); errRouting == nil {
-		t.Fatal("SetModelRouting() accepted disabled classified failover")
+	digest, errDigest := modelrouting.ProjectionDigest(&invalid)
+	if errDigest != nil {
+		t.Fatal(errDigest)
+	}
+	invalid.ProjectionDigest = digest
+	if _, errRouting := runtime.manager.PrepareModelRouting(&invalid); errRouting == nil {
+		t.Fatal("PrepareModelRouting() accepted disabled classified failover")
 	}
 	after, matchedAfter, errAfter := runtime.manager.modelRoutingCandidates(runtime.requestedModel, modelRoutingOptions())
 	if errAfter != nil || !matchedAfter || len(after) != 2 {
@@ -246,12 +273,91 @@ func modelRoutingOptions() cliproxyexecutor.Options {
 	return cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatOpenAI, Headers: make(http.Header)}
 }
 
+func TestModelRoutingBootstrapSelectorExecutesRegistryRouteBeforeProjection(t *testing.T) {
+	routeChannel := "bootstrap-route-" + uuid.NewString()
+	credentialID := "bootstrap-credential-" + uuid.NewString()
+	runtimeModelID := "bootstrap-model-" + uuid.NewString()
+	modelKey := modelrouting.ModelKey{CatalogProviderID: "catalog-provider", CanonicalModelID: runtimeModelID}
+	routeKey := modelrouting.RouteKey{ModelKey: modelKey, RouteChannel: routeChannel}
+	selector := modelrouting.SelectorForRoute(routeKey, runtimeModelID)
+
+	executor := &modelRoutingAttemptExecutor{identifier: routeChannel}
+	manager := NewManager(nil, nil, NoopHook{})
+	manager.RegisterExecutor(executor)
+	_, errRegister := manager.Register(context.Background(), &Auth{
+		ID: credentialID, Provider: routeChannel, RouteChannel: routeChannel, QuotaDomain: routeChannel + "-quota", Status: StatusActive,
+		Attributes: map[string]string{AttributeAuthKind: AuthKindOAuth},
+	})
+	if errRegister != nil {
+		t.Fatalf("Register() error = %v", errRegister)
+	}
+	registry.GetGlobalRegistry().RegisterClient(credentialID, routeChannel, []*registry.ModelInfo{{
+		ID: runtimeModelID, CatalogProviderID: modelKey.CatalogProviderID, CatalogModelID: modelKey.CanonicalModelID,
+		CatalogRouteProviderID: routeChannel, CatalogRouteModelID: runtimeModelID, Protocols: []string{"openai_chat"},
+	}})
+	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(credentialID) })
+
+	opts := modelRoutingOptions()
+	opts.Headers.Set(probeRouteSelectorHeader, selector)
+	response, errExecute := manager.Execute(
+		context.Background(), []string{routeChannel},
+		cliproxyexecutor.Request{Model: runtimeModelID, Payload: []byte(`{"messages":[]}`)}, opts,
+	)
+	if errExecute != nil {
+		t.Fatalf("Execute() bootstrap selector error = %v", errExecute)
+	}
+	if executor.executeCalls.Load() != 1 {
+		t.Fatalf("bootstrap route executions = %d, want 1", executor.executeCalls.Load())
+	}
+	if got := response.DownstreamHeaders.Get(probeRouteSelectorHeader); got != selector {
+		t.Fatalf("bootstrap selector evidence = %q, want %q", got, selector)
+	}
+}
+
+func TestModelRoutingBootstrapSelectorFailsLoudlyForIncompleteRouteFacts(t *testing.T) {
+	routeChannel := "bootstrap-route-" + uuid.NewString()
+	credentialID := "bootstrap-credential-" + uuid.NewString()
+	runtimeModelID := "bootstrap-model-" + uuid.NewString()
+	modelKey := modelrouting.ModelKey{CatalogProviderID: "catalog-provider", CanonicalModelID: runtimeModelID}
+	routeKey := modelrouting.RouteKey{ModelKey: modelKey, RouteChannel: routeChannel}
+	selector := modelrouting.SelectorForRoute(routeKey, runtimeModelID)
+
+	executor := &modelRoutingAttemptExecutor{identifier: routeChannel}
+	manager := NewManager(nil, nil, NoopHook{})
+	manager.RegisterExecutor(executor)
+	_, errRegister := manager.Register(context.Background(), &Auth{
+		ID: credentialID, Provider: routeChannel, RouteChannel: routeChannel, QuotaDomain: routeChannel + "-quota", Status: StatusActive,
+		Attributes: map[string]string{AttributeAuthKind: AuthKindOAuth},
+	})
+	if errRegister != nil {
+		t.Fatalf("Register() error = %v", errRegister)
+	}
+	registry.GetGlobalRegistry().RegisterClient(credentialID, routeChannel, []*registry.ModelInfo{{
+		ID: runtimeModelID, CatalogProviderID: modelKey.CatalogProviderID, CatalogModelID: modelKey.CanonicalModelID,
+		CatalogRouteProviderID: routeChannel, CatalogRouteModelID: runtimeModelID,
+	}})
+	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(credentialID) })
+
+	opts := modelRoutingOptions()
+	opts.Headers.Set(probeRouteSelectorHeader, selector)
+	_, errExecute := manager.Execute(
+		context.Background(), []string{routeChannel},
+		cliproxyexecutor.Request{Model: runtimeModelID, Payload: []byte(`{"messages":[]}`)}, opts,
+	)
+	if errExecute == nil || !strings.Contains(errExecute.Error(), "registered route 0 has no explicit protocols") {
+		t.Fatalf("Execute() error = %v, want incomplete-route failure", errExecute)
+	}
+	if executor.executeCalls.Load() != 0 {
+		t.Fatalf("bootstrap route executions = %d, want 0", executor.executeCalls.Load())
+	}
+}
+
 func TestModelRoutingVariantUsesCanonicalProtocolAppliers(t *testing.T) {
 	variantID := "high"
 	option := "high"
 	candidate := RoutingCandidate{
 		Channel: "route", RuntimeModelID: "runtime-model", RouteSelector: modelrouting.SelectorForRoute(
-			modelrouting.RouteKey{CatalogProviderID: "catalog", CanonicalModelID: "model", RouteChannel: "route"},
+			modelrouting.RouteKey{ModelKey: modelrouting.ModelKey{CatalogProviderID: "catalog", CanonicalModelID: "model"}, RouteChannel: "route"},
 			"runtime-model",
 		),
 		VariantID: &variantID, VariantReasoningOption: &option,
@@ -290,7 +396,7 @@ func TestModelRoutingVariantUsesCanonicalProtocolAppliers(t *testing.T) {
 	}
 }
 
-func TestSetModelRoutingRejectsUnknownVariantExecutorWithoutReplacingActive(t *testing.T) {
+func TestPrepareModelRoutingRejectsUnknownVariantExecutorWithoutReplacingActive(t *testing.T) {
 	first := &modelRoutingAttemptExecutor{identifier: "route-first"}
 	second := &modelRoutingAttemptExecutor{identifier: "route-second"}
 	runtime := newModelRoutingTestRuntime(t, first, second, 2)
@@ -303,15 +409,19 @@ func TestSetModelRoutingRejectsUnknownVariantExecutorWithoutReplacingActive(t *t
 	invalid.DirectModels = append([]modelrouting.DirectModel(nil), runtime.projection.DirectModels...)
 	invalid.DirectModels[0].Variants = []modelrouting.Variant{{
 		VariantKey: modelrouting.VariantKey{
-			CatalogProviderID: invalid.DirectModels[0].ModelKey.CatalogProviderID,
-			CanonicalModelID:  invalid.DirectModels[0].ModelKey.CanonicalModelID,
-			VariantID:         "invalid",
+			ModelKey:  invalid.DirectModels[0].ModelKey,
+			VariantID: "invalid",
 		},
 		ReasoningOption: stringPointer("not-an-executor-option"),
 		Protocols:       []string{"openai_chat"},
 	}}
-	if err := runtime.manager.SetModelRouting(&invalid); err == nil || !strings.Contains(err.Error(), "not-an-executor-option") {
-		t.Fatalf("SetModelRouting() error = %v, want variant executor rejection", err)
+	digest, errDigest := modelrouting.ProjectionDigest(&invalid)
+	if errDigest != nil {
+		t.Fatal(errDigest)
+	}
+	invalid.ProjectionDigest = digest
+	if _, err := runtime.manager.PrepareModelRouting(&invalid); err == nil || !strings.Contains(err.Error(), "not-an-executor-option") {
+		t.Fatalf("PrepareModelRouting() error = %v, want variant executor rejection", err)
 	}
 	after, _, errAfter := runtime.manager.modelRoutingCandidates(runtime.requestedModel, modelRoutingOptions())
 	if errAfter != nil {
@@ -403,11 +513,11 @@ func TestModelRoutingExhaustionPreservesFirstCauseAndJoinsLaterCause(t *testing.
 	if first.executeCalls.Load() != 1 || second.executeCalls.Load() != 1 {
 		t.Fatalf("candidate attempts = %d/%d, want exactly 1/1", first.executeCalls.Load(), second.executeCalls.Load())
 	}
-	var carrier interface{ Headers() http.Header }
+	var carrier interface{ SafeResponseHeaders() http.Header }
 	if !errors.As(errExecute, &carrier) || carrier == nil {
 		t.Fatalf("execution error has no evidence headers: %v", errExecute)
 	}
-	headers := carrier.Headers()
+	headers := carrier.SafeResponseHeaders()
 	if got := headers.Get("X-CLIProxy-Attempts"); got != "2" {
 		t.Fatalf("X-CLIProxy-Attempts = %q, want 2", got)
 	}
@@ -431,6 +541,14 @@ func TestModelRoutingConfiguredErrorCodeAndTransportKindCanAdvance(t *testing.T)
 	}{
 		{name: "error code", err: &Error{Code: "upstream_failed", Message: "classified by code", HTTPStatus: http.StatusTeapot}},
 		{name: "transport kind", err: io.ErrUnexpectedEOF},
+		{
+			name: "connection refused transport kind",
+			err: &url.Error{
+				Op:  "Post",
+				URL: "http://127.0.0.1:55057/v1/chat/completions",
+				Err: &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED},
+			},
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -447,7 +565,7 @@ func TestModelRoutingConfiguredErrorCodeAndTransportKindCanAdvance(t *testing.T)
 			if first.executeCalls.Load() != 1 || second.executeCalls.Load() != 1 {
 				t.Fatalf("candidate attempts = %d/%d, want 1/1", first.executeCalls.Load(), second.executeCalls.Load())
 			}
-			if got := response.Headers.Get("X-CLIProxy-Attempts"); got != "2" {
+			if got := response.DownstreamHeaders.Get("X-CLIProxy-Attempts"); got != "2" {
 				t.Fatalf("X-CLIProxy-Attempts = %q, want 2", got)
 			}
 		})
@@ -622,7 +740,7 @@ func TestModelRoutingCredentialAcquisitionTimeoutCanAdvanceByConfiguredKind(t *t
 	if first.executeCalls.Load() != 0 || second.executeCalls.Load() != 1 {
 		t.Fatalf("upstream attempts after acquisition timeout: first=%d second=%d", first.executeCalls.Load(), second.executeCalls.Load())
 	}
-	if got := response.Headers.Get("X-CLIProxy-Attempts"); got != "2" {
+	if got := response.DownstreamHeaders.Get("X-CLIProxy-Attempts"); got != "2" {
 		t.Fatalf("X-CLIProxy-Attempts = %q, want 2", got)
 	}
 }

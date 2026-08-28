@@ -49,10 +49,6 @@ func (s *Service) newOpenAICompatibilityRegistrationCache() *openAICompatibility
 		}
 		compatName := strings.TrimSpace(compat.Name)
 		key := strings.ToLower(compatName)
-		providerName := strings.ToLower(compatName)
-		if providerName == "" {
-			providerName = "openai-compatibility"
-		}
 		entry := &openAICompatibilityRegistrationEntry{
 			providerKey: strings.TrimSpace(compat.RouteChannel),
 			models:      buildOpenAICompatibilityConfigModels(compat),
@@ -68,22 +64,19 @@ func (s *Service) newOpenAICompatibilityRegistrationCache() *openAICompatibility
 	return cache
 }
 
-func (c *openAICompatibilityRegistrationCache) lookup(auth *coreauth.Auth, compatName string) (*openAICompatibilityRegistrationEntry, bool, error) {
+func (c *openAICompatibilityRegistrationCache) lookup(auth *coreauth.Auth, compatName string) (*openAICompatibilityRegistrationEntry, bool) {
 	if c == nil {
-		return nil, false, nil
+		return nil, false
 	}
 	if auth != nil && auth.AuthSourceKind() == coreauth.AuthSourceConfig {
 		if auth.OpenAICompatibilityIndex == nil {
-			return nil, false, fmt.Errorf("config auth %s is missing its OpenAI compatibility reference", auth.ID)
+			return nil, false
 		}
 		entry, ok := c.byIndex[*auth.OpenAICompatibilityIndex]
-		if !ok {
-			return nil, false, fmt.Errorf("config auth %s references missing OpenAI compatibility index %d", auth.ID, *auth.OpenAICompatibilityIndex)
-		}
-		return entry, true, nil
+		return entry, ok
 	}
 	entry, ok := c.byName[strings.ToLower(strings.TrimSpace(compatName))]
-	return entry, ok, nil
+	return entry, ok
 }
 
 func (s *Service) hasNativeOpenAICompatExecutorConfig(a *coreauth.Auth, providerKey string, cfg *config.Config) bool {
@@ -170,17 +163,15 @@ func (s *Service) ensureExecutorsForAuthWithContext(ctx context.Context, a *core
 	if a == nil || (ctx != nil && ctx.Err() != nil) {
 		return
 	}
-	if errRegister := s.registerAvailableExecutors(ctx, executorRegistrationOptions{
+	s.registerAvailableExecutors(ctx, executorRegistrationOptions{
 		auths:             []*coreauth.Auth{a},
 		forceReplaceAuths: forceReplace,
-	}); errRegister != nil {
-		s.reportRuntimeError(errRegister)
-	}
+	})
 }
 
-func (s *Service) registerAvailableExecutors(ctx context.Context, opts executorRegistrationOptions) error {
+func (s *Service) registerAvailableExecutors(ctx context.Context, opts executorRegistrationOptions) {
 	if s == nil || s.coreManager == nil {
-		return fmt.Errorf("register executors: service and auth manager are required")
+		return
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -188,7 +179,7 @@ func (s *Service) registerAvailableExecutors(ctx context.Context, opts executorR
 	s.executorRegistrationMu.Lock()
 	defer s.executorRegistrationMu.Unlock()
 	if ctx.Err() != nil {
-		return ctx.Err()
+		return
 	}
 	// Keep all Service-owned executor registration paths here so native, Home,
 	// auth-derived, and plugin executors stay in the same binding order.
@@ -199,11 +190,8 @@ func (s *Service) registerAvailableExecutors(ctx context.Context, opts executorR
 		s.registerExecutorsForAuths(opts.auths, opts.forceReplaceAuths)
 	}
 	if opts.includePlugins && s.pluginHost != nil {
-		if errPlugins := registerPluginExecutors(s.pluginHost, s.coreManager); errPlugins != nil {
-			return errPlugins
-		}
+		registerPluginExecutors(s.pluginHost, s.coreManager)
 	}
-	return nil
 }
 
 func baselineExecutorAuths() []*coreauth.Auth {
@@ -456,18 +444,33 @@ func shouldUpgradeOpenAICompatToPluginRefresh(existing, next coreauth.ProviderEx
 	return bareOpenAICompat
 }
 
-func (s *Service) registerResolvedModelsForAuth(a *coreauth.Auth, providerKey string, models []*ModelInfo) error {
-	if a == nil || strings.TrimSpace(a.ID) == "" {
-		return fmt.Errorf("register resolved models: auth with ID is required")
+func (s *Service) registerResolvedModelsForAuth(a *coreauth.Auth, providerKey string, models []*ModelInfo) {
+	if a == nil || a.ID == "" {
+		return
 	}
 	providerKey = strings.ToLower(strings.TrimSpace(providerKey))
 	if providerKey == "" {
-		return fmt.Errorf("register resolved models for auth %s: provider is required", a.ID)
+		GlobalModelRegistry().UnregisterClient(a.ID)
+		return
 	}
-	if errRegister := GlobalModelRegistry().RegisterClient(a.ID, providerKey, models); errRegister != nil {
-		return fmt.Errorf("register resolved models for auth %s: %w", a.ID, errRegister)
+	normalizedModels := make([]*ModelInfo, 0, len(models))
+	for _, model := range models {
+		if model == nil {
+			continue
+		}
+		modelID := strings.TrimSpace(model.ID)
+		if modelID == "" {
+			continue
+		}
+		clone := *model
+		clone.ID = modelID
+		normalizedModels = append(normalizedModels, &clone)
 	}
-	return nil
+	if len(normalizedModels) == 0 {
+		GlobalModelRegistry().UnregisterClient(a.ID)
+		return
+	}
+	GlobalModelRegistry().RegisterClient(a.ID, providerKey, normalizedModels)
 }
 
 func (s *Service) pluginModelsForProvider(providerKey string) []*ModelInfo {
@@ -582,9 +585,7 @@ func (s *Service) tryRegisterPluginModelsForAuth(ctx context.Context, a *coreaut
 	models := applyExcludedModels(result.Models, activeExcluded)
 	models = applyOAuthModelAliasForAuth(s.cfg, providerKey, activeAuthKind, activeAuth.Attributes, models)
 	if len(models) > 0 {
-		if errRegister := s.registerResolvedModelsForAuth(activeAuth, providerKey, applyModelPrefixes(models, activeAuth.Prefix, s.cfg != nil && s.cfg.ForceModelPrefix)); errRegister != nil {
-			return true, errRegister
-		}
+		s.registerResolvedModelsForAuth(activeAuth, providerKey, applyModelPrefixes(models, activeAuth.Prefix, s.cfg != nil && s.cfg.ForceModelPrefix))
 		return true, nil
 	}
 	GlobalModelRegistry().UnregisterClient(activeAuth.ID)

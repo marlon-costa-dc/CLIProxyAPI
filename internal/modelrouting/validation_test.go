@@ -16,8 +16,8 @@ func validConfig() Config {
 	reasoningOption := "high"
 	modelKey := ModelKey{CatalogProviderID: "openai", CanonicalModelID: "gpt-5.4"}
 	health := Health{Status: "healthy", Selectable: true, ObservedAt: "2026-08-27T18:45:00Z", LatencyMS: &latency}
-	routeKey := RouteKey{CatalogProviderID: "openai", CanonicalModelID: "gpt-5.4", RouteChannel: "openai"}
-	secondRouteKey := RouteKey{CatalogProviderID: "openai", CanonicalModelID: "gpt-5.4", RouteChannel: "claude"}
+	routeKey := RouteKey{ModelKey: modelKey, RouteChannel: "openai"}
+	secondRouteKey := RouteKey{ModelKey: modelKey, RouteChannel: "claude"}
 	pricing := &Pricing{
 		Currency: "USD",
 		Unit:     "per_million_tokens",
@@ -27,15 +27,15 @@ func validConfig() Config {
 			{Name: "output", Amount: "15"},
 		},
 	}
-	return Config{
-		SchemaVersion:    1,
+	cfg := Config{
+		SchemaVersion:    2,
 		Generation:       42,
 		SnapshotDigest:   testDigest,
-		ProjectionDigest: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		ProjectionDigest: testDigest,
 		DirectModels: []DirectModel{{
 			ModelKey: modelKey, DisplayName: "GPT-5.4", Active: true,
 			Variants: []Variant{{
-				VariantKey:      VariantKey{CatalogProviderID: "openai", CanonicalModelID: "gpt-5.4", VariantID: variantID},
+				VariantKey:      VariantKey{ModelKey: modelKey, VariantID: variantID},
 				DisplayName:     &variantDisplayName,
 				ReasoningOption: &reasoningOption,
 				Protocols:       []string{"openai_chat"},
@@ -45,27 +45,30 @@ func validConfig() Config {
 				CatalogRouteProviderID: "openrouter", CatalogRouteModelID: "openai/gpt-5.4", RuntimeModelID: "gpt-5.4", RouteSelector: SelectorForRoute(routeKey, "gpt-5.4"),
 				QuotaDomains: []string{"openai-primary"}, Protocols: []string{"openai_chat"},
 				CredentialRefs: []CredentialRef{{ID: testDigest, Kind: "oauth"}},
-				Health:         health, Pricing: pricing, Selectable: true, SelectionReason: "eligible",
+				Health:         health, Restrictions: []Restriction{}, Pricing: pricing, Selectable: true, SelectionReason: "eligible",
 			}, {
 				RouteKey:               secondRouteKey,
 				CatalogRouteProviderID: "anthropic", CatalogRouteModelID: "gpt-5.4", RuntimeModelID: "gpt-5.4", RouteSelector: SelectorForRoute(secondRouteKey, "gpt-5.4"),
 				QuotaDomains: []string{"claude-primary"}, Protocols: []string{"openai_chat"},
 				CredentialRefs: []CredentialRef{{ID: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", Kind: "oauth"}},
-				Health:         health, Pricing: pricing, Selectable: true, SelectionReason: "eligible fallback",
+				Health:         health, Restrictions: []Restriction{}, Pricing: pricing, Selectable: true, SelectionReason: "eligible fallback",
 			}},
 		}},
 		Aliases: []Alias{{
 			Name: "aihub-primary", TierID: "primary", Selectable: true, Reason: "selected",
-			Candidates: []Candidate{{
-				ModelKey: modelKey, RouteChannel: "openai", CatalogRouteProviderID: "openrouter", CatalogRouteModelID: "openai/gpt-5.4",
-				RuntimeModelID: "gpt-5.4", RouteSelector: SelectorForRoute(routeKey, "gpt-5.4"), VariantID: &variantID, Rank: 1,
-				QuotaDomains: []string{"openai-primary"}, CredentialRefs: []CredentialRef{{ID: testDigest, Kind: "oauth"}},
-				Protocols: []string{"openai_chat"}, Health: health, Pricing: pricing, SelectionReason: "ranked first",
-			}, {
-				ModelKey: modelKey, RouteChannel: "claude", CatalogRouteProviderID: "anthropic", CatalogRouteModelID: "gpt-5.4",
-				RuntimeModelID: "gpt-5.4", RouteSelector: SelectorForRoute(secondRouteKey, "gpt-5.4"), VariantID: &variantID, Rank: 2,
-				QuotaDomains: []string{"claude-primary"}, CredentialRefs: []CredentialRef{{ID: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", Kind: "oauth"}},
-				Protocols: []string{"openai_chat"}, Health: health, Pricing: pricing, SelectionReason: "ranked fallback",
+			Members: []Member{{
+				ModelKey: modelKey, MemberRank: 1, ModelScore: "1", SelectionReason: "selected member",
+				Candidates: []Candidate{{
+					RouteKey: routeKey, CatalogRouteProviderID: "openrouter", CatalogRouteModelID: "openai/gpt-5.4",
+					RuntimeModelID: "gpt-5.4", RouteSelector: SelectorForRoute(routeKey, "gpt-5.4"), VariantID: &variantID, RouteRank: 1,
+					QuotaDomains: []string{"openai-primary"}, CredentialRefs: []CredentialRef{{ID: testDigest, Kind: "oauth"}},
+					Protocols: []string{"openai_chat"}, Health: health, Restrictions: []Restriction{}, Pricing: pricing, SelectionReason: "ranked first",
+				}, {
+					RouteKey: secondRouteKey, CatalogRouteProviderID: "anthropic", CatalogRouteModelID: "gpt-5.4",
+					RuntimeModelID: "gpt-5.4", RouteSelector: SelectorForRoute(secondRouteKey, "gpt-5.4"), VariantID: &variantID, RouteRank: 2,
+					QuotaDomains: []string{"claude-primary"}, CredentialRefs: []CredentialRef{{ID: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", Kind: "oauth"}},
+					Protocols: []string{"openai_chat"}, Health: health, Restrictions: []Restriction{}, Pricing: pricing, SelectionReason: "ranked fallback",
+				}},
 			}},
 		}},
 		FailurePolicy: FailurePolicy{
@@ -78,6 +81,21 @@ func validConfig() Config {
 			PreserveFirstError: true, TerminateOwnedRequestOnCancel: true,
 		},
 	}
+	digest, err := ProjectionDigest(&cfg)
+	if err != nil {
+		panic(err)
+	}
+	cfg.ProjectionDigest = digest
+	return cfg
+}
+
+func refreshProjectionDigest(t *testing.T, cfg *Config) {
+	t.Helper()
+	digest, err := ProjectionDigest(cfg)
+	if err != nil {
+		t.Fatalf("ProjectionDigest() error = %v", err)
+	}
+	cfg.ProjectionDigest = digest
 }
 
 func TestValidateAcceptsLosslessRouteProjection(t *testing.T) {
@@ -95,6 +113,7 @@ func TestValidateRejectsModelAssignedToTwoTiers(t *testing.T) {
 	other.Name = "aihub-deep"
 	other.TierID = "deep"
 	cfg.Aliases = append(cfg.Aliases, other)
+	refreshProjectionDigest(t, &cfg)
 	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "assigned to tiers") {
 		t.Fatalf("Validate() error = %v, want exclusive-tier failure", err)
 	}
@@ -123,6 +142,7 @@ func TestValidateRejectsInvalidClassifiedFailoverPolicy(t *testing.T) {
 			t.Parallel()
 			cfg := validConfig()
 			test.mutate(&cfg.FailurePolicy)
+			refreshProjectionDigest(t, &cfg)
 			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("Validate() error = %v, want %q failure", err, test.want)
 			}
@@ -150,6 +170,7 @@ func TestValidateRejectsInvalidFailoverRules(t *testing.T) {
 			t.Parallel()
 			cfg := validConfig()
 			test.mutate(&cfg.FailurePolicy)
+			refreshProjectionDigest(t, &cfg)
 			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("Validate() error = %v, want %q failure", err, test.want)
 			}
@@ -163,6 +184,7 @@ func TestValidateRejectsVariantSerializedAsModel(t *testing.T) {
 	cfg.DirectModels = append(cfg.DirectModels, DirectModel{
 		ModelKey: ModelKey{CatalogProviderID: "openai", CanonicalModelID: "gpt-5.4:high"}, Active: true,
 	})
+	refreshProjectionDigest(t, &cfg)
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("Validate() accepted a direct model without a route")
 	}
@@ -171,7 +193,7 @@ func TestValidateRejectsVariantSerializedAsModel(t *testing.T) {
 func TestUnmarshalRejectsUnknownProjectionField(t *testing.T) {
 	t.Parallel()
 	var cfg Config
-	err := yaml.Unmarshal([]byte("schema-version: 1\ngeneration: 1\nsnapshot-digest: "+testDigest+"\nprojection-digest: "+testDigest+"\naliases: []\ndirect-models: []\nfailure-policy:\n  mode: classified_candidate_failover\n  credential-acquisition-timeout-seconds: 30\n  automatic-retry: false\n  automatic-failover: true\n  max-candidate-attempts: 2\n  failover-rules: []\n  serve-stale-on-error: false\n  preserve-first-error: true\n  terminate-owned-request-on-cancel: true\nunknown: true\n"), &cfg)
+	err := yaml.Unmarshal([]byte("schema-version: 2\ngeneration: 1\nsnapshot-digest: "+testDigest+"\nprojection-digest: "+testDigest+"\naliases: []\ndirect-models: []\nfailure-policy:\n  mode: classified_candidate_failover\n  credential-acquisition-timeout-seconds: 30\n  automatic-retry: false\n  automatic-failover: true\n  max-candidate-attempts: 2\n  failover-rules: []\n  serve-stale-on-error: false\n  preserve-first-error: true\n  terminate-owned-request-on-cancel: true\nunknown: true\n"), &cfg)
 	if err == nil || !strings.Contains(err.Error(), "unknown field") {
 		t.Fatalf("Unmarshal() error = %v, want unknown-field failure", err)
 	}
@@ -180,7 +202,7 @@ func TestUnmarshalRejectsUnknownProjectionField(t *testing.T) {
 func TestUnmarshalRejectsRemovedRetryPolicy(t *testing.T) {
 	t.Parallel()
 	var cfg Config
-	err := yaml.Unmarshal([]byte("schema-version: 1\ngeneration: 1\nsnapshot-digest: "+testDigest+"\nprojection-digest: "+testDigest+"\naliases: []\ndirect-models: []\nfailure-policy:\n  mode: classified_candidate_failover\n  credential-acquisition-timeout-seconds: 30\n  automatic-retry: false\n  automatic-failover: true\n  max-candidate-attempts: 2\n  failover-rules: []\n  serve-stale-on-error: false\n  preserve-first-error: true\n  terminate-owned-request-on-cancel: true\nretry-policy: {}\n"), &cfg)
+	err := yaml.Unmarshal([]byte("schema-version: 2\ngeneration: 1\nsnapshot-digest: "+testDigest+"\nprojection-digest: "+testDigest+"\naliases: []\ndirect-models: []\nfailure-policy:\n  mode: classified_candidate_failover\n  credential-acquisition-timeout-seconds: 30\n  automatic-retry: false\n  automatic-failover: true\n  max-candidate-attempts: 2\n  failover-rules: []\n  serve-stale-on-error: false\n  preserve-first-error: true\n  terminate-owned-request-on-cancel: true\nretry-policy: {}\n"), &cfg)
 	if err == nil || !strings.Contains(err.Error(), "retry-policy: unknown field") {
 		t.Fatalf("Unmarshal() error = %v, want removed retry-policy rejection", err)
 	}
@@ -189,7 +211,7 @@ func TestUnmarshalRejectsRemovedRetryPolicy(t *testing.T) {
 func TestUnmarshalRejectsRemovedRequestTimeout(t *testing.T) {
 	t.Parallel()
 	var cfg Config
-	err := yaml.Unmarshal([]byte("schema-version: 1\ngeneration: 1\nsnapshot-digest: "+testDigest+"\nprojection-digest: "+testDigest+"\naliases: []\ndirect-models: []\nfailure-policy:\n  mode: classified_candidate_failover\n  request-timeout-seconds: 30\n  automatic-retry: false\n  automatic-failover: true\n  max-candidate-attempts: 2\n  failover-rules: []\n  serve-stale-on-error: false\n  preserve-first-error: true\n  terminate-owned-request-on-cancel: true\n"), &cfg)
+	err := yaml.Unmarshal([]byte("schema-version: 2\ngeneration: 1\nsnapshot-digest: "+testDigest+"\nprojection-digest: "+testDigest+"\naliases: []\ndirect-models: []\nfailure-policy:\n  mode: classified_candidate_failover\n  request-timeout-seconds: 30\n  automatic-retry: false\n  automatic-failover: true\n  max-candidate-attempts: 2\n  failover-rules: []\n  serve-stale-on-error: false\n  preserve-first-error: true\n  terminate-owned-request-on-cancel: true\n"), &cfg)
 	if err == nil || !strings.Contains(err.Error(), "request-timeout-seconds: unknown field") {
 		t.Fatalf("Unmarshal() error = %v, want removed request timeout rejection", err)
 	}

@@ -43,11 +43,11 @@ type executorRegistrationOptions struct {
 	auths             []*coreauth.Auth
 }
 
-var registerPluginExecutors = func(host *pluginhost.Host, manager *coreauth.Manager) error {
+var registerPluginExecutors = func(host *pluginhost.Host, manager *coreauth.Manager) {
 	if host == nil || manager == nil {
-		return fmt.Errorf("register plugin executors: host and manager are required")
+		return
 	}
-	return host.RegisterExecutors(manager, registry.GetGlobalRegistry())
+	host.RegisterExecutors(manager, registry.GetGlobalRegistry())
 }
 
 // RegisterUsagePlugin registers a usage plugin on the global usage manager.
@@ -142,23 +142,19 @@ func (s *Service) syncPluginModelRuntime(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if errModels := s.pluginHost.RegisterModels(ctx, registry.GetGlobalRegistry()); errModels != nil {
-		return fmt.Errorf("register plugin models: %w", errModels)
-	}
+	s.pluginHost.RegisterModels(ctx, registry.GetGlobalRegistry())
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
 	s.cfgMu.RLock()
 	homeEnabled := s.cfg != nil && s.cfg.Home.Enabled
 	s.cfgMu.RUnlock()
-	if errExecutors := s.registerAvailableExecutors(ctx, executorRegistrationOptions{
+	s.registerAvailableExecutors(ctx, executorRegistrationOptions{
 		includeBaseline:   homeEnabled,
 		includePlugins:    true,
 		forceReplaceAuths: false,
 		auths:             s.coreManager.List(),
-	}); errExecutors != nil {
-		return errExecutors
-	}
+	})
 	if errRefresh := s.refreshPluginModelRegistrations(ctx); errRefresh != nil {
 		return errRefresh
 	}

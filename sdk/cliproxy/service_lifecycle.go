@@ -125,11 +125,9 @@ func (s *Service) Run(ctx context.Context) error {
 
 	s.ensureWebsocketGateway()
 	if homeEnabled {
-		if errExecutors := s.registerAvailableExecutors(ctx, executorRegistrationOptions{
+		s.registerAvailableExecutors(ctx, executorRegistrationOptions{
 			includeBaseline: true,
-		}); errExecutors != nil {
-			return fmt.Errorf("register baseline executors: %w", errExecutors)
-		}
+		})
 		// Home mode does not expose in-process Redis RESP usage output; usage is forwarded to home instead.
 		redisqueue.SetEnabled(true)
 	}
@@ -380,14 +378,10 @@ func (s *Service) Shutdown(ctx context.Context) error {
 				s.watcher.SetPluginAuthParser(nil)
 			}
 			s.pluginHost.ApplyConfig(ctx, &config.Config{})
-			if errModels := s.pluginHost.RegisterModels(ctx, registry.GetGlobalRegistry()); errModels != nil && shutdownErr == nil {
-				shutdownErr = fmt.Errorf("clear plugin models during shutdown: %w", errModels)
-			}
-			if errExecutors := s.registerAvailableExecutors(ctx, executorRegistrationOptions{
+			s.pluginHost.RegisterModels(ctx, registry.GetGlobalRegistry())
+			s.registerAvailableExecutors(ctx, executorRegistrationOptions{
 				includePlugins: true,
-			}); errExecutors != nil && shutdownErr == nil {
-				shutdownErr = fmt.Errorf("clear plugin executors during shutdown: %w", errExecutors)
-			}
+			})
 			s.pluginHost.RegisterFrontendAuthProviders()
 			s.pluginHost.ShutdownAllContext(ctx)
 			if s.accessManager != nil {

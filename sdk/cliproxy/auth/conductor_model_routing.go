@@ -630,11 +630,12 @@ func modelRoutingFailureFactsFromError(err error) modelRoutingFailureFacts {
 	if isEmptyPreResponseError(err) {
 		facts.failureKinds = append(facts.failureKinds, modelrouting.FailureKindEmptyPreResponse)
 	}
-	if isConnectionLifecycleError(err) {
+	var networkErr net.Error
+	hasNetworkError := errors.As(err, &networkErr) && networkErr != nil
+	if isConnectionLifecycleError(err) || (facts.httpStatus == 0 && hasNetworkError && !networkErr.Timeout()) {
 		facts.failureKinds = append(facts.failureKinds, modelrouting.FailureKindTransport)
 	}
-	var networkErr net.Error
-	if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &networkErr) && networkErr != nil && networkErr.Timeout()) {
+	if errors.Is(err, context.DeadlineExceeded) || (hasNetworkError && networkErr.Timeout()) {
 		facts.failureKinds = append(facts.failureKinds, modelrouting.FailureKindUpstreamTimeout)
 	}
 	return facts

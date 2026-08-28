@@ -22,14 +22,13 @@ import (
 )
 
 const (
-	contractSnapshotDigest   = "sha256:15303dbab83d64d09f79f1f3a22bc09fb3ad5916f2624283f2c6a0ecbe969801"
-	contractProjectionDigest = "sha256:a2d543504bba7caa9a5c925bb1018e484a0331fb0479dbc87e828db51bc275a5"
-	contractRouteSelector    = "sha256:7777777777777777777777777777777777777777777777777777777777777777"
+	contractSnapshotDigest = "sha256:15303dbab83d64d09f79f1f3a22bc09fb3ad5916f2624283f2c6a0ecbe969801"
 )
 
 func managementRoutingProjection() *modelrouting.Config {
 	modelKey := modelrouting.ModelKey{CatalogProviderID: "openai", CanonicalModelID: "gpt-5.4"}
-	routeKey := modelrouting.RouteKey{CatalogProviderID: "openai", CanonicalModelID: "gpt-5.4", RouteChannel: "openai"}
+	routeKey := modelrouting.RouteKey{ModelKey: modelKey, RouteChannel: "openai"}
+	routeSelector := modelrouting.SelectorForRoute(routeKey, "gpt-5.4")
 	credentialID := coreauth.CredentialReferenceID("credential-a")
 	pricing := &modelrouting.Pricing{
 		Currency: "USD", Unit: "per_million_tokens", SourceID: "models_dev",
@@ -38,27 +37,30 @@ func managementRoutingProjection() *modelrouting.Config {
 	health := modelrouting.Health{Status: "healthy", Selectable: true, ObservedAt: "2026-08-27T18:45:00Z"}
 	route := modelrouting.DirectRoute{
 		RouteKey: routeKey, CatalogRouteProviderID: "openrouter", CatalogRouteModelID: "openai/gpt-5.4",
-		RuntimeModelID: "gpt-5.4", RouteSelector: contractRouteSelector,
+		RuntimeModelID: "gpt-5.4", RouteSelector: routeSelector,
 		QuotaDomains: []string{"quota-a"}, CredentialRefs: []modelrouting.CredentialRef{{ID: credentialID, Kind: "oauth"}},
 		Protocols: []string{"openai_chat"}, Restrictions: []modelrouting.Restriction{}, Health: health,
 		Pricing: pricing, Selectable: true, SelectionReason: "eligible",
 	}
-	return &modelrouting.Config{
-		SchemaVersion: 1, Generation: 42, SnapshotDigest: contractSnapshotDigest,
-		ProjectionDigest: contractProjectionDigest,
+	projection := &modelrouting.Config{
+		SchemaVersion: 2, Generation: 1, SnapshotDigest: contractSnapshotDigest,
+		ProjectionDigest: contractSnapshotDigest,
 		DirectModels: []modelrouting.DirectModel{{
 			ModelKey: modelKey, DisplayName: "GPT-5.4", Active: true,
 			Variants: []modelrouting.Variant{}, Routes: []modelrouting.DirectRoute{route},
 		}},
 		Aliases: []modelrouting.Alias{{
 			Name: "aihub-primary", TierID: "primary", Selectable: true, Reason: "selected",
-			Candidates: []modelrouting.Candidate{{
-				ModelKey: modelKey, RouteChannel: "openai", CatalogRouteProviderID: "openrouter",
-				CatalogRouteModelID: "openai/gpt-5.4", RuntimeModelID: "gpt-5.4", RouteSelector: contractRouteSelector,
-				Rank: 1, QuotaDomains: []string{"quota-a"},
-				CredentialRefs: []modelrouting.CredentialRef{{ID: credentialID, Kind: "oauth"}},
-				Protocols:      []string{"openai_chat"}, Health: health, Restrictions: []modelrouting.Restriction{},
-				Pricing: pricing, SelectionReason: "ranked first",
+			Members: []modelrouting.Member{{
+				ModelKey: modelKey, MemberRank: 1, ModelScore: "1", SelectionReason: "selected member",
+				Candidates: []modelrouting.Candidate{{
+					RouteKey: routeKey, CatalogRouteProviderID: "openrouter",
+					CatalogRouteModelID: "openai/gpt-5.4", RuntimeModelID: "gpt-5.4", RouteSelector: routeSelector,
+					RouteRank: 1, QuotaDomains: []string{"quota-a"},
+					CredentialRefs: []modelrouting.CredentialRef{{ID: credentialID, Kind: "oauth"}},
+					Protocols:      []string{"openai_chat"}, Health: health, Restrictions: []modelrouting.Restriction{},
+					Pricing: pricing, SelectionReason: "ranked first",
+				}},
 			}},
 		}},
 		FailurePolicy: modelrouting.FailurePolicy{
@@ -77,59 +79,79 @@ func managementRoutingProjection() *modelrouting.Config {
 			PreserveFirstError: true, TerminateOwnedRequestOnCancel: true,
 		},
 	}
+	digest, err := modelrouting.ProjectionDigest(projection)
+	if err != nil {
+		panic(err)
+	}
+	projection.ProjectionDigest = digest
+	return projection
 }
 
 func TestPutConfigYAMLReturnsActiveDigestReceipt(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	modelrouting.Activate(nil, time.Time{})
-	t.Cleanup(func() { modelrouting.Activate(nil, time.Time{}) })
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	if err := os.WriteFile(path, []byte("port: 8317\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	projection := managementRoutingProjection()
 	payload, err := yaml.Marshal(&config.Config{
 		Port:               8317,
 		CredentialInFlight: config.DefaultCredentialInFlightConfig(),
-		ModelRouting:       managementRoutingProjection(),
+		ModelRouting:       projection,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	h := NewHandler(&config.Config{Port: 8317}, path, nil)
-	reloaded := false
-	h.SetConfigReloadHook(func(_ context.Context, cfg *config.Config) error {
-		reloaded = cfg.ModelRouting != nil
-		return nil
+	loadedAt := time.Date(2026, 8, 28, 11, 20, 57, 0, time.UTC)
+	published := false
+	h.SetConfigPublishHook(func(_ context.Context, body []byte, expected *modelrouting.ActiveIdentityV2, bootstrap bool) (*config.Config, *modelrouting.ActivationReceiptV2, error) {
+		if !bootstrap || expected != nil {
+			t.Fatalf("publisher precondition = bootstrap %t, expected %+v", bootstrap, expected)
+		}
+		parsed, errParse := config.ParseConfigBytes(body)
+		if errParse != nil {
+			t.Fatalf("ParseConfigBytes() error = %v", errParse)
+		}
+		published = true
+		active := modelrouting.ActiveIdentityV2{
+			Generation:       projection.Generation,
+			SnapshotDigest:   projection.SnapshotDigest,
+			ProjectionDigest: projection.ProjectionDigest,
+			ConfigDigest:     modelrouting.ConfigDigest(body),
+		}
+		return parsed, &modelrouting.ActivationReceiptV2{
+			Active: active, RoutingSchema: modelrouting.RoutingSchemaInfo{Version: 2, Digest: modelrouting.SchemaDigest()}, LoadedAt: loadedAt,
+		}, nil
 	})
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodPut, "/v0/management/config.yaml", strings.NewReader(string(payload)))
 	c.Request.Header.Set("Content-Type", "application/yaml")
+	c.Request.Header.Set("If-None-Match", "*")
 	h.PutConfigYAML(c)
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
-	if !reloaded {
-		t.Fatal("runtime reload hook was not called")
+	if !published {
+		t.Fatal("Service-owned CAS publisher was not called")
 	}
-	var receipt struct {
-		OK               bool   `json:"ok"`
-		Generation       uint64 `json:"generation"`
-		SnapshotDigest   string `json:"snapshot_digest"`
-		ProjectionDigest string `json:"projection_digest"`
-	}
+	var receipt modelrouting.ActivationReceiptV2
 	if err = json.Unmarshal(recorder.Body.Bytes(), &receipt); err != nil {
 		t.Fatal(err)
 	}
-	if !receipt.OK || receipt.Generation != 42 || receipt.SnapshotDigest != contractSnapshotDigest || receipt.ProjectionDigest != contractProjectionDigest {
+	if receipt.Active.Generation != projection.Generation || receipt.Active.SnapshotDigest != contractSnapshotDigest || receipt.Active.ProjectionDigest != projection.ProjectionDigest {
 		t.Fatalf("receipt = %+v", receipt)
 	}
-	active := modelrouting.Active()
-	if active == nil || active.ProjectionDigest != receipt.ProjectionDigest {
-		t.Fatalf("active = %+v, receipt = %+v", active, receipt)
+	wantETag, err := modelrouting.ActiveETag(receipt.Active)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recorder.Header().Get("ETag") != wantETag {
+		t.Fatalf("ETag = %q, want %q", recorder.Header().Get("ETag"), wantETag)
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -144,8 +166,6 @@ func TestPutConfigYAMLReturnsActiveDigestReceipt(t *testing.T) {
 
 func TestPutConfigYAMLHashesManagementSecretBeforeAtomicPublish(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	modelrouting.Activate(nil, time.Time{})
-	t.Cleanup(func() { modelrouting.Activate(nil, time.Time{}) })
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
@@ -182,8 +202,6 @@ func TestPutConfigYAMLHashesManagementSecretBeforeAtomicPublish(t *testing.T) {
 
 func TestPutConfigYAMLRollsBackFileMemoryAndRuntimeOnReloadFailure(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	modelrouting.Activate(nil, time.Time{})
-	t.Cleanup(func() { modelrouting.Activate(nil, time.Time{}) })
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
@@ -254,5 +272,46 @@ func TestProjectedInventoryFailsClosedForSuspendedCredential(t *testing.T) {
 	}
 	if strings.Contains(string(encoded), "credential-a") {
 		t.Fatalf("inventory leaked raw credential ID: %s", encoded)
+	}
+}
+
+func TestBootstrapInventoryFailsLoudlyForIncompleteOrManagedRoutes(t *testing.T) {
+	auth := &coreauth.Auth{
+		ID: "credential-a", Provider: "openai", RouteChannel: "openai", QuotaDomain: "quota-a", Status: coreauth.StatusActive,
+		Attributes: map[string]string{"auth_kind": "oauth"},
+	}
+	model := &registry.ModelInfo{
+		ID: "gpt-5.4", CatalogProviderID: "openai", CatalogModelID: "gpt-5.4",
+		CatalogRouteProviderID: "openai", CatalogRouteModelID: "gpt-5.4", Protocols: []string{"openai_chat"},
+	}
+	tests := []struct {
+		name  string
+		route registry.RegisteredRouteSnapshot
+		want  string
+	}{
+		{
+			name:  "missing model facts",
+			route: registry.RegisteredRouteSnapshot{ClientID: auth.ID, RouteChannel: "openai", RuntimeModelID: "gpt-5.4"},
+			want:  "registered route 0 has no model facts",
+		},
+		{
+			name: "managed alias before projection",
+			route: registry.RegisteredRouteSnapshot{
+				ClientID: auth.ID, RouteChannel: "openai", RuntimeModelID: "aihub-primary", Model: model,
+			},
+			want: "registered route 0 contains a managed alias before projection",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := bootstrapInventoryModels(
+				[]registry.RegisteredRouteSnapshot{test.route},
+				map[string]*coreauth.Auth{auth.ID: auth},
+				time.Now(),
+			)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("bootstrapInventoryModels() error = %v, want %q", err, test.want)
+			}
+		})
 	}
 }

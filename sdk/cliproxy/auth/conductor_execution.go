@@ -57,7 +57,11 @@ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxye
 	if len(normalized) == 0 {
 		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "no provider supplied"}
 	}
-	if m.isModelRoutingRequest(authSelectionModelFromOptions(opts, req.Model), opts) {
+	_, routed, errRouting := m.modelRoutingCandidates(authSelectionModelFromOptions(opts, req.Model), opts)
+	if errRouting != nil {
+		return cliproxyexecutor.Response{}, unwrapRequestStopError(errRouting)
+	}
+	if routed {
 		resp, errRouting := m.executeWithModelRouting(ctx, normalized, req, opts)
 		return resp, unwrapRequestStopError(errRouting)
 	}
@@ -113,7 +117,11 @@ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req clip
 	if len(normalized) == 0 {
 		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "no provider supplied"}
 	}
-	if m.isModelRoutingRequest(authSelectionModelFromOptions(opts, req.Model), opts) {
+	_, routed, errRouting := m.modelRoutingCandidates(authSelectionModelFromOptions(opts, req.Model), opts)
+	if errRouting != nil {
+		return cliproxyexecutor.Response{}, unwrapRequestStopError(errRouting)
+	}
+	if routed {
 		resp, errRouting := m.executeCountWithModelRouting(ctx, normalized, req, opts)
 		return resp, unwrapRequestStopError(errRouting)
 	}
@@ -162,7 +170,11 @@ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cli
 	if len(normalized) == 0 {
 		return nil, &Error{Code: "provider_not_found", Message: "no provider supplied"}
 	}
-	if m.isModelRoutingRequest(authSelectionModelFromOptions(opts, req.Model), opts) {
+	_, routed, errRouting := m.modelRoutingCandidates(authSelectionModelFromOptions(opts, req.Model), opts)
+	if errRouting != nil {
+		return nil, unwrapRequestStopError(errRouting)
+	}
+	if routed {
 		result, errRouting := m.executeStreamWithModelRouting(ctx, normalized, req, opts)
 		return result, unwrapRequestStopError(errRouting)
 	}

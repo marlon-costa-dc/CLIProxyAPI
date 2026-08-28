@@ -25,9 +25,19 @@ xai-api-key:
 openai-compatibility:
   - name: compat
     base-url: https://compat.example.com
+    route-channel: compat
     disable-cooling: false
     api-key-entries:
       - api-key: compat-key
+        quota-domain: compat
+    models:
+      - name: compat-model
+        alias: compat-model
+        catalog-provider-id: compat
+        catalog-model-id: compat-model
+        catalog-route-provider-id: compat
+        catalog-route-model-id: compat-model
+        protocols: [openai_chat]
 vertex-api-key:
   - api-key: vertex-key
     base-url: https://vertex.example.com
