@@ -1,13 +1,12 @@
 package managementasset
 
 import (
-	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 )
 
+<<<<<<< HEAD
 func TestFetchLatestAssetSetsGitHubAuthorization(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "asset-token")
 	t.Setenv("GITSTORE_GIT_TOKEN", "")
@@ -65,6 +64,8 @@ func TestFetchLatestAssetOmitsAuthorizationWithoutToken(t *testing.T) {
 	}
 }
 
+=======
+>>>>>>> parent of be22c684 (merge: integrate upstream main into model pricing lane)
 func TestAutoUpdateSkipReason(t *testing.T) {
 	tests := []struct {
 		name       string

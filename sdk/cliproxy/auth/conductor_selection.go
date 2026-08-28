@@ -58,9 +58,12 @@ type authSelectionEligibility struct {
 	requiredKind     string
 	credentialPolicy string
 	disallowFreeAuth bool
+<<<<<<< HEAD
 	excludedAuthIDs  map[string]struct{}
 	allowedAuthIDs   map[string]struct{}
 	hasAllowlist     bool
+=======
+>>>>>>> parent of be22c684 (merge: integrate upstream main into model pricing lane)
 }
 
 func withRequiredAuthKind(ctx context.Context, requiredKind string) context.Context {
@@ -80,11 +83,15 @@ func credentialPolicyFromContext(ctx context.Context) string {
 }
 
 func authSelectionEligibilityForRequest(ctx context.Context, opts cliproxyexecutor.Options) authSelectionEligibility {
+<<<<<<< HEAD
 	eligibility := authSelectionEligibility{
 		disallowFreeAuth: disallowFreeAuthFromMetadata(opts.Metadata),
 		excludedAuthIDs:  extractExcludedAuthIDs(opts.Metadata),
 	}
 	eligibility.allowedAuthIDs, eligibility.hasAllowlist = allowedAuthIDsFromMetadata(opts.Metadata)
+=======
+	eligibility := authSelectionEligibility{disallowFreeAuth: disallowFreeAuthFromMetadata(opts.Metadata)}
+>>>>>>> parent of be22c684 (merge: integrate upstream main into model pricing lane)
 	if ctx != nil {
 		eligibility.requiredKind, _ = ctx.Value(requiredAuthKindContextKey{}).(string)
 		eligibility.credentialPolicy, _ = ctx.Value(credentialPolicyContextKey{}).(string)
@@ -96,6 +103,7 @@ func (e authSelectionEligibility) allows(auth *Auth) bool {
 	if auth == nil {
 		return false
 	}
+<<<<<<< HEAD
 	if _, excluded := e.excludedAuthIDs[auth.ID]; excluded {
 		return false
 	}
@@ -104,6 +112,8 @@ func (e authSelectionEligibility) allows(auth *Auth) bool {
 			return false
 		}
 	}
+=======
+>>>>>>> parent of be22c684 (merge: integrate upstream main into model pricing lane)
 	if e.requiredKind != "" && auth.AuthKind() != e.requiredKind {
 		return false
 	}
@@ -724,92 +734,14 @@ func (m *Manager) retrySettings() (int, int, time.Duration) {
 	return int(m.requestRetry.Load()), int(m.maxRetryCredentials.Load()), time.Duration(m.maxRetryInterval.Load())
 }
 
-func effectiveRequestRetryLimit(auth *Auth, defaultRetry int) int {
-	if defaultRetry < 0 {
-		defaultRetry = 0
-	}
-	if override, ok := auth.RequestRetryOverride(); ok {
-		return override
-	}
-	return defaultRetry
-}
-
-func (m *Manager) requestRetryRoundExclusions(retryRound int, defaultRequestRetry int) map[string]struct{} {
-	excluded := make(map[string]struct{})
-	if m == nil || retryRound <= 0 {
-		return excluded
-	}
-	if defaultRequestRetry < 0 {
-		defaultRequestRetry = 0
-	}
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	for _, auth := range m.auths {
-		if auth == nil || strings.TrimSpace(auth.ID) == "" {
-			continue
-		}
-		if effectiveRequestRetryLimit(auth, defaultRequestRetry) < retryRound {
-			excluded[auth.ID] = struct{}{}
-		}
-	}
-	return excluded
-}
-
-func retryRoundAvailabilityForAuth(auth *Auth, model string, now time.Time) (bool, time.Time) {
-	blocked, reason, next := isAuthBlockedForModel(auth, model, now)
-	if !blocked {
-		return true, time.Time{}
-	}
-	if auth == nil || next.IsZero() || reason == blockReasonDisabled {
-		return false, time.Time{}
-	}
-	if auth.Quota.Exceeded && auth.Quota.Reason == "credential_quota" && auth.Quota.NextRecoverAt.After(now) {
-		return credentialRetryRoundStateEligible(auth.LastError, true), next
-	}
-
-	modelKey := canonicalModelKey(model)
-	if modelKey != "" && len(auth.ModelStates) > 0 {
-		matchedBlocked := false
-		for stateModel, state := range auth.ModelStates {
-			if state == nil || canonicalModelKey(stateModel) != modelKey {
-				continue
-			}
-			if state.Status == StatusDisabled {
-				return false, time.Time{}
-			}
-			stateBlocked, _, stateNext := availabilityBlock(state.Unavailable, state.Quota.Exceeded, state.NextRetryAfter, state.Quota.NextRecoverAt, now)
-			if !stateBlocked {
-				continue
-			}
-			matchedBlocked = true
-			if stateNext.IsZero() || !credentialRetryRoundStateEligible(state.LastError, state.Quota.Exceeded) {
-				return false, time.Time{}
-			}
-		}
-		if matchedBlocked {
-			return true, next
-		}
-	}
-	if !credentialRetryRoundStateEligible(auth.LastError, auth.Quota.Exceeded) {
-		return false, time.Time{}
-	}
-	return true, next
-}
-
-func credentialRetryRoundStateEligible(lastErr *Error, quotaExceeded bool) bool {
-	if lastErr == nil {
-		return quotaExceeded
-	}
-	return isCredentialRetryRoundStatus(statusCodeFromResult(lastErr))
-}
-
-func (m *Manager) closestCooldownWait(providers []string, model string, attempt int, eligibility authSelectionEligibility, pinnedAuthID string, defaultRequestRetry int) (time.Duration, bool) {
+func (m *Manager) closestCooldownWait(providers []string, model string, attempt int) (time.Duration, bool) {
 	if m == nil || len(providers) == 0 {
 		return 0, false
 	}
 	now := time.Now()
-	if defaultRequestRetry < 0 {
-		defaultRequestRetry = 0
+	defaultRetry := int(m.requestRetry.Load())
+	if defaultRetry < 0 {
+		defaultRetry = 0
 	}
 	providerSet := make(map[string]struct{}, len(providers))
 	for i := range providers {
@@ -819,7 +751,6 @@ func (m *Manager) closestCooldownWait(providers []string, model string, attempt 
 		}
 		providerSet[key] = struct{}{}
 	}
-	registryRef := registry.GetGlobalRegistry()
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	var (
@@ -827,23 +758,20 @@ func (m *Manager) closestCooldownWait(providers []string, model string, attempt 
 		minWait time.Duration
 	)
 	for _, auth := range m.auths {
-		if auth == nil || auth.Disabled || auth.Status == StatusDisabled {
-			continue
-		}
-		if pinnedAuthID != "" && auth.ID != pinnedAuthID {
-			continue
-		}
-		if !eligibility.allows(auth) {
+		if auth == nil {
 			continue
 		}
 		providerKey := executorKeyFromAuth(auth)
 		if _, ok := providerSet[providerKey]; !ok {
 			continue
 		}
-		if model != "" && !m.authSupportsRouteModel(registryRef, auth, model) {
-			continue
+		effectiveRetry := defaultRetry
+		if override, ok := auth.RequestRetryOverride(); ok {
+			effectiveRetry = override
 		}
-		effectiveRetry := effectiveRequestRetryLimit(auth, defaultRequestRetry)
+		if effectiveRetry < 0 {
+			effectiveRetry = 0
+		}
 		if attempt >= effectiveRetry {
 			continue
 		}
@@ -851,12 +779,9 @@ func (m *Manager) closestCooldownWait(providers []string, model string, attempt 
 		if strings.TrimSpace(model) != "" {
 			checkModel = m.selectionModelForAuth(auth, model)
 		}
-		retryEligible, next := retryRoundAvailabilityForAuth(auth, checkModel, now)
-		if !retryEligible {
+		blocked, reason, next := isAuthBlockedForModel(auth, checkModel, now)
+		if !blocked || next.IsZero() || reason == blockReasonDisabled {
 			continue
-		}
-		if next.IsZero() {
-			return 0, true
 		}
 		wait := next.Sub(now)
 		if wait < 0 {
@@ -870,13 +795,13 @@ func (m *Manager) closestCooldownWait(providers []string, model string, attempt 
 	return minWait, found
 }
 
-func (m *Manager) retryAllowed(attempt int, providers []string, model string, eligibility authSelectionEligibility, pinnedAuthID string, defaultRequestRetry int) bool {
+func (m *Manager) retryAllowed(attempt int, providers []string) bool {
 	if m == nil || attempt < 0 || len(providers) == 0 {
 		return false
 	}
-	now := time.Now()
-	if defaultRequestRetry < 0 {
-		defaultRequestRetry = 0
+	defaultRetry := int(m.requestRetry.Load())
+	if defaultRetry < 0 {
+		defaultRetry = 0
 	}
 	providerSet := make(map[string]struct{}, len(providers))
 	for i := range providers {
@@ -890,35 +815,24 @@ func (m *Manager) retryAllowed(attempt int, providers []string, model string, el
 		return false
 	}
 
-	registryRef := registry.GetGlobalRegistry()
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	for _, auth := range m.auths {
-		if auth == nil || auth.Disabled || auth.Status == StatusDisabled {
-			continue
-		}
-		if pinnedAuthID != "" && auth.ID != pinnedAuthID {
-			continue
-		}
-		if !eligibility.allows(auth) {
+		if auth == nil {
 			continue
 		}
 		providerKey := executorKeyFromAuth(auth)
 		if _, ok := providerSet[providerKey]; !ok {
 			continue
 		}
-		if model != "" && !m.authSupportsRouteModel(registryRef, auth, model) {
-			continue
+		effectiveRetry := defaultRetry
+		if override, ok := auth.RequestRetryOverride(); ok {
+			effectiveRetry = override
 		}
-		effectiveRetry := effectiveRequestRetryLimit(auth, defaultRequestRetry)
-		if attempt >= effectiveRetry {
-			continue
+		if effectiveRetry < 0 {
+			effectiveRetry = 0
 		}
-		checkModel := model
-		if strings.TrimSpace(model) != "" {
-			checkModel = m.selectionModelForAuth(auth, model)
-		}
-		if retryEligible, _ := retryRoundAvailabilityForAuth(auth, checkModel, now); retryEligible {
+		if attempt < effectiveRetry {
 			return true
 		}
 	}
@@ -926,21 +840,14 @@ func (m *Manager) retryAllowed(attempt int, providers []string, model string, el
 }
 
 func (m *Manager) shouldRetryAfterError(err error, attempt int, providers []string, model string, maxWait time.Duration) (time.Duration, bool) {
-	defaultRequestRetry, _, _ := m.retrySettings()
-	return m.shouldRetryAfterErrorWithHomeRetryLimit(context.Background(), cliproxyexecutor.Options{}, err, attempt, providers, model, maxWait, -1, defaultRequestRetry)
-}
-
-// maxWait limits only positive cooldown waits between credential retry rounds.
-// A non-positive value means no waiting: it does not disable same-round
-// credential failover or an additional round that request-retry permits to start
-// immediately. If every eligible credential still needs a positive cooldown,
-// retry stops without waiting.
-func (m *Manager) shouldRetryAfterErrorWithHomeRetryLimit(ctx context.Context, opts cliproxyexecutor.Options, err error, attempt int, providers []string, model string, maxWait time.Duration, homeRetryLimit int, defaultRequestRetry int) (time.Duration, bool) {
 	if err == nil {
 		return 0, false
 	}
 	var homeBusy *HomeConcurrencyBusyError
 	if errors.As(err, &homeBusy) && homeBusy != nil {
+		return 0, false
+	}
+	if maxWait <= 0 {
 		return 0, false
 	}
 	status := statusCodeFromError(err)
@@ -950,6 +857,7 @@ func (m *Manager) shouldRetryAfterErrorWithHomeRetryLimit(ctx context.Context, o
 	if isRequestInvalidError(err) || isRequestStopError(err) {
 		return 0, false
 	}
+<<<<<<< HEAD
 	if m.HomeEnabled() && !isModelRoutingOptions(opts) {
 		var cooldownErr *homeDispatchRetryAfterError
 		if errors.As(err, &cooldownErr) && cooldownErr != nil {
@@ -990,79 +898,26 @@ func (m *Manager) shouldRetryAfterErrorWithHomeRetryLimit(ctx context.Context, o
 		return 0, false
 	}
 	wait, found := m.closestCooldownWait(providers, model, attempt, eligibility, pinnedAuthID, defaultRequestRetry)
+=======
+	wait, found := m.closestCooldownWait(providers, model, attempt)
+>>>>>>> parent of be22c684 (merge: integrate upstream main into model pricing lane)
 	if found {
-		if wait > 0 && (maxWait <= 0 || wait > maxWait) {
+		if wait > maxWait {
 			return 0, false
 		}
 		return wait, true
 	}
-	if retryAfter := retryAfterFromError(err); retryAfter != nil {
-		if *retryAfter < 0 || (*retryAfter > 0 && (maxWait <= 0 || *retryAfter > maxWait)) {
-			return 0, false
-		}
-		return *retryAfter, true
+	if status != http.StatusTooManyRequests {
+		return 0, false
 	}
-	return 0, true
-}
-
-func (m *Manager) homeRetryAllowed(attempt int, retryLimit int) bool {
-	if m == nil || !m.HomeEnabled() || attempt < 0 {
-		return false
+	if !m.retryAllowed(attempt, providers) {
+		return 0, false
 	}
-	if retryLimit < 0 {
-		retryLimit = int(m.requestRetry.Load())
-		if retryLimit < 0 {
-			retryLimit = 0
-		}
+	retryAfter := retryAfterFromError(err)
+	if retryAfter == nil || *retryAfter <= 0 || *retryAfter > maxWait {
+		return 0, false
 	}
-	return attempt < retryLimit
-}
-
-func (m *Manager) observeHomeRetryLimit(auth *Auth, selection *HomeDispatchSelection, retryLimit *int) {
-	if m == nil || retryLimit == nil {
-		return
-	}
-	if selection != nil && selection.hasRequestRetry {
-		*retryLimit = selection.requestRetry
-		return
-	}
-	if auth == nil {
-		return
-	}
-	limit := int(m.requestRetry.Load())
-	if override, ok := auth.RequestRetryOverride(); ok {
-		limit = override
-	}
-	if limit < 0 {
-		limit = 0
-	}
-	if *retryLimit < 0 || limit > *retryLimit {
-		*retryLimit = limit
-	}
-}
-
-func observeHomeCooldownRetryLimit(cooldown *homeDispatchRetryAfterError, retryLimit *int, acceptRemoteRetryLimit bool) {
-	if cooldown == nil || retryLimit == nil || !acceptRemoteRetryLimit {
-		return
-	}
-	if remoteLimit, ok := cooldown.RequestRetryLimit(); ok {
-		*retryLimit = remoteLimit
-	}
-}
-
-func isCredentialRetryRoundStatus(status int) bool {
-	switch status {
-	case http.StatusForbidden,
-		http.StatusRequestTimeout,
-		http.StatusTooManyRequests,
-		http.StatusInternalServerError,
-		http.StatusBadGateway,
-		http.StatusServiceUnavailable,
-		http.StatusGatewayTimeout:
-		return true
-	default:
-		return false
-	}
+	return *retryAfter, true
 }
 
 // cooldownWaitJitterCap bounds the random jitter added to cooldown waits so a
@@ -1073,7 +928,7 @@ const cooldownWaitJitterCap = 2 * time.Second
 // concurrent requests waiting on the same recovery deadline do not wake in
 // lockstep and stampede the first credential that recovers. The jitter never
 // pushes the total wait past maxWait, which callers have already enforced as
-// the retry ceiling; maxWait <= 0 is reserved for immediate retries.
+// the retry ceiling; maxWait <= 0 means no ceiling.
 func jitteredCooldownWait(wait, maxWait time.Duration) time.Duration {
 	if wait <= 0 {
 		return wait
@@ -1415,7 +1270,6 @@ func (m *Manager) SelectHomeAuthWithCredentialPolicy(ctx context.Context, provid
 	tried := make(map[string]struct{})
 	for {
 		selectionOpts := withHomeAuthCount(opts, homeAuthCount)
-		selectionOpts = withHomeExcludedAuthIDs(selectionOpts, tried)
 		selection, errSelection := m.pickHomeDispatchSelection(selectionCtx, model, selectionOpts)
 		if errSelection != nil {
 			return nil, errSelection
@@ -1462,7 +1316,6 @@ func (m *Manager) SelectHomeAuthByKind(ctx context.Context, provider string, mod
 	tried := make(map[string]struct{})
 	for {
 		selectionOpts := withHomeAuthCount(opts, homeAuthCount)
-		selectionOpts = withHomeExcludedAuthIDs(selectionOpts, tried)
 		selection, errSelection := m.pickHomeDispatchSelection(ctx, model, selectionOpts)
 		if errSelection != nil {
 			return nil, errSelection

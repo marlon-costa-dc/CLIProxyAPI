@@ -67,11 +67,7 @@ func (m *Manager) runtimeConfigSnapshot() *internalconfig.Config {
 // extractRequestScopedErrorRules retrieves the configured RequestScopedErrorRule list for an auth.
 func extractRequestScopedErrorRules(auth *Auth, cfg *internalconfig.Config) []internalconfig.RequestScopedErrorRule {
 	if auth != nil && auth.Metadata != nil {
-		raw, ok := auth.Metadata["request_scoped_errors"]
-		if !ok {
-			raw, ok = auth.Metadata["request-scoped-errors"]
-		}
-		if ok && raw != nil {
+		if raw, ok := auth.Metadata["request_scoped_errors"]; ok && raw != nil {
 			switch typed := raw.(type) {
 			case []internalconfig.RequestScopedErrorRule:
 				if len(typed) > 0 {

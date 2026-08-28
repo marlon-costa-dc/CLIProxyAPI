@@ -312,7 +312,6 @@ func cloneModelInfos(models []*ModelInfo) []*ModelInfo {
 // Supported channels:
 //   - claude
 //   - gemini
-//   - gemini-interactions
 //   - vertex
 //   - gemini-cli
 //   - aistudio
@@ -326,8 +325,6 @@ func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 	case "claude":
 		return GetClaudeModels()
 	case "gemini":
-		return GetGeminiModels()
-	case "gemini-interactions":
 		return GetGeminiModels()
 	case "vertex":
 		return GetGeminiVertexModels()

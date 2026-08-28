@@ -388,7 +388,7 @@ func normalizeAntigravityGeminiFunctionResponseRoles(rawJSON []byte) []byte {
 		}
 
 		var calls, responses []functionRef
-		var responseParts, otherParts []json.RawMessage
+		var responseParts []json.RawMessage
 		partCount := 0
 		hasOtherPart := false
 		parts.ForEach(func(_, part gjson.Result) bool {
@@ -401,7 +401,6 @@ func normalizeAntigravityGeminiFunctionResponseRoles(rawJSON []byte) []byte {
 				responseParts = append(responseParts, json.RawMessage(part.Raw))
 			default:
 				hasOtherPart = true
-				otherParts = append(otherParts, json.RawMessage(part.Raw))
 			}
 			return true
 		})
@@ -419,7 +418,7 @@ func normalizeAntigravityGeminiFunctionResponseRoles(rawJSON []byte) []byte {
 			}
 			return true
 		}
-		if len(calls) > 0 {
+		if hasOtherPart || len(calls) > 0 {
 			pending = nil
 			return true
 		}
@@ -427,7 +426,7 @@ func normalizeAntigravityGeminiFunctionResponseRoles(rawJSON []byte) []byte {
 		var contentJSON []byte
 		contentChanged := false
 		if len(pending) == len(responses) {
-			ordered := make([]json.RawMessage, 0, partCount)
+			ordered := make([]json.RawMessage, 0, len(responseParts))
 			used := make([]bool, len(responses))
 			for _, call := range pending {
 				matched := -1
@@ -448,7 +447,6 @@ func normalizeAntigravityGeminiFunctionResponseRoles(rawJSON []byte) []byte {
 				ordered = append(ordered, responseParts[matched])
 			}
 			if len(ordered) == len(responseParts) {
-				ordered = append(ordered, otherParts...)
 				encoded, errMarshal := json.Marshal(ordered)
 				if errMarshal == nil && !bytes.Equal(encoded, []byte(parts.Raw)) {
 					contentJSON = []byte(content.Raw)
@@ -460,7 +458,7 @@ func normalizeAntigravityGeminiFunctionResponseRoles(rawJSON []byte) []byte {
 			}
 		}
 		pending = nil
-		if !hasOtherPart && content.Get("role").String() != "model" {
+		if content.Get("role").String() != "model" {
 			if contentJSON == nil {
 				contentJSON = []byte(content.Raw)
 			}

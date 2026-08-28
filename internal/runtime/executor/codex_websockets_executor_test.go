@@ -2215,6 +2215,7 @@ func TestCodexWebsocketLifecycleBindFailureReleasesSessionRequestLock(t *testing
 		t.Fatal("lifecycle bind failure left the session request lock held")
 	}
 }
+<<<<<<< HEAD
 
 func TestCodexWebsocketsExecuteObservesWebSocketResponseEvents(t *testing.T) {
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
@@ -2470,3 +2471,5 @@ func TestCodexWebsocketsExecuteStreamHandshakeUsageLimitReachedSetsRetryAfter(t 
 		t.Fatalf("RetryAfter = %v, want 120s", got)
 	}
 }
+=======
+>>>>>>> parent of be22c684 (merge: integrate upstream main into model pricing lane)
