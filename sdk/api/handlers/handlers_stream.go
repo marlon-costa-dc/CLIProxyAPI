@@ -89,6 +89,21 @@ func (h *BaseAPIHandler) streamWithPluginExecutor(ctx context.Context, entryProt
 		close(errChan)
 		return nil, nil, errChan
 	}
+	if streamResult.Chunks == nil {
+		errMissing := fmt.Errorf("plugin executor returned stream without a source")
+		if streamResult.Complete != nil {
+			streamResult.Complete(errMissing)
+		}
+		errMsg := &interfaces.ErrorMessage{StatusCode: http.StatusBadGateway, Error: errMissing}
+		if reporter != nil && !nestedTracker.hasNestedExecution() {
+			reporter.PublishFailure(execCtx, errMissing)
+		}
+		lifecycle.completeError(execCtx, errMsg)
+		errChan := make(chan *interfaces.ErrorMessage, 1)
+		errChan <- errMsg
+		close(errChan)
+		return nil, nil, errChan
+	}
 
 	passthroughHeadersEnabled := PassthroughHeadersEnabled(h.Cfg)
 	interceptorHost := h.interceptorHost()
@@ -135,11 +150,6 @@ func (h *BaseAPIHandler) streamWithPluginExecutor(ctx context.Context, entryProt
 		done = ctx.Done()
 	}
 	chunks := streamResult.Chunks
-	if chunks == nil {
-		closed := make(chan coreexecutor.StreamChunk)
-		close(closed)
-		chunks = closed
-	}
 	var responseSSEValidator *sseJSONValidationState
 	if responseProtocol == "openai-response" {
 		responseSSEValidator = &sseJSONValidationState{}
@@ -148,6 +158,11 @@ func (h *BaseAPIHandler) streamWithPluginExecutor(ctx context.Context, entryProt
 		completionOutcome := pluginapi.RequestCompletionSucceeded
 		completionStatus := http.StatusOK
 		var completionErr error
+		defer func() {
+			if streamResult.Complete != nil {
+				streamResult.Complete(completionErr)
+			}
+		}()
 		var streamUsage helps.StreamUsageBuffer
 		defer func() {
 			lifecycle.complete(completionOutcome, completionStatus, completionErr)
@@ -371,6 +386,18 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 		close(errChan)
 		return nil, nil, errChan
 	}
+	if streamResult.Chunks == nil {
+		errMissing := fmt.Errorf("auth manager returned stream without a source")
+		if streamResult.Complete != nil {
+			streamResult.Complete(errMissing)
+		}
+		errMsg := &interfaces.ErrorMessage{StatusCode: http.StatusBadGateway, Error: errMissing}
+		lifecycle.completeError(ctx, errMsg)
+		errChan := make(chan *interfaces.ErrorMessage, 1)
+		errChan <- errMsg
+		close(errChan)
+		return nil, nil, errChan
+	}
 	executedRequest := func() (coreexecutor.Request, coreexecutor.Options) {
 		return afterAuthCapture.apply(req, opts)
 	}
@@ -383,11 +410,6 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 	baseStreamHeaders := cloneHeader(streamResult.Headers)
 	trustedDownstreamHeaders := cloneHeader(streamResult.DownstreamHeaders)
 	chunks := streamResult.Chunks
-	if chunks == nil {
-		closed := make(chan coreexecutor.StreamChunk)
-		close(closed)
-		chunks = closed
-	}
 	streamClosedBeforeRead := false
 	streamCanceledBeforeRead := false
 	streamHeaderInitialized := false
@@ -596,6 +618,11 @@ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context
 		completionOutcome := pluginapi.RequestCompletionSucceeded
 		completionStatus := http.StatusOK
 		var completionErr error
+		defer func() {
+			if streamResult.Complete != nil {
+				streamResult.Complete(completionErr)
+			}
+		}()
 		defer func() {
 			lifecycle.complete(completionOutcome, completionStatus, completionErr)
 		}()

@@ -19,12 +19,23 @@ import (
 func (h *Handler) GetModelInventory(c *gin.Context) {
 	now := time.Now().UTC()
 	h.mu.Lock()
-	var projection *modelrouting.Config
 	manager := h.authManager
-	if h.cfg != nil {
-		projection = h.cfg.ModelRouting
-	}
+	state := h.modelRoutingStateHook
 	h.mu.Unlock()
+	activeState := modelrouting.ActiveStateV2{}
+	if state != nil {
+		activeState = state()
+	}
+	active := activeState.Identity
+	projection := activeState.Projection
+	if (active == nil) != (activeState.LoadedAt == nil) || (active == nil) != (projection == nil) {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "active model-routing identity and activation timestamp are inconsistent"})
+		return
+	}
+	if projection != nil && active == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "active model-routing identity is unavailable"})
+		return
+	}
 
 	auths := make(map[string]*coreauth.Auth)
 	if manager != nil {
@@ -36,27 +47,31 @@ func (h *Handler) GetModelInventory(c *gin.Context) {
 	}
 	registered := registry.GetGlobalRegistry().RegisteredRouteSnapshots()
 	inventory := modelrouting.Inventory{
-		SchemaVersion: 1,
-		GeneratedAt:   now,
-		Active:        modelrouting.Active(),
+		SchemaVersion:      modelrouting.SchemaVersion,
+		GeneratedAt:        now,
+		Active:             active,
+		ActivationLoadedAt: activeState.LoadedAt,
 		BinaryProvenance: modelrouting.BinaryProvenance{
 			Version: buildinfo.Version,
 			Commit:  buildinfo.Commit,
 			BuiltAt: buildinfo.BuildDate,
 		},
+		RoutingSchema: modelrouting.RoutingSchemaInfo{Version: modelrouting.SchemaVersion, Digest: modelrouting.SchemaDigest()},
+		Aliases:       []modelrouting.InventoryAlias{},
 	}
 	if projection != nil {
-		inventory.Models = projectedInventoryModels(projection, registered, auths, now)
+		inventory.DirectModels = projectedInventoryModels(projection, registered, auths, now)
+		inventory.Aliases = projectedInventoryAliases(projection)
 	} else {
 		models, errBootstrap := bootstrapInventoryModels(registered, auths, now)
 		if errBootstrap != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("build model inventory: %v", errBootstrap)})
 			return
 		}
-		inventory.Models = models
+		inventory.DirectModels = models
 	}
-	if inventory.Models == nil {
-		inventory.Models = []modelrouting.InventoryModel{}
+	if inventory.DirectModels == nil {
+		inventory.DirectModels = []modelrouting.InventoryModel{}
 	}
 	c.JSON(http.StatusOK, inventory)
 }
@@ -77,9 +92,8 @@ func projectedInventoryModels(projection *modelrouting.Config, registered []regi
 		for _, variant := range direct.Variants {
 			model.Variants = append(model.Variants, modelrouting.InventoryVariant{
 				VariantKey: modelrouting.VariantKeyJSON{
-					CatalogProviderID: variant.VariantKey.CatalogProviderID,
-					CanonicalModelID:  variant.VariantKey.CanonicalModelID,
-					VariantID:         variant.VariantKey.VariantID,
+					ModelKey:  modelKeyJSON(variant.VariantKey.ModelKey),
+					VariantID: variant.VariantKey.VariantID,
 				},
 				DisplayName: cloneOptionalString(variant.DisplayName),
 				Protocols:   append([]string(nil), variant.Protocols...),
@@ -111,9 +125,8 @@ func projectedInventoryModels(projection *modelrouting.Config, registered []regi
 			}
 			model.Routes = append(model.Routes, modelrouting.InventoryRoute{
 				RouteKey: modelrouting.RouteKeyJSON{
-					CatalogProviderID: directRoute.RouteKey.CatalogProviderID,
-					CanonicalModelID:  directRoute.RouteKey.CanonicalModelID,
-					RouteChannel:      directRoute.RouteKey.RouteChannel,
+					ModelKey:     modelKeyJSON(directRoute.RouteKey.ModelKey),
+					RouteChannel: directRoute.RouteKey.RouteChannel,
 				},
 				CatalogRouteProviderID: directRoute.CatalogRouteProviderID,
 				CatalogRouteModelID:    directRoute.CatalogRouteModelID,
@@ -132,6 +145,44 @@ func projectedInventoryModels(projection *modelrouting.Config, registered []regi
 		models = append(models, model)
 	}
 	return models
+}
+
+func projectedInventoryAliases(projection *modelrouting.Config) []modelrouting.InventoryAlias {
+	aliases := make([]modelrouting.InventoryAlias, 0, len(projection.Aliases))
+	for _, sourceAlias := range projection.Aliases {
+		alias := modelrouting.InventoryAlias{
+			Name: sourceAlias.Name, TierID: sourceAlias.TierID, Selectable: sourceAlias.Selectable,
+			Reason: sourceAlias.Reason, Members: make([]modelrouting.InventoryMember, 0, len(sourceAlias.Members)),
+		}
+		for _, sourceMember := range sourceAlias.Members {
+			member := modelrouting.InventoryMember{
+				ModelKey: modelKeyJSON(sourceMember.ModelKey), MemberRank: sourceMember.MemberRank,
+				ModelScore: sourceMember.ModelScore, SelectionReason: sourceMember.SelectionReason,
+				Candidates: make([]modelrouting.InventoryCandidate, 0, len(sourceMember.Candidates)),
+			}
+			for _, source := range sourceMember.Candidates {
+				refs := make([]modelrouting.InventoryCredentialRef, len(source.CredentialRefs))
+				for index, ref := range source.CredentialRefs {
+					refs[index] = modelrouting.InventoryCredentialRef{ID: ref.ID, Kind: ref.Kind}
+				}
+				member.Candidates = append(member.Candidates, modelrouting.InventoryCandidate{
+					RouteKey: modelrouting.RouteKeyJSON{
+						ModelKey: modelKeyJSON(source.RouteKey.ModelKey), RouteChannel: source.RouteKey.RouteChannel,
+					},
+					CatalogRouteProviderID: source.CatalogRouteProviderID,
+					CatalogRouteModelID:    source.CatalogRouteModelID, RuntimeModelID: source.RuntimeModelID,
+					RouteSelector: source.RouteSelector, VariantID: cloneOptionalString(source.VariantID), RouteRank: source.RouteRank,
+					QuotaDomains: append([]string(nil), source.QuotaDomains...), CredentialRefs: refs,
+					Protocols: append([]string(nil), source.Protocols...), Health: inventoryHealth(source.Health),
+					Restrictions: inventoryRestrictions(source.Restrictions), Pricing: inventoryPricing(source.Pricing),
+					SelectionReason: source.SelectionReason,
+				})
+			}
+			alias.Members = append(alias.Members, member)
+		}
+		aliases = append(aliases, alias)
+	}
+	return aliases
 }
 
 type bootstrapModel struct {
@@ -199,12 +250,13 @@ func bootstrapInventoryModels(registered []registry.RegisteredRouteSnapshot, aut
 		route := built.routes[routeID]
 		if route == nil {
 			routeKey := modelrouting.RouteKey{
-				CatalogProviderID: catalogProviderID, CanonicalModelID: canonicalModelID, RouteChannel: routeChannel,
+				ModelKey:     modelrouting.ModelKey{CatalogProviderID: catalogProviderID, CanonicalModelID: canonicalModelID},
+				RouteChannel: routeChannel,
 			}
 			protocols := append([]string(nil), info.Protocols...)
 			route = &modelrouting.InventoryRoute{
 				RouteKey: modelrouting.RouteKeyJSON{
-					CatalogProviderID: catalogProviderID, CanonicalModelID: canonicalModelID, RouteChannel: routeChannel,
+					ModelKey: modelKey, RouteChannel: routeChannel,
 				},
 				CatalogRouteProviderID: info.CatalogRouteProviderID,
 				CatalogRouteModelID:    info.CatalogRouteModelID,
@@ -357,9 +409,8 @@ func appendBootstrapVariant(model *modelrouting.InventoryModel, info *registry.M
 	display := strings.TrimSpace(info.DisplayName)
 	model.Variants = append(model.Variants, modelrouting.InventoryVariant{
 		VariantKey: modelrouting.VariantKeyJSON{
-			CatalogProviderID: model.ModelKey.CatalogProviderID,
-			CanonicalModelID:  model.ModelKey.CanonicalModelID,
-			VariantID:         variantID,
+			ModelKey:  model.ModelKey,
+			VariantID: variantID,
 		},
 		DisplayName: optionalTrimmed(display), Protocols: protocols,
 	})
@@ -379,6 +430,28 @@ func inventoryHealth(value modelrouting.Health) modelrouting.InventoryHealth {
 	return modelrouting.InventoryHealth{
 		Status: value.Status, Selectable: value.Selectable, ObservedAt: value.ObservedAt, LatencyMS: cloneInt64(value.LatencyMS),
 	}
+}
+
+func inventoryPricing(value *modelrouting.Pricing) *modelrouting.InventoryPricing {
+	if value == nil {
+		return nil
+	}
+	result := &modelrouting.InventoryPricing{
+		Currency: value.Currency,
+		Unit:     value.Unit,
+		SourceID: value.SourceID,
+		Entries:  make([]modelrouting.InventoryPricingEntry, len(value.Entries)),
+	}
+	for index, entry := range value.Entries {
+		result.Entries[index] = modelrouting.InventoryPricingEntry{
+			Name:       entry.Name,
+			Amount:     entry.Amount,
+			TierType:   cloneOptionalString(entry.TierType),
+			TierSize:   cloneInt64(entry.TierSize),
+			ContextKey: cloneOptionalString(entry.ContextKey),
+		}
+	}
+	return result
 }
 
 func modelKeyJSON(value modelrouting.ModelKey) modelrouting.ModelKeyJSON {

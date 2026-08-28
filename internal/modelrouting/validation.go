@@ -14,8 +14,9 @@ import (
 )
 
 var (
-	digestPattern  = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
-	decimalPattern = regexp.MustCompile(`^(0|[1-9][0-9]*)(\.[0-9]+)?$`)
+	digestPattern        = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+	decimalPattern       = regexp.MustCompile(`^(0|[1-9][0-9]*)(\.[0-9]+)?$`)
+	signedDecimalPattern = regexp.MustCompile(`^-?(0|[1-9][0-9]*)(\.[0-9]+)?$`)
 )
 
 // UnmarshalYAML rejects unknown projection fields recursively. The rest of the
@@ -99,9 +100,9 @@ func rejectUnknownFields(node *yaml.Node, target reflect.Type, path string) erro
 // Validate checks projection integrity without applying business policy.
 func (cfg *Config) Validate() error {
 	if cfg == nil {
-		return nil
+		return fmt.Errorf("model-routing: projection is required")
 	}
-	if cfg.SchemaVersion != 1 {
+	if cfg.SchemaVersion != 2 {
 		return fmt.Errorf("model-routing.schema-version: unsupported value %d", cfg.SchemaVersion)
 	}
 	if cfg.Generation == 0 {
@@ -112,6 +113,13 @@ func (cfg *Config) Validate() error {
 	}
 	if !digestPattern.MatchString(cfg.ProjectionDigest) {
 		return fmt.Errorf("model-routing.projection-digest: must be sha256:<64 lowercase hex>")
+	}
+	computedDigest, errDigest := ProjectionDigest(cfg)
+	if errDigest != nil {
+		return fmt.Errorf("model-routing.projection-digest: recompute canonical projection: %w", errDigest)
+	}
+	if cfg.ProjectionDigest != computedDigest {
+		return fmt.Errorf("model-routing.projection-digest: declared %s differs from computed %s", cfg.ProjectionDigest, computedDigest)
 	}
 	if err := cfg.validateFailurePolicy(); err != nil {
 		return err
@@ -187,25 +195,55 @@ func (cfg *Config) Validate() error {
 			return fmt.Errorf("%s.tier-id: duplicate tier", path)
 		}
 		tiers[alias.TierID] = struct{}{}
-		if alias.Selectable != (len(alias.Candidates) > 0) {
-			return fmt.Errorf("%s.selectable: must be true exactly when candidates are present", path)
+		if alias.Selectable != (len(alias.Members) > 0) {
+			return fmt.Errorf("%s.selectable: must be true exactly when members are present", path)
 		}
 		if err := requireCanonical(path+".reason", alias.Reason); err != nil {
 			return err
 		}
-		for candidateIndex, candidate := range alias.Candidates {
-			candidatePath := fmt.Sprintf("%s.candidates[%d]", path, candidateIndex)
-			if candidate.Rank != candidateIndex+1 {
-				return fmt.Errorf("%s.rank: must be contiguous and match candidate order", candidatePath)
+		for memberIndex, member := range alias.Members {
+			memberPath := fmt.Sprintf("%s.members[%d]", path, memberIndex)
+			if member.MemberRank != memberIndex+1 {
+				return fmt.Errorf("%s.member-rank: must be contiguous and match member order", memberPath)
 			}
-			if err := validateCandidate(candidatePath, candidate, models, routes, variants); err != nil {
+			if err := validateModelKey(memberPath+".model-key", member.ModelKey); err != nil {
 				return err
 			}
-			modelID := modelKeyID(candidate.ModelKey)
+			modelID := modelKeyID(member.ModelKey)
+			model, exists := models[modelID]
+			if !exists || !model.Active {
+				return fmt.Errorf("%s.model-key: member does not reference an active direct model", memberPath)
+			}
 			if assignedTier, exists := modelTier[modelID]; exists && assignedTier != alias.TierID {
-				return fmt.Errorf("%s.model-key: ModelKey is assigned to tiers %q and %q", candidatePath, assignedTier, alias.TierID)
+				return fmt.Errorf("%s.model-key: ModelKey is assigned to tiers %q and %q", memberPath, assignedTier, alias.TierID)
+			} else if exists {
+				return fmt.Errorf("%s.model-key: duplicate member in tier %q", memberPath, alias.TierID)
 			}
 			modelTier[modelID] = alias.TierID
+			if !signedDecimalPattern.MatchString(member.ModelScore) || member.ModelScore == "-0" {
+				return fmt.Errorf("%s.model-score: must be a canonical signed decimal string", memberPath)
+			}
+			if err := requireCanonical(memberPath+".selection-reason", member.SelectionReason); err != nil {
+				return err
+			}
+			if len(member.Candidates) == 0 {
+				return fmt.Errorf("%s.candidates: allocated member must have executable candidates", memberPath)
+			}
+			candidateKeys := make(map[string]struct{}, len(member.Candidates))
+			for candidateIndex, candidate := range member.Candidates {
+				candidatePath := fmt.Sprintf("%s.candidates[%d]", memberPath, candidateIndex)
+				if candidate.RouteRank != candidateIndex+1 {
+					return fmt.Errorf("%s.route-rank: must be contiguous and match candidate order", candidatePath)
+				}
+				if err := validateCandidate(candidatePath, member.ModelKey, candidate, model, routes, variants); err != nil {
+					return err
+				}
+				candidateID := routeKeyID(candidate.RouteKey) + "\x00" + optionalString(candidate.VariantID)
+				if _, duplicate := candidateKeys[candidateID]; duplicate {
+					return fmt.Errorf("%s: duplicate CandidateKey", candidatePath)
+				}
+				candidateKeys[candidateID] = struct{}{}
+			}
 		}
 	}
 	return nil
@@ -294,16 +332,12 @@ func validateFailoverRules(rules []FailoverRule) error {
 	return nil
 }
 
-func validateCandidate(path string, candidate Candidate, models map[string]DirectModel, routes map[string]DirectRoute, variants map[string]struct{}) error {
-	if err := validateModelKey(path+".model-key", candidate.ModelKey); err != nil {
+func validateCandidate(path string, parent ModelKey, candidate Candidate, model DirectModel, routes map[string]DirectRoute, variants map[string]struct{}) error {
+	if err := validateRouteKey(path+".route-key", candidate.RouteKey); err != nil {
 		return err
 	}
-	model, exists := models[modelKeyID(candidate.ModelKey)]
-	if !exists || !model.Active {
-		return fmt.Errorf("%s.model-key: candidate does not reference an active direct model", path)
-	}
-	if err := requireCanonical(path+".route-channel", candidate.RouteChannel); err != nil {
-		return err
+	if candidate.RouteKey.ModelKey != parent {
+		return fmt.Errorf("%s.route-key: candidate must be nested under its member ModelKey", path)
 	}
 	if err := requireCanonical(path+".runtime-model-id", candidate.RuntimeModelID); err != nil {
 		return err
@@ -317,13 +351,9 @@ func validateCandidate(path string, candidate Candidate, models map[string]Direc
 	if !digestPattern.MatchString(candidate.RouteSelector) {
 		return fmt.Errorf("%s.route-selector: must be an opaque sha256 selector", path)
 	}
-	route, exists := routes[routeKeyID(RouteKey{
-		CatalogProviderID: candidate.ModelKey.CatalogProviderID,
-		CanonicalModelID:  candidate.ModelKey.CanonicalModelID,
-		RouteChannel:      candidate.RouteChannel,
-	})]
+	route, exists := routes[routeKeyID(candidate.RouteKey)]
 	if !exists || !route.Selectable || !route.Health.Selectable {
-		return fmt.Errorf("%s.route-channel: candidate does not reference a selectable direct route", path)
+		return fmt.Errorf("%s.route-key: candidate does not reference a selectable direct route", path)
 	}
 	if candidate.RuntimeModelID != route.RuntimeModelID {
 		return fmt.Errorf("%s.runtime-model-id: differs from the referenced direct route", path)
@@ -339,9 +369,8 @@ func validateCandidate(path string, candidate Candidate, models map[string]Direc
 			return err
 		}
 		key := variantKeyID(VariantKey{
-			CatalogProviderID: candidate.ModelKey.CatalogProviderID,
-			CanonicalModelID:  candidate.ModelKey.CanonicalModelID,
-			VariantID:         *candidate.VariantID,
+			ModelKey:  candidate.RouteKey.ModelKey,
+			VariantID: *candidate.VariantID,
 		})
 		if _, exists := variants[key]; !exists {
 			return fmt.Errorf("%s.variant-id: candidate does not reference a nested model variant", path)
@@ -360,14 +389,14 @@ func validateCandidate(path string, candidate Candidate, models map[string]Direc
 	if err := validateCredentialRefs(path+".credential-refs", candidate.CredentialRefs); err != nil {
 		return err
 	}
-	if !credentialRefsSubset(candidate.CredentialRefs, route.CredentialRefs) {
-		return fmt.Errorf("%s.credential-refs: are not a subset of the referenced direct route", path)
+	if !reflect.DeepEqual(candidate.CredentialRefs, route.CredentialRefs) {
+		return fmt.Errorf("%s.credential-refs: differ from the referenced direct route", path)
 	}
 	if err := validateSortedStrings(path+".protocols", candidate.Protocols, false); err != nil {
 		return err
 	}
-	if !stringsSubset(candidate.QuotaDomains, route.QuotaDomains) || !stringsSubset(candidate.Protocols, route.Protocols) {
-		return fmt.Errorf("%s: candidate route facts are not a subset of its direct route", path)
+	if !reflect.DeepEqual(candidate.QuotaDomains, route.QuotaDomains) || !reflect.DeepEqual(candidate.Protocols, route.Protocols) {
+		return fmt.Errorf("%s: candidate quota/protocol facts differ from its direct route", path)
 	}
 	if err := validateHealth(path+".health", candidate.Health); err != nil {
 		return err
@@ -377,6 +406,9 @@ func validateCandidate(path string, candidate Candidate, models map[string]Direc
 	}
 	if err := validateRestrictions(path+".restrictions", candidate.Restrictions); err != nil {
 		return err
+	}
+	if !reflect.DeepEqual(candidate.Health, route.Health) || !reflect.DeepEqual(candidate.Restrictions, route.Restrictions) {
+		return fmt.Errorf("%s: candidate health/restriction facts differ from its direct route", path)
 	}
 	for _, restriction := range candidate.Restrictions {
 		if restriction.Active {
@@ -396,7 +428,7 @@ func validateRoute(path string, parent ModelKey, route DirectRoute) error {
 	if err := validateRouteKey(path+".route-key", route.RouteKey); err != nil {
 		return err
 	}
-	if route.RouteKey.CatalogProviderID != parent.CatalogProviderID || route.RouteKey.CanonicalModelID != parent.CanonicalModelID {
+	if route.RouteKey.ModelKey != parent {
 		return fmt.Errorf("%s.route-key: route must be nested under its ModelKey", path)
 	}
 	if err := requireCanonical(path+".catalog-route-provider-id", route.CatalogRouteProviderID); err != nil {
@@ -446,7 +478,7 @@ func validateVariant(path string, parent ModelKey, variant Variant) error {
 	if err := validateVariantKey(path+".variant-key", variant.VariantKey); err != nil {
 		return err
 	}
-	if variant.VariantKey.CatalogProviderID != parent.CatalogProviderID || variant.VariantKey.CanonicalModelID != parent.CanonicalModelID {
+	if variant.VariantKey.ModelKey != parent {
 		return fmt.Errorf("%s.variant-key: variant must be nested under its ModelKey", path)
 	}
 	if variant.DisplayName != nil {
@@ -582,19 +614,6 @@ func validateCredentialRefs(path string, refs []CredentialRef) error {
 	return nil
 }
 
-func credentialRefsSubset(values, superset []CredentialRef) bool {
-	allowed := make(map[string]struct{}, len(superset))
-	for _, ref := range superset {
-		allowed[ref.ID+"\x00"+ref.Kind] = struct{}{}
-	}
-	for _, ref := range values {
-		if _, exists := allowed[ref.ID+"\x00"+ref.Kind]; !exists {
-			return false
-		}
-	}
-	return true
-}
-
 func stringsSubset(values, superset []string) bool {
 	allowed := make(map[string]struct{}, len(superset))
 	for _, value := range superset {
@@ -616,14 +635,14 @@ func validateModelKey(path string, key ModelKey) error {
 }
 
 func validateRouteKey(path string, key RouteKey) error {
-	if err := validateModelKey(path, ModelKey{CatalogProviderID: key.CatalogProviderID, CanonicalModelID: key.CanonicalModelID}); err != nil {
+	if err := validateModelKey(path+".model-key", key.ModelKey); err != nil {
 		return err
 	}
 	return requireCanonical(path+".route-channel", key.RouteChannel)
 }
 
 func validateVariantKey(path string, key VariantKey) error {
-	if err := validateModelKey(path, ModelKey{CatalogProviderID: key.CatalogProviderID, CanonicalModelID: key.CanonicalModelID}); err != nil {
+	if err := validateModelKey(path+".model-key", key.ModelKey); err != nil {
 		return err
 	}
 	return requireCanonical(path+".variant-id", key.VariantID)
@@ -656,13 +675,13 @@ func modelKeyID(key ModelKey) string {
 }
 
 func routeKeyID(key RouteKey) string {
-	return modelKeyID(ModelKey{CatalogProviderID: key.CatalogProviderID, CanonicalModelID: key.CanonicalModelID}) + "\x00" + key.RouteChannel
+	return modelKeyID(key.ModelKey) + "\x00" + key.RouteChannel
 }
 
 // SelectorForRoute returns the stable, secret-free selector bound to one route
 // and its exact executor model ID. Length prefixes prevent ambiguous joins.
 func SelectorForRoute(key RouteKey, runtimeModelID string) string {
-	parts := []string{key.CatalogProviderID, key.CanonicalModelID, key.RouteChannel, runtimeModelID}
+	parts := []string{key.ModelKey.CatalogProviderID, key.ModelKey.CanonicalModelID, key.RouteChannel, runtimeModelID}
 	hasher := sha256.New()
 	for _, part := range parts {
 		_, _ = fmt.Fprintf(hasher, "%d:", len(part))
@@ -672,7 +691,7 @@ func SelectorForRoute(key RouteKey, runtimeModelID string) string {
 }
 
 func variantKeyID(key VariantKey) string {
-	return modelKeyID(ModelKey{CatalogProviderID: key.CatalogProviderID, CanonicalModelID: key.CanonicalModelID}) + "\x00" + key.VariantID
+	return modelKeyID(key.ModelKey) + "\x00" + key.VariantID
 }
 
 func optionalString(value *string) string {

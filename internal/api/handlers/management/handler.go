@@ -16,6 +16,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/buildinfo"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/modelrouting"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginstore"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/usage"
@@ -58,6 +59,8 @@ type Handler struct {
 	postAuthPersistHook     coreauth.PostAuthHook
 	pluginHost              *pluginhost.Host
 	configReloadHook        func(context.Context, *config.Config) error
+	configPublishHook       func(context.Context, []byte, *modelrouting.ActiveIdentityV2, bool) (*config.Config, *modelrouting.ActivationReceiptV2, error)
+	modelRoutingStateHook   func() modelrouting.ActiveStateV2
 	pluginStoreRegistryURL  string
 	pluginStoreHTTPClient   pluginstore.HTTPDoer
 	pluginReleaseCacheMu    sync.Mutex
@@ -163,6 +166,26 @@ func (h *Handler) SetConfigReloadHook(hook func(context.Context, *config.Config)
 	}
 	h.mu.Lock()
 	h.configReloadHook = hook
+	h.mu.Unlock()
+}
+
+// SetConfigPublishHook installs the Service-owned atomic config publisher.
+func (h *Handler) SetConfigPublishHook(hook func(context.Context, []byte, *modelrouting.ActiveIdentityV2, bool) (*config.Config, *modelrouting.ActivationReceiptV2, error)) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	h.configPublishHook = hook
+	h.mu.Unlock()
+}
+
+// SetModelRoutingStateHook installs the Service-owned active identity reader.
+func (h *Handler) SetModelRoutingStateHook(hook func() modelrouting.ActiveStateV2) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	h.modelRoutingStateHook = hook
 	h.mu.Unlock()
 }
 

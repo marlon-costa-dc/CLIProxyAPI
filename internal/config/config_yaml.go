@@ -13,11 +13,17 @@ import (
 
 // WriteConfigAtomic writes normalized YAML bytes through a same-directory staging
 // file and publishes them only after the file has been flushed and closed.
-func WriteConfigAtomic(path string, data []byte) (returnErr error) {
+func WriteConfigAtomic(path string, data []byte) error {
+	return WriteConfigAtomicExact(path, NormalizeCommentIndentation(data))
+}
+
+// WriteConfigAtomicExact atomically persists the supplied bytes without
+// normalization. CAS publishers use it so config_digest is predictable before
+// the request and identifies the exact durable file.
+func WriteConfigAtomicExact(path string, data []byte) (returnErr error) {
 	if strings.TrimSpace(path) == "" {
 		return fmt.Errorf("config path is empty")
 	}
-	data = NormalizeCommentIndentation(data)
 	dir := filepath.Dir(path)
 	mode := os.FileMode(0o644)
 	if info, errStat := os.Stat(path); errStat == nil {

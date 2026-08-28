@@ -232,27 +232,26 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 					isCompatAuth = true
 				}
 			}
-			registerCompat := func(compat *config.OpenAICompatibility) bool {
+			registerCompatModels := func(ms []*ModelInfo) error {
+				ms = s.appendPluginModels(providerKey, ms)
+				if len(ms) == 0 {
+					GlobalModelRegistry().UnregisterClient(a.ID)
+					return nil
+				}
+				return s.registerResolvedModelsForAuth(a, providerKey, applyModelPrefixes(ms, a.Prefix, s.cfg.ForceModelPrefix))
+			}
+			registerCompat := func(compat *config.OpenAICompatibility) (bool, error) {
 				if compat == nil || compat.Disabled {
-					return false
+					return false, nil
 				}
 				isCompatAuth = true
-				ms := buildOpenAICompatibilityConfigModels(compat)
 				if providerKey == "" {
 					providerKey = "openai-compatibility"
 				}
-				if len(ms) > 0 {
-					ms = s.appendPluginModels(providerKey, ms)
-					s.registerResolvedModelsForAuth(a, providerKey, applyModelPrefixes(ms, a.Prefix, s.cfg.ForceModelPrefix))
-				} else {
-					ms = s.appendPluginModels(providerKey, nil)
-					if len(ms) > 0 {
-						s.registerResolvedModelsForAuth(a, providerKey, applyModelPrefixes(ms, a.Prefix, s.cfg.ForceModelPrefix))
-					} else {
-						GlobalModelRegistry().UnregisterClient(a.ID)
-					}
+				if errRegister := registerCompatModels(buildOpenAICompatibilityConfigModels(compat)); errRegister != nil {
+					return true, errRegister
 				}
-				return true
+				return true, nil
 			}
 			cached, okCached, errCached := compatCache.lookup(a, compatName)
 			if errCached != nil {
@@ -266,30 +265,24 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 				if providerKey == "" {
 					providerKey = "openai-compatibility"
 				}
-				ms := cached.models
-				if len(ms) > 0 {
-					ms = s.appendPluginModels(providerKey, ms)
-					s.registerResolvedModelsForAuth(a, providerKey, applyModelPrefixes(ms, a.Prefix, s.cfg.ForceModelPrefix))
-				} else {
-					ms = s.appendPluginModels(providerKey, nil)
-					if len(ms) > 0 {
-						s.registerResolvedModelsForAuth(a, providerKey, applyModelPrefixes(ms, a.Prefix, s.cfg.ForceModelPrefix))
-					} else {
-						GlobalModelRegistry().UnregisterClient(a.ID)
-					}
-				}
-				return nil
+				return registerCompatModels(cached.models)
 			}
 			for i := range s.cfg.OpenAICompatibility {
 				compat := &s.cfg.OpenAICompatibility[i]
-				if strings.EqualFold(compat.Name, compatName) && registerCompat(compat) {
-					return nil
+				if strings.EqualFold(compat.Name, compatName) {
+					registered, errRegister := registerCompat(compat)
+					if errRegister != nil {
+						return errRegister
+					}
+					if registered {
+						return nil
+					}
 				}
 			}
 			if isCompatAuth {
 				models = s.appendPluginModels(providerKey, nil)
 				if len(models) > 0 {
-					s.registerResolvedModelsForAuth(a, providerKey, applyModelPrefixes(models, a.Prefix, s.cfg != nil && s.cfg.ForceModelPrefix))
+					return s.registerResolvedModelsForAuth(a, providerKey, applyModelPrefixes(models, a.Prefix, s.cfg != nil && s.cfg.ForceModelPrefix))
 				} else {
 					// No matching provider found or models removed entirely; drop any prior registration.
 					GlobalModelRegistry().UnregisterClient(a.ID)
@@ -311,8 +304,7 @@ func (s *Service) registerModelsForAuthWithCache(ctx context.Context, a *coreaut
 	}
 	models = s.appendPluginModels(key, models)
 	if len(models) > 0 {
-		s.registerResolvedModelsForAuth(a, key, applyModelPrefixes(models, a.Prefix, s.cfg != nil && s.cfg.ForceModelPrefix))
-		return nil
+		return s.registerResolvedModelsForAuth(a, key, applyModelPrefixes(models, a.Prefix, s.cfg != nil && s.cfg.ForceModelPrefix))
 	}
 
 	GlobalModelRegistry().UnregisterClient(a.ID)

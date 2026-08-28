@@ -10,7 +10,7 @@ const (
 	ProtocolAnthropicMessages = "anthropic_messages"
 )
 
-// Config is the native CLIProxy model-routing v1 projection.
+// Config is the native CLIProxy model-routing v2 projection.
 type Config struct {
 	SchemaVersion    int           `yaml:"schema-version" json:"schema-version"`
 	Generation       uint64        `yaml:"generation" json:"generation"`
@@ -30,37 +30,44 @@ type ModelKey struct {
 
 // RouteKey identifies one concrete routing channel for a canonical model.
 type RouteKey struct {
-	CatalogProviderID string `yaml:"catalog-provider-id" json:"catalog-provider-id"`
-	CanonicalModelID  string `yaml:"canonical-model-id" json:"canonical-model-id"`
-	RouteChannel      string `yaml:"route-channel" json:"route-channel"`
+	ModelKey     ModelKey `yaml:"model-key" json:"model-key"`
+	RouteChannel string   `yaml:"route-channel" json:"route-channel"`
 }
 
 // VariantKey identifies a model-owned variant. Variants are never direct models.
 type VariantKey struct {
-	CatalogProviderID string `yaml:"catalog-provider-id" json:"catalog-provider-id"`
-	CanonicalModelID  string `yaml:"canonical-model-id" json:"canonical-model-id"`
-	VariantID         string `yaml:"variant-id" json:"variant-id"`
+	ModelKey  ModelKey `yaml:"model-key" json:"model-key"`
+	VariantID string   `yaml:"variant-id" json:"variant-id"`
 }
 
-// Alias is one AI Hub tier and its already-ranked candidate chain.
+// Alias is one AI Hub tier and its globally allocated model members.
 type Alias struct {
-	Name       string      `yaml:"name" json:"name"`
-	TierID     string      `yaml:"tier-id" json:"tier-id"`
-	Selectable bool        `yaml:"selectable" json:"selectable"`
-	Reason     string      `yaml:"reason" json:"reason"`
-	Candidates []Candidate `yaml:"candidates" json:"candidates"`
+	Name       string   `yaml:"name" json:"name"`
+	TierID     string   `yaml:"tier-id" json:"tier-id"`
+	Selectable bool     `yaml:"selectable" json:"selectable"`
+	Reason     string   `yaml:"reason" json:"reason"`
+	Members    []Member `yaml:"members" json:"members"`
 }
 
-// Candidate references one direct route and an optional nested variant.
+// Member is one exclusively allocated canonical model. Candidates contain all
+// executable routes for that model; member and route ranks are independent.
+type Member struct {
+	ModelKey        ModelKey    `yaml:"model-key" json:"model-key"`
+	MemberRank      int         `yaml:"member-rank" json:"member-rank"`
+	ModelScore      string      `yaml:"model-score" json:"model-score"`
+	SelectionReason string      `yaml:"selection-reason" json:"selection-reason"`
+	Candidates      []Candidate `yaml:"candidates" json:"candidates"`
+}
+
+// Candidate references one direct RouteKey and an optional nested variant.
 type Candidate struct {
-	ModelKey               ModelKey        `yaml:"model-key" json:"model-key"`
-	RouteChannel           string          `yaml:"route-channel" json:"route-channel"`
+	RouteKey               RouteKey        `yaml:"route-key" json:"route-key"`
 	CatalogRouteProviderID string          `yaml:"catalog-route-provider-id" json:"catalog-route-provider-id"`
 	CatalogRouteModelID    string          `yaml:"catalog-route-model-id" json:"catalog-route-model-id"`
 	RuntimeModelID         string          `yaml:"runtime-model-id" json:"runtime-model-id"`
 	RouteSelector          string          `yaml:"route-selector" json:"route-selector"`
 	VariantID              *string         `yaml:"variant-id" json:"variant-id"`
-	Rank                   int             `yaml:"rank" json:"rank"`
+	RouteRank              int             `yaml:"route-rank" json:"route-rank"`
 	QuotaDomains           []string        `yaml:"quota-domains" json:"quota-domains"`
 	CredentialRefs         []CredentialRef `yaml:"credential-refs" json:"credential-refs"`
 	Protocols              []string        `yaml:"protocols" json:"protocols"`
@@ -144,6 +151,39 @@ type PricingEntry struct {
 	TierType   *string `yaml:"tier-type" json:"tier-type"`
 	TierSize   *int64  `yaml:"tier-size" json:"tier-size"`
 	ContextKey *string `yaml:"context-key" json:"context-key"`
+}
+
+// ClonePricing returns an independent copy suitable for crossing runtime and
+// registry ownership boundaries.
+func ClonePricing(value *Pricing) *Pricing {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	clone.Entries = make([]PricingEntry, len(value.Entries))
+	for index, entry := range value.Entries {
+		clone.Entries[index] = entry
+		clone.Entries[index].TierType = cloneString(entry.TierType)
+		clone.Entries[index].TierSize = cloneInt64(entry.TierSize)
+		clone.Entries[index].ContextKey = cloneString(entry.ContextKey)
+	}
+	return &clone
+}
+
+func cloneString(value *string) *string {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	return &clone
+}
+
+func cloneInt64(value *int64) *int64 {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	return &clone
 }
 
 // FailurePolicy permits only config-classified movement between the already

@@ -11,10 +11,11 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/safemode"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 )
 
-var corsExposedResponseHeaders = []string{
+var corsExposedResponseHeaders = append([]string{
 	logging.CPATraceIDHeader,
 	"X-CPA-VERSION",
 	"X-CPA-COMMIT",
@@ -28,7 +29,7 @@ var corsExposedResponseHeaders = []string{
 	"Retry-After",
 	"X-Request-Id",
 	"OpenAI-Request-Id",
-}
+}, coreauth.ModelRoutingResponseHeaderNames()...)
 
 var corsExposedResponseHeadersJoined = strings.Join(corsExposedResponseHeaders, ", ")
 

@@ -247,6 +247,9 @@ type StreamResult struct {
 	DownstreamHeaders http.Header
 	// Chunks is the channel of streaming payload units.
 	Chunks <-chan StreamChunk
+	// Complete is a trusted local lifecycle callback. Handlers call it exactly
+	// once after terminal SSE validation, passing nil only for a valid terminal.
+	Complete func(error)
 }
 
 // StatusError represents an error that carries an HTTP-like status code.

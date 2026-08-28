@@ -131,13 +131,63 @@ func (h *Handler) PutConfigYAML(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_yaml", "message": "cannot read request body"})
 		return
 	}
+	h.mu.Lock()
+	publish := h.configPublishHook
+	h.mu.Unlock()
+	if publish != nil {
+		ifMatch := strings.TrimSpace(c.GetHeader("If-Match"))
+		ifNoneMatch := strings.TrimSpace(c.GetHeader("If-None-Match"))
+		var expected *modelrouting.ActiveIdentityV2
+		bootstrap := false
+		switch {
+		case ifNoneMatch == "*" && ifMatch == "":
+			bootstrap = true
+		case ifNoneMatch == "" && ifMatch != "":
+			expected, err = modelrouting.ParseActiveETag(ifMatch)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_precondition", "message": err.Error()})
+				return
+			}
+		default:
+			c.JSON(http.StatusPreconditionRequired, gin.H{"error": "precondition_required", "message": "use exactly one of If-None-Match: * or If-Match: <active identity>"})
+			return
+		}
+		published, receipt, errPublish := publish(c.Request.Context(), body, expected, bootstrap)
+		if errPublish != nil {
+			status := http.StatusInternalServerError
+			code := "publication_failed"
+			switch {
+			case errors.Is(errPublish, modelrouting.ErrCASConflict):
+				status, code = http.StatusPreconditionFailed, "cas_conflict"
+			case errors.Is(errPublish, modelrouting.ErrInvalidPublication):
+				status, code = http.StatusUnprocessableEntity, "invalid_publication"
+			}
+			c.JSON(status, gin.H{"error": code, "message": errPublish.Error()})
+			return
+		}
+		if published == nil || receipt == nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "publication_failed", "message": "publisher returned an incomplete result"})
+			return
+		}
+		etag, errETag := modelrouting.ActiveETag(receipt.Active)
+		if errETag != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "receipt_failed", "message": errETag.Error()})
+			return
+		}
+		h.mu.Lock()
+		h.cfg = published
+		h.mu.Unlock()
+		c.Header("ETag", etag)
+		c.JSON(http.StatusOK, receipt)
+		return
+	}
 	parsed, err := config.ParseConfigBytes(body)
 	if err != nil {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "invalid_config", "message": err.Error()})
 		return
 	}
-	if err = modelrouting.ValidateTransition(modelrouting.Active(), parsed.ModelRouting); err != nil {
-		c.JSON(http.StatusConflict, gin.H{"error": "stale_projection", "message": err.Error()})
+	if parsed.ModelRouting != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "publisher_unavailable", "message": "model-routing publication requires the Service-owned CAS publisher"})
 		return
 	}
 	persistedBody := body
@@ -191,16 +241,6 @@ func (h *Handler) PutConfigYAML(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "reload_failed", "message": err.Error()})
 		return
 	}
-	if parsed.ModelRouting != nil {
-		modelrouting.Activate(parsed.ModelRouting, time.Now())
-		c.JSON(http.StatusOK, gin.H{
-			"ok": true, "generation": parsed.ModelRouting.Generation,
-			"snapshot_digest":   parsed.ModelRouting.SnapshotDigest,
-			"projection_digest": parsed.ModelRouting.ProjectionDigest,
-		})
-		return
-	}
-	modelrouting.Activate(nil, time.Time{})
 	c.JSON(http.StatusOK, gin.H{"ok": true, "changed": []string{"config"}})
 }
 

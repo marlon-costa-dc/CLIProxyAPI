@@ -267,9 +267,6 @@ func (b *Builder) Build() (*Service, error) {
 		return nil, fmt.Errorf("apply auth manager config: %w", errConfig)
 	}
 	coreManager.SetOAuthModelAlias(b.cfg.OAuthModelAlias)
-	if errRouting := coreManager.SetModelRouting(b.cfg.ModelRouting); errRouting != nil {
-		return nil, fmt.Errorf("apply model routing: %w", errRouting)
-	}
 	if pluginHost != nil {
 		coreManager.SetPluginScheduler(pluginHost)
 	}
@@ -298,6 +295,8 @@ func (b *Builder) Build() (*Service, error) {
 		api.WithConfigReloadHook(func(ctx context.Context, cfg *config.Config) error {
 			return service.applyConfigUpdateWithAuthSynthesis(ctx, cfg, true)
 		}),
+		api.WithConfigPublishHook(service.publishModelRoutingConfig),
+		api.WithModelRoutingStateHook(service.modelRoutingState),
 	)
 	return service, nil
 }

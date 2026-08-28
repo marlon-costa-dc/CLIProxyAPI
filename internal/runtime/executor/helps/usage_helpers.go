@@ -24,29 +24,30 @@ import (
 )
 
 type UsageReporter struct {
-	provider        string
-	executorType    string
-	model           string
-	alias           string
-	authID          string
-	authIndex       string
-	authType        string
-	apiKey          string
-	source          string
-	reasoning       string
-	serviceTier     string
-	generate        bool
-	requestedAt     time.Time
-	quotaHeadersMu  sync.RWMutex
-	quotaHeaders    http.Header
-	ttftMu          sync.RWMutex
-	ttft            time.Duration
-	ttftStart       time.Time
-	ttftSet         bool
-	once            sync.Once
-	authMu          sync.RWMutex
-	accessTokenHash string
-	pricing         *modelrouting.Pricing
+	provider         string
+	executorType     string
+	model            string
+	alias            string
+	authID           string
+	authIndex        string
+	authType         string
+	apiKey           string
+	source           string
+	reasoning        string
+	serviceTier      string
+	generate         bool
+	requestedAt      time.Time
+	quotaHeadersMu   sync.RWMutex
+	quotaHeaders     http.Header
+	ttftMu           sync.RWMutex
+	ttft             time.Duration
+	ttftStart        time.Time
+	ttftSet          bool
+	once             sync.Once
+	authMu           sync.RWMutex
+	accessTokenHash  string
+	pricing          *modelrouting.Pricing
+	projectionDigest string
 }
 
 type usageExecutor interface {
@@ -91,6 +92,7 @@ func NewUsageReporter(ctx context.Context, provider, model string, auth *cliprox
 	}
 	if pricing, ok := cliproxyauth.ResolvedModelPricingFromContext(ctx); ok {
 		reporter.pricing = pricing
+		reporter.projectionDigest = cliproxyauth.ResolvedProjectionDigestFromContext(ctx)
 	}
 	if auth != nil {
 		reporter.authID = auth.ID
@@ -265,17 +267,13 @@ func (r *UsageReporter) applyCost(detail usage.Detail) usage.Detail {
 		detail.Cost = usage.CostBreakdown{Quality: usage.CostQualityUnavailable}
 		return detail
 	}
-	digest := ""
-	if active := modelrouting.Active(); active != nil {
-		digest = active.ProjectionDigest
-	}
 	detail.Cost = usage.CalculateCost(
 		detail.TokenBreakdown,
 		input,
 		output,
 		cache,
 		r.pricing.SourceID,
-		digest,
+		r.projectionDigest,
 	)
 	return detail
 }

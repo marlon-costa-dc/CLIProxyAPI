@@ -356,7 +356,13 @@ func (m *Manager) executeStreamWithModelRouting(ctx context.Context, providers [
 			firstAttempt = attempt
 		}
 		if errExecute == nil {
-			trace.recordSuccess(attempt)
+			if result == nil || result.Chunks == nil {
+				cancelStream()
+				contractErr := routingContractError("empty_stream", "upstream returned no stream source", http.StatusBadGateway)
+				trace.recordFailure(attempt, contractErr, modelRoutingRuleMatch{})
+				return nil, m.newModelRoutingExecutionError(contractErr, attempt, trace)
+			}
+			trace.recordStarted(attempt)
 			result, errHeaders := m.addModelRoutingStreamExecutionHeaders(result, attempt, trace)
 			if errHeaders != nil {
 				cancelStream()
@@ -388,17 +394,24 @@ func (m *Manager) ownModelRoutingStream(
 	attempt modelRoutingCandidateAttempt,
 	trace *modelRoutingTrace,
 ) *cliproxyexecutor.StreamResult {
-	if result == nil || result.Chunks == nil {
-		cancel()
-		return result
-	}
 	out := make(chan cliproxyexecutor.StreamChunk, 1)
+	var terminal sync.Once
+	complete := func(err error) {
+		terminal.Do(func() {
+			if err == nil {
+				trace.recordTerminalSuccess(attempt)
+				return
+			}
+			trace.recordTerminalFailure(attempt, err)
+		})
+	}
 	go func() {
 		defer close(out)
 		defer cancel()
 		for {
 			select {
 			case <-ctx.Done():
+				complete(ctx.Err())
 				chunk := cliproxyexecutor.StreamChunk{Err: m.newModelRoutingExecutionError(ctx.Err(), attempt, trace)}
 				select {
 				case out <- chunk:
@@ -410,6 +423,7 @@ func (m *Manager) ownModelRoutingStream(
 					return
 				}
 				if chunk.Err != nil {
+					complete(chunk.Err)
 					chunk.Err = m.newModelRoutingExecutionError(chunk.Err, attempt, trace)
 				}
 				select {
@@ -427,6 +441,7 @@ func (m *Manager) ownModelRoutingStream(
 		Headers:           result.Headers.Clone(),
 		DownstreamHeaders: result.DownstreamHeaders.Clone(),
 		Chunks:            out,
+		Complete:          complete,
 	}
 }
 
@@ -444,9 +459,8 @@ func (m *Manager) newModelRoutingExecutionError(cause error, attempt modelRoutin
 		cause = errors.Join(cause, errHeaders)
 		headers = make(http.Header)
 	}
-	var carrier interface{ Headers() http.Header }
-	if errors.As(cause, &carrier) && carrier != nil {
-		headers = mergeModelRoutingHeaders(carrier.Headers(), headers)
+	if safe := SafeResponseHeaders(cause); len(safe) > 0 {
+		headers = mergeModelRoutingHeaders(safe, headers)
 	}
 	return &modelRoutingExecutionError{cause: cause, headers: headers}
 }
@@ -465,7 +479,7 @@ func (e *modelRoutingExecutionError) Unwrap() error {
 	return e.cause
 }
 
-func (e *modelRoutingExecutionError) Headers() http.Header {
+func (e *modelRoutingExecutionError) SafeResponseHeaders() http.Header {
 	if e == nil {
 		return nil
 	}
@@ -501,13 +515,13 @@ func (m *Manager) modelRoutingExecutionHeaders(attempt modelRoutingCandidateAtte
 			attempt.selection.selectedAuthID(),
 		)
 	}
-	headers.Set("X-CLIProxy-Failure-Mode", "classified_candidate_failover")
-	headers.Set("X-CLIProxy-Attempts", strconv.Itoa(trace.len()))
+	headers.Set(failureModeHeader, "classified_candidate_failover")
+	headers.Set(attemptsHeader, strconv.Itoa(trace.len()))
 	evidence, errEvidence := trace.marshal()
 	if errEvidence != nil {
 		return nil, fmt.Errorf("encode model routing attempt evidence: %w", errEvidence)
 	}
-	headers.Set("X-CLIProxy-Failover-Evidence", string(evidence))
+	headers.Set(failoverEvidenceHeader, string(evidence))
 	return headers, nil
 }
 
@@ -535,6 +549,50 @@ func (t *modelRoutingTrace) recordSuccess(attempt modelRoutingCandidateAttempt) 
 		Outcome:       "success",
 		AttemptedAt:   time.Now().UTC().Format(time.RFC3339Nano),
 	})
+}
+
+func (t *modelRoutingTrace) recordStarted(attempt modelRoutingCandidateAttempt) {
+	if t == nil {
+		return
+	}
+	t.attempts = append(t.attempts, modelRoutingAttemptEvidence{
+		Rank:          attempt.rank,
+		RouteSelector: attempt.candidate.RouteSelector,
+		Outcome:       "streaming",
+		AttemptedAt:   time.Now().UTC().Format(time.RFC3339Nano),
+	})
+}
+
+func (t *modelRoutingTrace) recordTerminalSuccess(attempt modelRoutingCandidateAttempt) {
+	if !t.replaceStreamingTerminal(attempt, "success", nil) {
+		t.recordSuccess(attempt)
+	}
+}
+
+func (t *modelRoutingTrace) recordTerminalFailure(attempt modelRoutingCandidateAttempt, err error) {
+	facts := modelRoutingFailureFactsFromError(err)
+	if !t.replaceStreamingTerminal(attempt, "failure", &facts) {
+		t.recordFailure(attempt, err, modelRoutingRuleMatch{})
+	}
+}
+
+func (t *modelRoutingTrace) replaceStreamingTerminal(attempt modelRoutingCandidateAttempt, outcome string, facts *modelRoutingFailureFacts) bool {
+	if t == nil {
+		return false
+	}
+	for index := len(t.attempts) - 1; index >= 0; index-- {
+		entry := &t.attempts[index]
+		if entry.Outcome != "streaming" || entry.Rank != attempt.rank || entry.RouteSelector != attempt.candidate.RouteSelector {
+			continue
+		}
+		entry.Outcome = outcome
+		if facts != nil {
+			entry.HTTPStatus = facts.httpStatus
+			entry.ErrorCode = facts.errorCode
+		}
+		return true
+	}
+	return false
 }
 
 func (t *modelRoutingTrace) recordFailure(attempt modelRoutingCandidateAttempt, err error, match modelRoutingRuleMatch) {

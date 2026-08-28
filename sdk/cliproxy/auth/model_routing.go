@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -25,27 +25,49 @@ import (
 )
 
 const (
-	probeRouteSelectorHeader   = "X-CLIProxy-Route-Selector"
-	probeVariantIDHeader       = "X-CLIProxy-Variant-ID"
-	effectiveModelHeader       = "X-CLIProxy-Effective-Model"
-	quotaDomainHeader          = "X-CLIProxy-Quota-Domain"
-	credentialReferenceHeader  = "X-CLIProxy-Credential-Ref"
-	allowedAuthIDsMetadataKey  = "cliproxy.model_routing.allowed_auth_ids"
-	modelRoutingMetadataKey    = "cliproxy.model_routing.fail_fast"
-	routingIndexMetadataKey    = "cliproxy.model_routing.candidate.index"
-	routingChannelMetadataKey  = "cliproxy.model_routing.candidate.channel"
-	routingModelMetadataKey    = "cliproxy.model_routing.candidate.runtime_model_id"
-	routingAliasMetadataKey    = "cliproxy.model_routing.alias"
-	routingSelectorMetadataKey = "cliproxy.model_routing.route_selector"
+	probeRouteSelectorHeader           = "X-CLIProxy-Route-Selector"
+	probeVariantIDHeader               = "X-CLIProxy-Variant-ID"
+	effectiveModelHeader               = "X-CLIProxy-Effective-Model"
+	quotaDomainHeader                  = "X-CLIProxy-Quota-Domain"
+	credentialReferenceHeader          = "X-CLIProxy-Credential-Ref"
+	projectionDigestHeader             = "X-CLIProxy-Projection-Digest"
+	failureModeHeader                  = "X-CLIProxy-Failure-Mode"
+	attemptsHeader                     = "X-CLIProxy-Attempts"
+	failoverEvidenceHeader             = "X-CLIProxy-Failover-Evidence"
+	allowedAuthIDsMetadataKey          = "cliproxy.model_routing.allowed_auth_ids"
+	modelRoutingMetadataKey            = "cliproxy.model_routing.fail_fast"
+	routingIndexMetadataKey            = "cliproxy.model_routing.candidate.index"
+	routingChannelMetadataKey          = "cliproxy.model_routing.candidate.channel"
+	routingModelMetadataKey            = "cliproxy.model_routing.candidate.runtime_model_id"
+	routingAliasMetadataKey            = "cliproxy.model_routing.alias"
+	routingSelectorMetadataKey         = "cliproxy.model_routing.route_selector"
+	routingProjectionDigestMetadataKey = "cliproxy.model_routing.projection_digest"
 )
 
+// ModelRoutingResponseHeaderNames returns the trusted local evidence headers
+// that browser clients must be allowed to read through CORS.
+func ModelRoutingResponseHeaderNames() []string {
+	return []string{
+		probeRouteSelectorHeader,
+		probeVariantIDHeader,
+		effectiveModelHeader,
+		quotaDomainHeader,
+		credentialReferenceHeader,
+		projectionDigestHeader,
+		failureModeHeader,
+		attemptsHeader,
+		failoverEvidenceHeader,
+	}
+}
+
 type modelRoutingTable struct {
-	aliases       map[string][]RoutingCandidate
-	direct        map[string][]RoutingCandidate
-	routes        map[string]RoutingCandidate
-	variants      map[string]map[string]modelrouting.Variant
-	failurePolicy modelrouting.FailurePolicy
-	projected     bool
+	aliases          map[string][]RoutingCandidate
+	direct           map[string][]RoutingCandidate
+	routes           map[string]RoutingCandidate
+	variants         map[string]map[string]modelrouting.Variant
+	failurePolicy    modelrouting.FailurePolicy
+	projectionDigest string
+	projected        bool
 }
 
 // RoutingCandidate is one immutable option in the already-ranked candidate chain.
@@ -61,21 +83,49 @@ type RoutingCandidate struct {
 	Protocols              []string
 	CatalogProviderID      string
 	CanonicalModelID       string
+	Pricing                *modelrouting.Pricing
+	ProjectionDigest       string
 	bootstrap              bool
 }
 
-// SetModelRouting atomically replaces the single CCS-owned routing table.
-func (m *Manager) SetModelRouting(projection *modelrouting.Config) error {
+// PreparedModelRouting is an immutable runtime candidate built without changing
+// the active request path. Only Service activates a prepared value after durable
+// configuration publication succeeds.
+type PreparedModelRouting struct {
+	table *modelRoutingTable
+}
+
+// PrepareModelRouting validates registry/executor/auth facts and builds a new
+// runtime table without changing the active table.
+func (m *Manager) PrepareModelRouting(projection *modelrouting.Config) (*PreparedModelRouting, error) {
+	if m == nil {
+		return nil, fmt.Errorf("model routing manager is nil")
+	}
+	if projection == nil {
+		return &PreparedModelRouting{table: compileModelRouting(nil)}, nil
+	}
+	if errValidate := projection.Validate(); errValidate != nil {
+		return nil, fmt.Errorf("validate model routing projection: %w", errValidate)
+	}
+	if errValidate := validateRoutingVariantExecutors(projection); errValidate != nil {
+		return nil, fmt.Errorf("validate model routing variant executors: %w", errValidate)
+	}
+	if errValidate := m.validateModelRoutingRuntime(projection); errValidate != nil {
+		return nil, fmt.Errorf("validate model routing runtime: %w", errValidate)
+	}
+	return &PreparedModelRouting{table: compileModelRouting(projection)}, nil
+}
+
+// ActivatePreparedModelRouting performs the single in-memory swap. Callers must
+// have already persisted the exact configuration bytes represented by prepared.
+func (m *Manager) ActivatePreparedModelRouting(prepared *PreparedModelRouting) error {
 	if m == nil {
 		return fmt.Errorf("model routing manager is nil")
 	}
-	if errValidate := projection.Validate(); errValidate != nil {
-		return fmt.Errorf("validate model routing projection: %w", errValidate)
+	if prepared == nil || prepared.table == nil {
+		return fmt.Errorf("prepared model routing is nil")
 	}
-	if errValidate := validateRoutingVariantExecutors(projection); errValidate != nil {
-		return fmt.Errorf("validate model routing variant executors: %w", errValidate)
-	}
-	m.modelRouting.Store(compileModelRouting(projection))
+	m.modelRouting.Store(prepared.table)
 	return nil
 }
 
@@ -98,6 +148,139 @@ func validateRoutingVariantExecutors(projection *modelrouting.Config) error {
 	return nil
 }
 
+func (m *Manager) validateModelRoutingRuntime(projection *modelrouting.Config) error {
+	if projection == nil {
+		return nil
+	}
+	registered := registry.GetGlobalRegistry().RegisteredRouteSnapshots()
+	for modelIndex, model := range projection.DirectModels {
+		for routeIndex, route := range model.Routes {
+			if !route.Selectable {
+				continue
+			}
+			path := fmt.Sprintf("direct-models[%d].routes[%d]", modelIndex, routeIndex)
+			channel := strings.ToLower(route.RouteKey.RouteChannel)
+			if _, exists := m.Executor(channel); !exists {
+				return fmt.Errorf("%s.route-key.route-channel: executor %q is not registered", path, channel)
+			}
+			if route.RouteSelector != modelrouting.SelectorForRoute(route.RouteKey, route.RuntimeModelID) {
+				return fmt.Errorf("%s.route-selector: differs from the live route identity", path)
+			}
+
+			credentialSet := make(map[string]modelrouting.CredentialRef)
+			quotaSet := make(map[string]struct{})
+			protocolSet := make(map[string]struct{})
+			matchedRoute := false
+			for registeredIndex, snapshot := range registered {
+				if strings.ToLower(snapshot.RouteChannel) != channel || snapshot.RuntimeModelID != route.RuntimeModelID {
+					continue
+				}
+				matchedRoute = true
+				if snapshot.Model == nil {
+					return fmt.Errorf("%s: registered route %d has no model facts", path, registeredIndex)
+				}
+				info := snapshot.Model
+				if info.CatalogProviderID != route.RouteKey.ModelKey.CatalogProviderID || info.CatalogModelID != route.RouteKey.ModelKey.CanonicalModelID ||
+					info.CatalogRouteProviderID != route.CatalogRouteProviderID || info.CatalogRouteModelID != route.CatalogRouteModelID {
+					return fmt.Errorf("%s: registered route %d catalog facts differ from the projection", path, registeredIndex)
+				}
+				auth, exists := m.GetByID(snapshot.ClientID)
+				if !exists || auth == nil {
+					return fmt.Errorf("%s: registered route %d has no live credential", path, registeredIndex)
+				}
+				if executorKeyFromAuth(auth) != channel {
+					return fmt.Errorf("%s: registered route %d credential channel differs from the route", path, registeredIndex)
+				}
+				if snapshot.QuotaBlocked || snapshot.SuspensionReason != "" {
+					continue
+				}
+				blocked, _, _ := isAuthBlockedForModel(auth, route.RuntimeModelID, time.Now())
+				if blocked {
+					continue
+				}
+				ref := credentialReference(auth)
+				if ref.ID == "" || ref.Kind == "" {
+					return fmt.Errorf("%s: registered route %d has an invalid credential reference", path, registeredIndex)
+				}
+				credentialSet[ref.ID+"\x00"+ref.Kind] = ref
+				quotaDomain := credentialQuotaDomain(auth)
+				if quotaDomain == "" {
+					return fmt.Errorf("%s: registered route %d has no explicit quota domain", path, registeredIndex)
+				}
+				quotaSet[quotaDomain] = struct{}{}
+				if len(info.Protocols) == 0 {
+					return fmt.Errorf("%s: registered route %d has no explicit protocols", path, registeredIndex)
+				}
+				for _, protocol := range info.Protocols {
+					protocol = strings.TrimSpace(protocol)
+					if protocol == "" {
+						return fmt.Errorf("%s: registered route %d has an empty protocol", path, registeredIndex)
+					}
+					protocolSet[protocol] = struct{}{}
+				}
+			}
+			if !matchedRoute {
+				return fmt.Errorf("%s: route is absent from the live registry", path)
+			}
+			credentials := make([]modelrouting.CredentialRef, 0, len(credentialSet))
+			for _, ref := range credentialSet {
+				credentials = append(credentials, ref)
+			}
+			sort.Slice(credentials, func(i, j int) bool {
+				if credentials[i].ID != credentials[j].ID {
+					return credentials[i].ID < credentials[j].ID
+				}
+				return credentials[i].Kind < credentials[j].Kind
+			})
+			quotaDomains := sortedRoutingKeys(quotaSet)
+			protocols := sortedRoutingKeys(protocolSet)
+			if !equalCredentialRefs(credentials, route.CredentialRefs) {
+				return fmt.Errorf("%s.credential-refs: differ from selectable live credentials", path)
+			}
+			if !equalStrings(quotaDomains, route.QuotaDomains) {
+				return fmt.Errorf("%s.quota-domains: differ from selectable live quota domains", path)
+			}
+			if !equalStrings(protocols, route.Protocols) {
+				return fmt.Errorf("%s.protocols: differ from executable live protocols", path)
+			}
+		}
+	}
+	return nil
+}
+
+func sortedRoutingKeys(values map[string]struct{}) []string {
+	result := make([]string, 0, len(values))
+	for value := range values {
+		result = append(result, value)
+	}
+	sort.Strings(result)
+	return result
+}
+
+func equalStrings(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func equalCredentialRefs(left, right []modelrouting.CredentialRef) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
 func compileModelRouting(projection *modelrouting.Config) *modelRoutingTable {
 	table := &modelRoutingTable{
 		aliases:   make(map[string][]RoutingCandidate),
@@ -110,6 +293,7 @@ func compileModelRouting(projection *modelrouting.Config) *modelRoutingTable {
 		return table
 	}
 	table.failurePolicy = cloneRoutingFailurePolicy(projection.FailurePolicy)
+	table.projectionDigest = projection.ProjectionDigest
 	for _, model := range projection.DirectModels {
 		modelID := routingModelIdentity(model.ModelKey.CatalogProviderID, model.ModelKey.CanonicalModelID)
 		variants := make(map[string]modelrouting.Variant, len(model.Variants))
@@ -118,14 +302,19 @@ func compileModelRouting(projection *modelrouting.Config) *modelRoutingTable {
 		}
 		table.variants[modelID] = variants
 		for _, route := range model.Routes {
+			if !model.Active || !route.Selectable || !route.Health.Selectable {
+				continue
+			}
 			candidate := RoutingCandidate{
 				Channel:           route.RouteKey.RouteChannel,
 				RuntimeModelID:    route.RuntimeModelID,
 				RouteSelector:     route.RouteSelector,
 				CredentialRefs:    cloneCredentialRefs(route.CredentialRefs),
 				Protocols:         append([]string(nil), route.Protocols...),
-				CatalogProviderID: route.RouteKey.CatalogProviderID,
-				CanonicalModelID:  route.RouteKey.CanonicalModelID,
+				CatalogProviderID: route.RouteKey.ModelKey.CatalogProviderID,
+				CanonicalModelID:  route.RouteKey.ModelKey.CanonicalModelID,
+				Pricing:           modelrouting.ClonePricing(route.Pricing),
+				ProjectionDigest:  projection.ProjectionDigest,
 			}
 			table.routes[route.RouteSelector] = candidate
 			directKey := strings.ToLower(route.RuntimeModelID)
@@ -136,24 +325,41 @@ func compileModelRouting(projection *modelrouting.Config) *modelRoutingTable {
 		if !alias.Selectable {
 			continue
 		}
-		candidates := make([]RoutingCandidate, 0, len(alias.Candidates))
-		for _, source := range alias.Candidates {
-			candidate := RoutingCandidate{
-				Channel:           source.RouteChannel,
-				RuntimeModelID:    source.RuntimeModelID,
-				Alias:             alias.Name,
-				RouteSelector:     source.RouteSelector,
-				VariantID:         cloneString(source.VariantID),
-				CredentialRefs:    cloneCredentialRefs(source.CredentialRefs),
-				Protocols:         append([]string(nil), source.Protocols...),
-				CatalogProviderID: source.ModelKey.CatalogProviderID,
-				CanonicalModelID:  source.ModelKey.CanonicalModelID,
+		candidateCount := 0
+		for _, member := range alias.Members {
+			candidateCount += len(member.Candidates)
+		}
+		candidates := make([]RoutingCandidate, 0, candidateCount)
+		for routeIndex := 0; len(candidates) < candidateCount; routeIndex++ {
+			appended := false
+			for _, member := range alias.Members {
+				if routeIndex >= len(member.Candidates) {
+					continue
+				}
+				source := member.Candidates[routeIndex]
+				candidate := RoutingCandidate{
+					Channel:           source.RouteKey.RouteChannel,
+					RuntimeModelID:    source.RuntimeModelID,
+					Alias:             alias.Name,
+					RouteSelector:     source.RouteSelector,
+					VariantID:         cloneString(source.VariantID),
+					CredentialRefs:    cloneCredentialRefs(source.CredentialRefs),
+					Protocols:         append([]string(nil), source.Protocols...),
+					CatalogProviderID: source.RouteKey.ModelKey.CatalogProviderID,
+					CanonicalModelID:  source.RouteKey.ModelKey.CanonicalModelID,
+					Pricing:           modelrouting.ClonePricing(source.Pricing),
+					ProjectionDigest:  projection.ProjectionDigest,
+				}
+				if source.VariantID != nil {
+					variant := table.variants[routingModelIdentity(source.RouteKey.ModelKey.CatalogProviderID, source.RouteKey.ModelKey.CanonicalModelID)][*source.VariantID]
+					candidate.VariantReasoningOption = cloneString(variant.ReasoningOption)
+				}
+				candidates = append(candidates, candidate)
+				appended = true
 			}
-			if source.VariantID != nil {
-				variant := table.variants[routingModelIdentity(source.ModelKey.CatalogProviderID, source.ModelKey.CanonicalModelID)][*source.VariantID]
-				candidate.VariantReasoningOption = cloneString(variant.ReasoningOption)
+			if !appended {
+				break
 			}
-			candidates = append(candidates, candidate)
 		}
 		table.aliases[strings.ToLower(alias.Name)] = candidates
 	}
@@ -198,6 +404,7 @@ func cloneRoutingCandidate(candidate RoutingCandidate) RoutingCandidate {
 	candidate.VariantReasoningOption = cloneString(candidate.VariantReasoningOption)
 	candidate.CredentialRefs = cloneCredentialRefs(candidate.CredentialRefs)
 	candidate.Protocols = append([]string(nil), candidate.Protocols...)
+	candidate.Pricing = modelrouting.ClonePricing(candidate.Pricing)
 	return candidate
 }
 
@@ -214,13 +421,6 @@ func (m *Manager) modelRoutingCandidates(requestedModel string, opts cliproxyexe
 	variantHeader := strings.TrimSpace(opts.Headers.Get(probeVariantIDHeader))
 	if selector != "" {
 		route, exists := table.routes[selector]
-		if !exists && !table.projected {
-			var errBootstrap error
-			route, exists, errBootstrap = m.bootstrapRoutingCandidate(selector, requestedModel)
-			if errBootstrap != nil {
-				return nil, true, errBootstrap
-			}
-		}
 		if !exists || route.RuntimeModelID != requestedModel {
 			return nil, true, routingContractError("route_not_selectable", "route selector is not bound to the requested runtime model", http.StatusServiceUnavailable)
 		}
@@ -252,106 +452,6 @@ func (m *Manager) modelRoutingCandidates(requestedModel string, opts cliproxyexe
 		return nil, true, routingContractError("route_not_selectable", "managed alias is absent from the active projection", http.StatusServiceUnavailable)
 	}
 	return nil, false, nil
-}
-
-// bootstrapRoutingCandidate resolves one inventory selector directly from the
-// live registry before CCS has published a routing projection. It never creates
-// an alias, ranks routes, or permits movement to another route.
-func (m *Manager) bootstrapRoutingCandidate(selector, requestedModel string) (RoutingCandidate, bool, error) {
-	if m == nil {
-		return RoutingCandidate{}, false, nil
-	}
-	var candidate RoutingCandidate
-	var catalogRouteProviderID, catalogRouteModelID string
-	credentialRefs := make(map[string]struct{})
-	matched := false
-	for index, registered := range registry.GetGlobalRegistry().RegisteredRouteSnapshots() {
-		info := registered.Model
-		if info == nil || registered.RuntimeModelID != requestedModel {
-			continue
-		}
-		key := modelrouting.RouteKey{
-			CatalogProviderID: strings.TrimSpace(info.CatalogProviderID),
-			CanonicalModelID:  strings.TrimSpace(info.CatalogModelID),
-			RouteChannel:      strings.TrimSpace(registered.RouteChannel),
-		}
-		if modelrouting.SelectorForRoute(key, registered.RuntimeModelID) != selector {
-			continue
-		}
-		facts := []struct {
-			name  string
-			value string
-		}{
-			{name: "catalog provider", value: info.CatalogProviderID},
-			{name: "catalog model", value: info.CatalogModelID},
-			{name: "catalog route provider", value: info.CatalogRouteProviderID},
-			{name: "catalog route model", value: info.CatalogRouteModelID},
-			{name: "route channel", value: registered.RouteChannel},
-			{name: "runtime model", value: registered.RuntimeModelID},
-		}
-		for _, fact := range facts {
-			if !isCanonicalBootstrapFact(fact.value) {
-				return RoutingCandidate{}, true, routingContractError(
-					"route_not_selectable",
-					fmt.Sprintf("registered route %d has invalid %s fact", index, fact.name),
-					http.StatusServiceUnavailable,
-				)
-			}
-		}
-		if len(info.Protocols) == 0 {
-			return RoutingCandidate{}, true, routingContractError("route_not_selectable", fmt.Sprintf("registered route %d has no explicit protocols", index), http.StatusServiceUnavailable)
-		}
-		for _, protocol := range info.Protocols {
-			if !isCanonicalBootstrapFact(protocol) {
-				return RoutingCandidate{}, true, routingContractError("route_not_selectable", fmt.Sprintf("registered route %d has an invalid protocol", index), http.StatusServiceUnavailable)
-			}
-		}
-
-		if !matched {
-			candidate = RoutingCandidate{
-				Channel:           registered.RouteChannel,
-				RuntimeModelID:    registered.RuntimeModelID,
-				RouteSelector:     selector,
-				Protocols:         append([]string(nil), info.Protocols...),
-				CatalogProviderID: info.CatalogProviderID,
-				CanonicalModelID:  info.CatalogModelID,
-				bootstrap:         true,
-			}
-			catalogRouteProviderID = info.CatalogRouteProviderID
-			catalogRouteModelID = info.CatalogRouteModelID
-			matched = true
-		} else if candidate.Channel != registered.RouteChannel ||
-			candidate.RuntimeModelID != registered.RuntimeModelID ||
-			candidate.CatalogProviderID != info.CatalogProviderID ||
-			candidate.CanonicalModelID != info.CatalogModelID ||
-			catalogRouteProviderID != info.CatalogRouteProviderID ||
-			catalogRouteModelID != info.CatalogRouteModelID ||
-			!slices.Equal(candidate.Protocols, info.Protocols) {
-			return RoutingCandidate{}, true, routingContractError("route_not_selectable", "registered routes conflict for the requested selector", http.StatusServiceUnavailable)
-		}
-
-		auth, exists := m.GetByID(registered.ClientID)
-		if !exists || auth == nil {
-			return RoutingCandidate{}, true, routingContractError("route_not_selectable", "registered route has no live credential", http.StatusServiceUnavailable)
-		}
-		if executorKeyFromAuth(auth) != candidate.Channel {
-			return RoutingCandidate{}, true, routingContractError("route_not_selectable", "registered route channel differs from its credential channel", http.StatusServiceUnavailable)
-		}
-		ref := credentialReference(auth)
-		if ref.Kind != "api_key" && ref.Kind != AuthKindOAuth {
-			return RoutingCandidate{}, true, routingContractError("route_not_selectable", "registered route has an unsupported credential kind", http.StatusServiceUnavailable)
-		}
-		identity := ref.ID + "\x00" + ref.Kind
-		if _, exists := credentialRefs[identity]; !exists {
-			credentialRefs[identity] = struct{}{}
-			candidate.CredentialRefs = append(candidate.CredentialRefs, ref)
-		}
-	}
-	return candidate, matched, nil
-}
-
-func isCanonicalBootstrapFact(value string) bool {
-	return value != "" && value == strings.TrimSpace(value) && value != "unknown"
 }
 
 func cloneRoutingCandidates(values []RoutingCandidate) []RoutingCandidate {
@@ -544,6 +644,16 @@ func prepareRoutingCandidateRequest(req cliproxyexecutor.Request, opts cliproxye
 		return req, routingContractError("protocol_not_supported", fmt.Sprintf("route does not support request protocol %q", opts.SourceFormat), http.StatusBadRequest)
 	}
 	req.Model = candidate.RuntimeModelID
+	metadata := make(map[string]any, len(req.Metadata)+2)
+	for key, value := range req.Metadata {
+		metadata[key] = value
+	}
+	metadata[resolvedAPIKeyModelInfoMetadataKey] = &registry.ModelInfo{
+		ID:      candidate.RuntimeModelID,
+		Pricing: modelrouting.ClonePricing(candidate.Pricing),
+	}
+	metadata[routingProjectionDigestMetadataKey] = candidate.ProjectionDigest
+	req.Metadata = metadata
 	if candidate.VariantID == nil {
 		return req, nil
 	}
@@ -667,6 +777,9 @@ func (m *Manager) modelRoutingResponseHeaders(candidate RoutingCandidate, select
 	headers := make(http.Header)
 	headers.Set(probeRouteSelectorHeader, candidate.RouteSelector)
 	headers.Set(effectiveModelHeader, candidate.RuntimeModelID)
+	if candidate.ProjectionDigest != "" {
+		headers.Set(projectionDigestHeader, candidate.ProjectionDigest)
+	}
 	if candidate.VariantID != nil {
 		headers.Set(probeVariantIDHeader, *candidate.VariantID)
 	}

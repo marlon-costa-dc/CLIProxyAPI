@@ -16,7 +16,8 @@ import (
 type registryModelInfo = registry.ModelInfo
 
 type modelRegistry interface {
-	RegisterClient(clientID, clientProvider string, models []*registry.ModelInfo)
+	RegisterClient(clientID, clientProvider string, models []*registry.ModelInfo) error
+	ApplyClientBatch(batch registry.ClientBatch) error
 	UnregisterClient(clientID string)
 }
 
@@ -225,9 +226,9 @@ func cloneRegistryModels(in []*registry.ModelInfo) []*registry.ModelInfo {
 	return out
 }
 
-func (h *Host) RegisterModels(ctx context.Context, modelRegistry modelRegistry) {
+func (h *Host) RegisterModels(ctx context.Context, modelRegistry modelRegistry) error {
 	if h == nil || modelRegistry == nil {
-		return
+		return fmt.Errorf("register plugin models: host and registry are required")
 	}
 
 	snap := h.Snapshot()
@@ -258,26 +259,27 @@ func (h *Host) RegisterModels(ctx context.Context, modelRegistry modelRegistry) 
 			resp, errRegisterModels = h.callModelRegistrar(ctx, record, registrar)
 		}
 		if errRegisterModels != nil {
-			log.Warnf("pluginhost: model registrar %s failed: %v", record.id, errRegisterModels)
-			continue
+			return fmt.Errorf("plugin model registrar %s: %w", record.id, errRegisterModels)
 		}
 
 		provider := strings.ToLower(strings.TrimSpace(resp.Provider))
-		if provider == "" || len(resp.Models) == 0 {
-			continue
+		if provider == "" {
+			return fmt.Errorf("plugin model registrar %s returned an empty provider", record.id)
+		}
+		if len(resp.Models) == 0 {
+			return fmt.Errorf("plugin model registrar %s returned no models", record.id)
 		}
 
 		models := make([]*registry.ModelInfo, 0, len(resp.Models))
-		for _, item := range resp.Models {
+		for modelIndex, item := range resp.Models {
 			model := pluginModelInfoToRegistryModelInfo(item)
 			if model == nil || strings.TrimSpace(model.ID) == "" {
-				continue
+				return fmt.Errorf("plugin model registrar %s returned invalid model %d", record.id, modelIndex)
 			}
-			model.ID = strings.TrimSpace(model.ID)
+			if model.ID != strings.TrimSpace(model.ID) {
+				return fmt.Errorf("plugin model registrar %s returned non-canonical model ID at %d", record.id, modelIndex)
+			}
 			models = append(models, model)
-		}
-		if len(models) == 0 {
-			continue
 		}
 
 		nextModelRegistrations[record.id] = pluginModelRegistration{
@@ -298,7 +300,10 @@ func (h *Host) RegisterModels(ctx context.Context, modelRegistry modelRegistry) 
 			nextClients[clientID] = struct{}{}
 		}
 	}
-	h.commitModelClients(snap, modelRegistry, registrations, nextClients, nextProviders, nextModelRegistrations)
+	if errCommit := h.commitModelClients(snap, modelRegistry, registrations, nextClients, nextProviders, nextModelRegistrations); errCommit != nil {
+		return errCommit
+	}
+	return nil
 }
 
 func (h *Host) ModelsForAuth(ctx context.Context, auth *coreauth.Auth) AuthModelResult {

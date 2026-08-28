@@ -6,22 +6,20 @@ import (
 	"strings"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/modelrouting"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher/synthesizer"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
-	log "github.com/sirupsen/logrus"
 )
 
 func (s *Service) applyConfigUpdate(newCfg *config.Config) {
 	if errApply := s.applyConfigUpdateWithAuthSynthesis(context.Background(), newCfg, true); errApply != nil {
-		log.WithError(errApply).Error("config update failed")
+		s.reportRuntimeError(fmt.Errorf("config update failed: %w", errApply))
 	}
 }
 
 func (s *Service) applyWatcherConfigUpdate(newCfg *config.Config) {
 	if errApply := s.applyConfigUpdateWithAuthSynthesis(context.Background(), newCfg, false); errApply != nil {
-		log.WithError(errApply).Error("watcher config update failed")
+		s.reportRuntimeError(fmt.Errorf("watcher config update failed: %w", errApply))
 	}
 }
 
@@ -80,6 +78,17 @@ func newRoutingSelector(state routingRuntimeState) coreauth.Selector {
 }
 
 func (s *Service) applyConfigUpdateWithAuthSynthesis(ctx context.Context, newCfg *config.Config, synthesizeConfigAuths bool) error {
+	if s == nil {
+		return fmt.Errorf("apply config update: service is nil")
+	}
+	if newCfg == nil {
+		s.cfgMu.RLock()
+		newCfg = s.cfg
+		s.cfgMu.RUnlock()
+	}
+	if errRouting := s.validateAppliedModelRouting(newCfg); errRouting != nil {
+		return fmt.Errorf("validate model-routing ownership: %w", errRouting)
+	}
 	commit, errCommit := s.commitConfigUpdate(newCfg)
 	if errCommit != nil {
 		return errCommit
@@ -137,7 +146,7 @@ func (s *Service) applyConfigRuntime(ctx context.Context, commit configCommit, s
 		return fmt.Errorf("apply config runtime: config commit is stale")
 	}
 	if ctx == nil {
-		ctx = context.Background()
+		return fmt.Errorf("apply config runtime: context is nil")
 	}
 	if errContext := ctx.Err(); errContext != nil {
 		return errContext
@@ -173,11 +182,13 @@ func (s *Service) applyConfigRuntime(ctx context.Context, commit configCommit, s
 	if s.coreManager != nil {
 		auths = s.coreManager.List()
 	}
-	s.registerAvailableExecutors(registrationCtx, executorRegistrationOptions{
+	if errExecutors := s.registerAvailableExecutors(registrationCtx, executorRegistrationOptions{
 		includeBaseline:   cfg.Home.Enabled,
 		forceReplaceAuths: true,
 		auths:             auths,
-	})
+	}); errExecutors != nil {
+		return fmt.Errorf("register executors for config: %w", errExecutors)
+	}
 	if errContext := ctx.Err(); errContext != nil {
 		return errContext
 	}
@@ -203,12 +214,6 @@ func (s *Service) applyConfigRuntime(ctx context.Context, commit configCommit, s
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
-	if s.coreManager != nil {
-		if errRouting := s.coreManager.SetModelRouting(cfg.ModelRouting); errRouting != nil {
-			return fmt.Errorf("apply model routing projection: %w", errRouting)
-		}
-	}
-	modelrouting.Activate(cfg.ModelRouting, time.Now())
 	return nil
 }
 

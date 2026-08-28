@@ -11,6 +11,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/homeplugins"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/modelrouting"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/wsrelay"
@@ -36,10 +37,14 @@ type Service struct {
 	configUpdateMu sync.Mutex
 
 	// configRuntimeMu orders side-effecting runtime application after config commits.
-	configRuntimeMu        sync.Mutex
-	executorRegistrationMu sync.Mutex
-	configSequence         uint64
-	appliedRoutingState    *routingRuntimeState
+	configRuntimeMu          sync.Mutex
+	executorRegistrationMu   sync.Mutex
+	configSequence           uint64
+	appliedRoutingState      *routingRuntimeState
+	modelRoutingStateMu      sync.RWMutex
+	activeModelRouting       *modelrouting.ActiveIdentityV2
+	modelRoutingLoadedAt     time.Time
+	activeModelRoutingConfig *modelrouting.Config
 
 	// configPath is the path to the configuration file.
 	configPath string

@@ -125,23 +125,27 @@ func (s *Service) Run(ctx context.Context) error {
 
 	s.ensureWebsocketGateway()
 	if homeEnabled {
-		s.registerAvailableExecutors(ctx, executorRegistrationOptions{
+		if errExecutors := s.registerAvailableExecutors(ctx, executorRegistrationOptions{
 			includeBaseline: true,
-		})
+		}); errExecutors != nil {
+			return fmt.Errorf("register baseline executors: %w", errExecutors)
+		}
 		// Home mode does not expose in-process Redis RESP usage output; usage is forwarded to home instead.
 		redisqueue.SetEnabled(true)
 	}
 
-	// handlers no longer depend on legacy clients; pass nil slice initially
-	s.server = api.NewServer(s.cfg, s.coreManager, s.accessManager, s.configPath, s.serverOptions...)
 	if _, errPluginConfig := s.syncPluginRuntimeConfig(ctx); errPluginConfig != nil {
 		return fmt.Errorf("sync plugin runtime config: %w", errPluginConfig)
 	}
-	if homeEnabled {
-		if errPluginModels := s.syncPluginModelRuntime(ctx); errPluginModels != nil {
-			return fmt.Errorf("sync plugin model runtime: %w", errPluginModels)
-		}
+	if errPluginModels := s.syncPluginModelRuntime(ctx); errPluginModels != nil {
+		return fmt.Errorf("sync plugin model runtime: %w", errPluginModels)
 	}
+	if errRouting := s.initializeModelRouting(); errRouting != nil {
+		return fmt.Errorf("initialize model-routing runtime: %w", errRouting)
+	}
+
+	// handlers no longer depend on legacy clients; pass nil slice initially
+	s.server = api.NewServer(s.cfg, s.coreManager, s.accessManager, s.configPath, s.serverOptions...)
 
 	if s.authManager == nil {
 		s.authManager = newDefaultAuthManager()
@@ -376,10 +380,14 @@ func (s *Service) Shutdown(ctx context.Context) error {
 				s.watcher.SetPluginAuthParser(nil)
 			}
 			s.pluginHost.ApplyConfig(ctx, &config.Config{})
-			s.pluginHost.RegisterModels(ctx, registry.GetGlobalRegistry())
-			s.registerAvailableExecutors(ctx, executorRegistrationOptions{
+			if errModels := s.pluginHost.RegisterModels(ctx, registry.GetGlobalRegistry()); errModels != nil && shutdownErr == nil {
+				shutdownErr = fmt.Errorf("clear plugin models during shutdown: %w", errModels)
+			}
+			if errExecutors := s.registerAvailableExecutors(ctx, executorRegistrationOptions{
 				includePlugins: true,
-			})
+			}); errExecutors != nil && shutdownErr == nil {
+				shutdownErr = fmt.Errorf("clear plugin executors during shutdown: %w", errExecutors)
+			}
 			s.pluginHost.RegisterFrontendAuthProviders()
 			s.pluginHost.ShutdownAllContext(ctx)
 			if s.accessManager != nil {
