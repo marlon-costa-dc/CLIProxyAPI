@@ -284,8 +284,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		}
 		reporter.MarkFirstResponseByte()
 		payload = applyCodexIdentityConfuseResponsePayload(payload, identityState)
-		helps.AppendCodexAPIWebsocketResponse(ctx, e.cfg, payload)
-		helps.EmitWebSocketResponseEvent(ctx, opts, auth, e.Identifier(), req.Model, payload)
+		helps.AppendAPIWebsocketResponse(ctx, e.cfg, payload)
 		payload = helps.RestoreCodexMultiAgentV2Response(payload, restoreMultiAgentV2)
 		reporter.ObserveQuotaHeaders(helps.ParseCodexQuotaEventHeaders(payload))
 

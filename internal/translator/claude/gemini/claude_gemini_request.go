@@ -6,15 +6,24 @@
 package gemini
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	translatorcommon "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/common"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
+)
+
+var (
+	user    = ""
+	account = ""
+	session = ""
 )
 
 // ConvertGeminiRequestToClaude parses and transforms a Gemini API request into Claude Code API format.
@@ -38,11 +47,22 @@ import (
 func ConvertGeminiRequestToClaude(modelName string, inputRawJSON []byte, stream bool) []byte {
 	rawJSON := inputRawJSON
 
-	userID := translatorcommon.DeriveClaudeUserID(rawJSON)
+	if account == "" {
+		u, _ := uuid.NewRandom()
+		account = u.String()
+	}
+	if session == "" {
+		u, _ := uuid.NewRandom()
+		session = u.String()
+	}
+	if user == "" {
+		sum := sha256.Sum256([]byte(account + session))
+		user = hex.EncodeToString(sum[:])
+	}
+	userID := fmt.Sprintf("user_%s_account_%s_session_%s", user, account, session)
 
 	// Base Claude message payload
-	out := []byte(`{"model":"","max_tokens":32000,"messages":[],"metadata":{}}`)
-	out, _ = sjson.SetBytes(out, "metadata.user_id", userID)
+	out := []byte(fmt.Sprintf(`{"model":"","max_tokens":32000,"messages":[],"metadata":{"user_id":"%s"}}`, userID))
 
 	root := gjson.ParseBytes(rawJSON)
 	messageAccumulator := translatorcommon.NewClaudeMessageAccumulator(int(root.Get("contents.#").Int()) + 1)
@@ -71,7 +91,6 @@ func ConvertGeminiRequestToClaude(modelName string, inputRawJSON []byte, stream 
 	// functionCalls, so we keep a FIFO queue of generated tool IDs and
 	// consume them in order when functionResponses arrive.
 	var pendingToolIDs []string
-	toolCallCounter := 0
 
 	// Model mapping to specify which Claude Code model to use
 	out, _ = sjson.SetBytes(out, "model", modelName)
@@ -253,8 +272,7 @@ func ConvertGeminiRequestToClaude(modelName string, inputRawJSON []byte, stream 
 						// Reuse gateway-provided IDs when present, otherwise generate one for pairing.
 						toolID := getGeminiToolID(fc)
 						if toolID == "" {
-							toolCallCounter++
-							toolID = fmt.Sprintf("toolu_gemini_%016d", toolCallCounter)
+							toolID = translatorcommon.GenerateClaudeToolCallID()
 						}
 						pendingToolIDs = append(pendingToolIDs, toolID)
 						toolUse, _ = sjson.SetBytes(toolUse, "id", toolID)
@@ -285,8 +303,7 @@ func ConvertGeminiRequestToClaude(modelName string, inputRawJSON []byte, stream 
 							pendingToolIDs = pendingToolIDs[1:]
 						} else {
 							// Fallback: generate new ID if no pending tool_use found
-							toolCallCounter++
-							toolID = fmt.Sprintf("toolu_gemini_%016d", toolCallCounter)
+							toolID = translatorcommon.GenerateClaudeToolCallID()
 						}
 						toolResult, _ = sjson.SetBytes(toolResult, "tool_use_id", toolID)
 

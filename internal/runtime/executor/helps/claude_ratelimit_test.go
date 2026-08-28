@@ -113,6 +113,7 @@ func TestParseClaudeRateLimitReset_AllCases(t *testing.T) {
 		}
 	})
 
+<<<<<<< HEAD
 	t.Run("fable-only rejection with 7d_oi reset and retry-after uses retry-after only", func(t *testing.T) {
 		h := make(http.Header)
 		h.Set("Anthropic-Ratelimit-Unified-Status", "rejected")
@@ -201,6 +202,8 @@ func TestParseClaudeRateLimitReset_AllCases(t *testing.T) {
 		}
 	})
 
+=======
+>>>>>>> parent of be22c684 (merge: integrate upstream main into model pricing lane)
 	t.Run("past timestamp returns nil", func(t *testing.T) {
 		h := make(http.Header)
 		h.Set("Anthropic-Ratelimit-Unified-5h-Status", "rejected")

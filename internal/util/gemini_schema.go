@@ -2,7 +2,6 @@
 package util
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -95,9 +94,12 @@ func CleanJSONSchemaForGemini(jsonStr string) string {
 
 // cleanJSONSchema performs the core cleaning operations on the JSON schema.
 func cleanJSONSchema(jsonStr string, options jsonSchemaCleanOptions) string {
+<<<<<<< HEAD
 	// Phase 0: Normalize malformed schemas (e.g. bare property maps and boolean required from MCP tools)
 	jsonStr = normalizeMalformedSchemaObjects(jsonStr, options.addMissingArrayItems)
 
+=======
+>>>>>>> parent of be22c684 (merge: integrate upstream main into model pricing lane)
 	// Phase 1: Convert and add hints
 	if options.antigravitySemantics {
 		jsonStr = inlineLocalRefs(jsonStr)
@@ -229,6 +231,7 @@ func removePlaceholderFields(jsonStr string) string {
 	return jsonStr
 }
 
+<<<<<<< HEAD
 // normalizeMalformedSchemaObjects normalizes malformed JSON schema nodes commonly produced by
 // certain MCP tool definitions (e.g. Asana MCP server):
 // 1. Bare property maps missing the "type": "object" and "properties": {...} wrappers are wrapped.
@@ -614,6 +617,8 @@ func InlineLocalRefs(jsonStr string) string {
 	return inlineLocalRefs(jsonStr)
 }
 
+=======
+>>>>>>> parent of be22c684 (merge: integrate upstream main into model pricing lane)
 // inlineLocalRefs resolves JSON Pointer references against the original schema before definition
 // containers are stripped. Each expansion receives its own copy, sibling keywords override the
 // referenced definition, and cycles terminate as a typed hint instead of recursing forever.
@@ -854,7 +859,7 @@ func addAdditionalPropertiesHints(jsonStr string) string {
 
 var unsupportedConstraints = []string{
 	"minLength", "maxLength", "exclusiveMinimum", "exclusiveMaximum",
-	"pattern", "minItems", "maxItems", "uniqueItems", "contains", "format",
+	"pattern", "minItems", "maxItems", "uniqueItems", "format",
 	"default", "examples", // Claude rejects these in VALIDATED mode
 }
 
@@ -872,15 +877,11 @@ func moveConstraintsToDescription(jsonStr string, options jsonSchemaCleanOptions
 	for _, key := range constraints {
 		for _, p := range pathsByField[key] {
 			val := gjson.Get(jsonStr, p)
-			if !val.Exists() {
+			if !val.Exists() || val.IsObject() || val.IsArray() {
 				continue
 			}
 			parentPath := trimSuffix(p, "."+key)
 			if isPropertyDefinition(parentPath) {
-				continue
-			}
-			if val.IsObject() || val.IsArray() {
-				jsonStr = appendHint(jsonStr, parentPath, fmt.Sprintf("%s: %s", key, val.Raw))
 				continue
 			}
 			jsonStr = appendHint(jsonStr, parentPath, fmt.Sprintf("%s: %s", key, val.String()))
@@ -1019,39 +1020,9 @@ func flattenAnyOfOneOf(jsonStr string) string {
 			}
 
 			parentPath := trimSuffix(p, "."+key)
-			parent := gjson.Get(jsonStr, parentPath)
-			if parentPath == "" {
-				parent = gjson.Parse(jsonStr)
-			}
+			parentDesc := gjson.Get(jsonStr, descriptionPath(parentPath)).String()
 
 			items := arr.Array()
-
-			// If the parent already defines properties (e.g. an object schema with anyOf/oneOf constraints),
-			// do not replace the parent with a single branch. Instead, merge any branch properties
-			// into the parent and delete the union keyword.
-			if parentProps := parent.Get("properties"); parentProps.IsObject() {
-				hasNull := false
-				for _, item := range items {
-					if item.Get("type").String() == "null" {
-						hasNull = true
-					}
-					if branchProps := item.Get("properties"); branchProps.IsObject() {
-						branchProps.ForEach(func(propKey, propVal gjson.Result) bool {
-							destPath := joinPath(parentPath, "properties."+escapeGJSONPathKey(propKey.String()))
-							jsonStr = mergeMissingSchemaAtPath(jsonStr, destPath, propVal)
-							return true
-						})
-					}
-				}
-				if hasNull {
-					updated, _ := sjson.SetBytes([]byte(jsonStr), joinPath(parentPath, "nullable"), true)
-					jsonStr = string(updated)
-				}
-				jsonStr, _ = sjson.Delete(jsonStr, p)
-				continue
-			}
-
-			parentDesc := gjson.Get(jsonStr, descriptionPath(parentPath)).String()
 			bestIdx, allTypes := selectBest(items)
 			selected := items[bestIdx].Raw
 			hasNull := false
@@ -1094,10 +1065,8 @@ func selectBest(items []gjson.Result) (bestIdx int, types []string) {
 			score, t = 2, orDefault(t, "array")
 		case t != "" && t != "null":
 			score = 1
-		case t == "null":
-			score, t = 0, "null"
 		default:
-			score, t = 0, ""
+			t = orDefault(t, "null")
 		}
 
 		if t != "" {
@@ -1274,11 +1243,7 @@ func cleanupRequiredFields(jsonStr string) string {
 
 		req := gjson.Get(jsonStr, p)
 		props := gjson.Get(jsonStr, propsPath)
-		if !req.IsArray() {
-			continue
-		}
-		if !props.IsObject() {
-			jsonStr, _ = sjson.Delete(jsonStr, p)
+		if !req.IsArray() || !props.IsObject() {
 			continue
 		}
 

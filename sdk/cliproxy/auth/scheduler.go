@@ -125,18 +125,10 @@ func restoreReadyViewCursors(view *readyView, state readyViewCursorState) {
 	}
 	view.lastPicked = state.lastPicked
 	weights := scheduledWeightVector(view.flat)
-	if len(state.weightedState.current) == 0 || weightsConfigChanged(state.weightedState.weights, weights) {
+	if len(state.weightedState.current) == 0 || !weightVectorsEqual(state.weightedState.weights, weights) {
 		return
 	}
-	current := make(map[string]int64, len(view.flat))
-	for _, entry := range view.flat {
-		if entry != nil && entry.auth != nil {
-			if val, ok := state.weightedState.current[entry.auth.ID]; ok {
-				current[entry.auth.ID] = val
-			}
-		}
-	}
-	view.weightedState.current = current
+	view.weightedState.current = state.weightedState.current
 	view.weightedState.weights = weights
 }
 
@@ -1081,6 +1073,22 @@ func scheduledWeightVectorMatching(entries []*scheduledAuth, predicate func(*sch
 }
 
 func pickSmoothWeightedScheduled(entries []*scheduledAuth, current map[string]int64, predicate func(*scheduledAuth) bool) *scheduledAuth {
+	active := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		if entry == nil || entry.auth == nil || entry.meta == nil || entry.meta.weight <= 0 {
+			continue
+		}
+		if predicate != nil && !predicate(entry) {
+			continue
+		}
+		active[entry.auth.ID] = struct{}{}
+	}
+	for authID := range current {
+		if _, ok := active[authID]; !ok {
+			delete(current, authID)
+		}
+	}
+
 	var picked *scheduledAuth
 	var pickedCurrent int64
 	var totalWeight int64

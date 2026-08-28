@@ -10,7 +10,9 @@ import (
 )
 
 func newTestRoundRobinSelector() *RoundRobinSelector {
-	return &RoundRobinSelector{}
+	return &RoundRobinSelector{
+		cursors: make(map[string]int),
+	}
 }
 
 func TestSessionAffinity_InitialPickBindsBeforeSuccess(t *testing.T) {
