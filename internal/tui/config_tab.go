@@ -356,22 +356,26 @@ func (m configTabModel) parseConfig(cfg map[string]any) []configField {
 	// WebSocket auth
 	fields = append(fields, configField{"WebSocket Auth", "ws-auth", "bool", fmt.Sprintf("%v", getBool(cfg, "ws-auth")), nil})
 
-	channels := summarizeOAuthModelAlias(cfg["oauth-model-alias"])
+	channels, ordered := summarizeOAuthModelAlias(cfg["oauth-model-alias"])
+	aliasSummary := fmt.Sprintf(T("oauth_model_alias_summary"), channels)
+	if ordered > 0 {
+		aliasSummary = fmt.Sprintf("%s (%d %s)", aliasSummary, ordered, T("oauth_model_alias_ordered"))
+	}
 	fields = append(fields, configField{
 		T("oauth_model_alias_label"),
 		"oauth-model-alias",
 		"readonly",
-		fmt.Sprintf(T("oauth_model_alias_summary"), channels),
+		aliasSummary,
 		nil,
 	})
 
 	return fields
 }
 
-func summarizeOAuthModelAlias(raw any) (channels int) {
+func summarizeOAuthModelAlias(raw any) (channels int, ordered int) {
 	byChannel, ok := raw.(map[string]any)
 	if !ok || len(byChannel) == 0 {
-		return 0
+		return 0, 0
 	}
 	for _, entriesRaw := range byChannel {
 		entries, ok := entriesRaw.([]any)
@@ -379,8 +383,27 @@ func summarizeOAuthModelAlias(raw any) (channels int) {
 			continue
 		}
 		channels++
+		counts := make(map[string]int, len(entries))
+		for _, entryRaw := range entries {
+			entry, ok := entryRaw.(map[string]any)
+			if !ok {
+				continue
+			}
+			alias, _ := entry["alias"].(string)
+			alias = strings.ToLower(strings.TrimSpace(alias))
+			if alias == "" {
+				continue
+			}
+			counts[alias]++
+		}
+		for _, count := range counts {
+			if count > 1 {
+				ordered++
+				break
+			}
+		}
 	}
-	return channels
+	return channels, ordered
 }
 
 func fieldSection(apiPath string) string {
