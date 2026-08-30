@@ -60,9 +60,9 @@ func (identity ActiveIdentityV2) Validate() error {
 		return fmt.Errorf("active identity generation must be positive")
 	}
 	for name, digest := range map[string]string{
-		"snapshot_digest": identity.SnapshotDigest,
+		"snapshot_digest":   identity.SnapshotDigest,
 		"projection_digest": identity.ProjectionDigest,
-		"config_digest": identity.ConfigDigest,
+		"config_digest":     identity.ConfigDigest,
 	} {
 		if !digestPattern.MatchString(digest) {
 			return fmt.Errorf("active identity %s must be sha256:<64 lowercase hex>", name)
