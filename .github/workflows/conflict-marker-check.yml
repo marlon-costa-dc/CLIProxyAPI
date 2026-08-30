@@ -8,12 +8,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Check for conflict markers
-        run: |
-          if grep -rnI '<<<<<<< HEAD' . --include='*.py' --include='*.js' --include='*.ts' --include='*.java' --include='*.rs' --include='*.go' --include='*.yml' --include='*.yaml' --include='*.json' --include='*.md' --include='*.txt' --include='*.sh' --include='*.conf' --include='*.cfg' --include='*.toml' --include='*.lock' --include='*.cjs' --include='*.mjs' --include='*.jsonc' --include='*.vue' --include='*.jsx' --include='*.tsx' --include='*.cpp' --include='*.h' --include='*.cs' --include='*.rb' --include='*.php' --include='*.swift' --include='*.kt' --include='*.scala' --include='*.pl' --include='*.pm' --include='*.lua' --include='*.r' --include='*.R' --include='*.sql' --include='*.css' --include='*.scss' --include='*.less' --include='*.html' --include='*.xml' --include='*.svg' --include='*.properties' --include='*.env' --include='*.envrc' --include='Dockerfile' --include='Makefile' --include='*.mk' --include='*.gradle' --include='*.sbt' --include='*.cmake' --include='CMakeLists.txt' --exclude-dir=.git; then
-            echo "::error::Conflict markers found in source files!"
-            grep -rnI '<<<<<<< HEAD' . --include='*.py' --include='*.js' --include='*.ts' --include='*.java' --include='*.rs' --include='*.go' --include='*.yml' --include='*.yaml' --include='*.json' --include='*.md' --include='*.txt' --include='*.sh' --include='*.conf' --include='*.cfg' --include='*.toml' --include='*.lock' --include='*.cjs' --include='*.mjs' --include='*.jsonc' --include='*.vue' --include='*.jsx' --include='*.tsx' --include='*.cpp' --include='*.h' --include='*.cs' --include='*.rb' --include='*.php' --include='*.swift' --include='*.kt' --include='*.scala' --include='*.pl' --include='*.pm' --include='*.lua' --include='*.r' --include='*.R' --include='*.sql' --include='*.css' --include='*.scss' --include='*.less' --include='*.html' --include='*.xml' --include='*.svg' --include='*.properties' --include='*.env' --include='*.envrc' --include='Dockerfile' --include='Makefile' --include='*.mk' --include='*.gradle' --include='*.sbt' --include='*.cmake' --include='CMakeLists.txt' --exclude-dir=.git
-            exit 1
-          else
-            echo "No conflict markers found."
-          fi
         shell: bash
+        run: |
+          # Anchored, and over tracked files only. The previous form searched
+          # for the literal '<<<<<<< HEAD' with --include='*.yml', so it matched
+          # the two lines of this very workflow and failed every run. Anchoring
+          # to the line start makes the pattern unmatchable inside its own
+          # `-e '^...'` argument, and a search error is distinguished from a
+          # real find instead of being reported as one.
+          status=0
+          markers=$(git grep -l -e '^<<<<<<< ' -e '^>>>>>>> ' -- . \
+            ':(exclude)vendor' ':(exclude)node_modules' ':(exclude)dist' \
+            ':(exclude)build' ':(exclude).cache') || status=$?
+          if [ "$status" -gt 1 ]; then
+            echo "::error::conflict-marker search failed with status $status"
+            exit "$status"
+          fi
+          if [ -n "$markers" ]; then
+            echo "::error::Conflict markers found in tracked files:"
+            echo "$markers"
+            exit 1
+          fi
+          echo "No conflict markers found."

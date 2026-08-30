@@ -142,6 +142,10 @@ func retryablePreFirstByteError(err error) bool {
 	return false
 }
 
+// The inner loops are invoked through the v18 route-execution contract:
+// retryRound=0 and defaultRequestRetry=0 keep one credential pass per
+// candidate, while the ordered chain supplies the outer retry. Wiring the
+// pools and their version gate into the dispatcher is aihub-ls7jo (B4-B6).
 // executeWithOrderedFailover is the non-streaming entry point. It resolves the
 // ordered candidate chain for (channel, requestedModel) and, when present,
 // walks it in order. The inner credential rotation is delegated to the existing
@@ -155,8 +159,8 @@ func (m *Manager) executeWithOrderedFailover(ctx context.Context, providers []st
 	tracker := newRouteAttemptTracker()
 	if len(chain) <= 1 {
 		// No ordered pool: preserve legacy behavior exactly.
-		tried := make(map[string]struct{})
-		return m.executeMixedOnce(ctx, providers, req, opts, maxRetryCredentials, tracker, tried)
+		state := newRouteExecutionState(opts, tracker)
+		return m.executeMixedOnce(ctx, providers, req, opts, maxRetryCredentials, 0, 0, state)
 	}
 	var lastErr error
 	for idx, candidate := range chain {
@@ -165,7 +169,8 @@ func (m *Manager) executeWithOrderedFailover(ctx context.Context, providers []st
 		candidateOpts := withOrderedCandidateMetadata(opts, idx, candidate)
 		candidateProviders := orderedCandidateProviders(providers, candidate.Channel)
 		tried := make(map[string]struct{})
-		resp, err := m.executeMixedOnce(ctx, candidateProviders, candidateReq, candidateOpts, maxRetryCredentials, tracker, tried)
+		state := &routeExecutionState{tracker: tracker, tried: tried}
+		resp, err := m.executeMixedOnce(ctx, candidateProviders, candidateReq, candidateOpts, maxRetryCredentials, 0, 0, state)
 		if err == nil {
 			return resp, nil
 		}
@@ -199,7 +204,8 @@ func (m *Manager) executeCountWithOrderedFailover(ctx context.Context, providers
 	tracker := newRouteAttemptTracker()
 	if len(chain) <= 1 {
 		tried := make(map[string]struct{})
-		return m.executeCountMixedOnce(ctx, providers, req, opts, maxRetryCredentials, tracker, tried)
+		state := &routeExecutionState{tracker: tracker, tried: tried}
+		return m.executeCountMixedOnce(ctx, providers, req, opts, maxRetryCredentials, 0, 0, state)
 	}
 	var lastErr error
 	for idx, candidate := range chain {
@@ -208,7 +214,8 @@ func (m *Manager) executeCountWithOrderedFailover(ctx context.Context, providers
 		candidateOpts := withOrderedCandidateMetadata(opts, idx, candidate)
 		candidateProviders := orderedCandidateProviders(providers, candidate.Channel)
 		tried := make(map[string]struct{})
-		resp, err := m.executeCountMixedOnce(ctx, candidateProviders, candidateReq, candidateOpts, maxRetryCredentials, tracker, tried)
+		state := &routeExecutionState{tracker: tracker, tried: tried}
+		resp, err := m.executeCountMixedOnce(ctx, candidateProviders, candidateReq, candidateOpts, maxRetryCredentials, 0, 0, state)
 		if err == nil {
 			return resp, nil
 		}
@@ -242,7 +249,8 @@ func (m *Manager) executeStreamWithOrderedFailover(ctx context.Context, provider
 	tracker := newRouteAttemptTracker()
 	if len(chain) <= 1 {
 		tried := make(map[string]struct{})
-		return m.executeStreamMixedOnce(ctx, providers, req, opts, maxRetryCredentials, tracker, tried)
+		state := &routeExecutionState{tracker: tracker, tried: tried}
+		return m.executeStreamMixedOnce(ctx, providers, req, opts, maxRetryCredentials, nil, 0, 0, state)
 	}
 	var lastErr error
 	for idx, candidate := range chain {
@@ -251,7 +259,8 @@ func (m *Manager) executeStreamWithOrderedFailover(ctx context.Context, provider
 		candidateOpts := withOrderedCandidateMetadata(opts, idx, candidate)
 		candidateProviders := orderedCandidateProviders(providers, candidate.Channel)
 		tried := make(map[string]struct{})
-		streamResult, err := m.executeStreamMixedOnce(ctx, candidateProviders, candidateReq, candidateOpts, maxRetryCredentials, tracker, tried)
+		state := &routeExecutionState{tracker: tracker, tried: tried}
+		streamResult, err := m.executeStreamMixedOnce(ctx, candidateProviders, candidateReq, candidateOpts, maxRetryCredentials, nil, 0, 0, state)
 		if err == nil {
 			// Bytes are flowing from this candidate. No further fallback is
 			// permitted after this point — the client already received bytes.

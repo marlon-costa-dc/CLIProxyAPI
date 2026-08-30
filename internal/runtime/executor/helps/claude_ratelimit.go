@@ -64,6 +64,7 @@ func parseClaudeRateLimitResetWithFuzz(headers http.Header, now time.Time, minFu
 	status5h := strings.ToLower(strings.TrimSpace(getHeaderCaseInsensitive(headers, "Anthropic-Ratelimit-Unified-5h-Status")))
 	status7d := strings.ToLower(strings.TrimSpace(getHeaderCaseInsensitive(headers, "Anthropic-Ratelimit-Unified-7d-Status")))
 	status7dOI := strings.ToLower(strings.TrimSpace(getHeaderCaseInsensitive(headers, "Anthropic-Ratelimit-Unified-7d_oi-Status")))
+	fableOnlyRejection := isFableOnlyRejection(status5h, status7d, status7dOI)
 
 	var candidateDeadlines []time.Time
 	var rejectedWindows []string
@@ -109,8 +110,8 @@ func parseClaudeRateLimitResetWithFuzz(headers http.Header, now time.Time, minFu
 		}
 	}
 
-	// 4. Fable-specific 7-day window reset (only when rejected)
-	if status7dOI == "rejected" {
+	// 4. Fable-specific 7-day window reset (only when rejected and not a Fable-only rejection)
+	if status7dOI == "rejected" && !fableOnlyRejection {
 		if raw := getHeaderCaseInsensitive(headers, "Anthropic-Ratelimit-Unified-7d_oi-Reset"); raw != "" {
 			if t, ok := parseUnixOrTimestamp(raw); ok && t.After(now) {
 				candidateDeadlines = append(candidateDeadlines, t)
