@@ -315,3 +315,87 @@ func TestBootstrapInventoryFailsLoudlyForIncompleteOrManagedRoutes(t *testing.T)
 		})
 	}
 }
+
+// TestBootstrapInventorySkipsRoutesThatCannotDeclareCatalogFacts pins the
+// distinction the bootstrap has to make. Only openai-compatibility models carry
+// catalog facts: buildConfigModels (which serves claude-api-key, xai, gemini and
+// codex) never sets CatalogProviderID, CatalogModelID, CatalogRouteProviderID,
+// CatalogRouteModelID or Protocols. Failing the whole inventory over a route
+// whose type has nowhere to put those facts strands generation one, because the
+// projection that would supply them can only be published once the inventory
+// answers. A route that declares none of them is simply not catalog-declared and
+// is skipped; a route that declares some of them is malformed and must still
+// fail loudly.
+func TestBootstrapInventorySkipsRoutesThatCannotDeclareCatalogFacts(t *testing.T) {
+	auth := &coreauth.Auth{
+		ID: "credential-a", Provider: "anthropic", RouteChannel: "claude", QuotaDomain: "quota-a", Status: coreauth.StatusActive,
+		Attributes: map[string]string{"auth_kind": "api_key"},
+	}
+	auths := map[string]*coreauth.Auth{auth.ID: auth}
+
+	// Exactly what buildConfigModels(entry.Models, "anthropic", "claude")
+	// produces for a claude-api-key entry: an identity, and no catalog facts.
+	claudeRoute := registry.RegisteredRouteSnapshot{
+		ClientID: auth.ID, RouteChannel: "claude", RuntimeModelID: "glm-5.3",
+		Model: &registry.ModelInfo{ID: "glm-5.3", DisplayName: "glm-5.3"},
+	}
+	catalogRoute := registry.RegisteredRouteSnapshot{
+		ClientID: auth.ID, RouteChannel: "claude", RuntimeModelID: "gpt-5.4",
+		Model: &registry.ModelInfo{
+			ID: "gpt-5.4", CatalogProviderID: "openai", CatalogModelID: "gpt-5.4",
+			CatalogRouteProviderID: "openai", CatalogRouteModelID: "gpt-5.4",
+			Protocols: []string{"openai_chat"},
+		},
+	}
+
+	t.Run("route without catalog facts is skipped, not fatal", func(t *testing.T) {
+		models, err := bootstrapInventoryModels(
+			[]registry.RegisteredRouteSnapshot{claudeRoute}, auths, time.Now(),
+		)
+		if err != nil {
+			t.Fatalf("bootstrapInventoryModels() error = %v, want nil", err)
+		}
+		if len(models) != 0 {
+			t.Fatalf("bootstrapInventoryModels() built %d models, want 0", len(models))
+		}
+	})
+
+	t.Run("catalog-declared route still builds alongside a skipped one", func(t *testing.T) {
+		models, err := bootstrapInventoryModels(
+			[]registry.RegisteredRouteSnapshot{claudeRoute, catalogRoute}, auths, time.Now(),
+		)
+		if err != nil {
+			t.Fatalf("bootstrapInventoryModels() error = %v, want nil", err)
+		}
+		if len(models) != 1 {
+			t.Fatalf("bootstrapInventoryModels() built %d models, want 1", len(models))
+		}
+		if got := models[0].ModelKey.CatalogProviderID; got != "openai" {
+			t.Fatalf("catalog provider = %q, want %q", got, "openai")
+		}
+	})
+
+	t.Run("partially declared route is malformed and still fails", func(t *testing.T) {
+		partial := claudeRoute
+		partial.Model = &registry.ModelInfo{ID: "glm-5.3", CatalogProviderID: "zhipuai"}
+		_, err := bootstrapInventoryModels(
+			[]registry.RegisteredRouteSnapshot{partial}, auths, time.Now(),
+		)
+		const want = "registered route 0 has invalid catalog model fact"
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("bootstrapInventoryModels() error = %v, want %q", err, want)
+		}
+	})
+
+	t.Run("managed alias is still rejected even without catalog facts", func(t *testing.T) {
+		managed := claudeRoute
+		managed.RuntimeModelID = "aihub-primary"
+		_, err := bootstrapInventoryModels(
+			[]registry.RegisteredRouteSnapshot{managed}, auths, time.Now(),
+		)
+		const want = "registered route 0 contains a managed alias before projection"
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("bootstrapInventoryModels() error = %v, want %q", err, want)
+		}
+	})
+}
