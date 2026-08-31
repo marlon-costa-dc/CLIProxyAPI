@@ -193,6 +193,17 @@ type bootstrapModel struct {
 func bootstrapInventoryModels(registered []registry.RegisteredRouteSnapshot, auths map[string]*coreauth.Auth, now time.Time) ([]modelrouting.InventoryModel, error) {
 	models := make(map[string]*bootstrapModel)
 	for routeIndex, registeredRoute := range registered {
+		// A managed alias is a projection leak and stays fatal regardless of how
+		// the route declares its catalog identity.
+		if registeredRoute.Model != nil && strings.HasPrefix(strings.ToLower(registeredRoute.RuntimeModelID), "aihub-") {
+			return nil, fmt.Errorf("registered route %d contains a managed alias before projection", routeIndex)
+		}
+		// Routes whose type has no config keys for catalog facts (claude-api-key,
+		// xai, gemini, codex) are not catalog-declared. Skip them instead of
+		// failing the whole inventory, which would strand generation one.
+		if registeredRoute.Model != nil && registeredRoute.CatalogDeclarationOf() == registry.CatalogDeclarationNone {
+			continue
+		}
 		routeKey, errRoute := registeredRoute.ModelRoutingKey(routeIndex)
 		if errRoute != nil {
 			return nil, errRoute

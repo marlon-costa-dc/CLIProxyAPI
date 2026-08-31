@@ -7,6 +7,53 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/modelrouting"
 )
 
+// CatalogDeclaration reports how a registered route declares catalog identity.
+// Only openai-compatibility models carry catalog facts: buildConfigModels, which
+// serves claude-api-key, xai, gemini and codex entries, has no config keys for
+// them and never sets any. Treating their absence as corruption would strand
+// generation one, since the projection that supplies those facts can only be
+// published after the inventory answers.
+type CatalogDeclaration int
+
+const (
+	// CatalogDeclarationNone marks a route whose type cannot declare catalog
+	// facts. It is not part of the catalog and callers should skip it.
+	CatalogDeclarationNone CatalogDeclaration = iota
+	// CatalogDeclarationComplete marks a route carrying every catalog fact.
+	CatalogDeclarationComplete
+	// CatalogDeclarationPartial marks a route carrying some but not all catalog
+	// facts. That is genuine corruption and must fail loudly.
+	CatalogDeclarationPartial
+)
+
+// CatalogDeclarationOf classifies a route's catalog facts without validating
+// them, so callers can tell "not catalog-declared" from "declared and broken".
+func (route RegisteredRouteSnapshot) CatalogDeclarationOf() CatalogDeclaration {
+	if route.Model == nil {
+		return CatalogDeclarationNone
+	}
+	facts := []string{
+		route.Model.CatalogProviderID,
+		route.Model.CatalogModelID,
+		route.Model.CatalogRouteProviderID,
+		route.Model.CatalogRouteModelID,
+	}
+	declared := 0
+	for _, fact := range facts {
+		if strings.TrimSpace(fact) != "" {
+			declared++
+		}
+	}
+	switch declared {
+	case 0:
+		return CatalogDeclarationNone
+	case len(facts):
+		return CatalogDeclarationComplete
+	default:
+		return CatalogDeclarationPartial
+	}
+}
+
 // ModelRoutingKey validates the registry-owned identity required by the model
 // routing bootstrap and returns its canonical route key.
 func (route RegisteredRouteSnapshot) ModelRoutingKey(index int) (modelrouting.RouteKey, error) {
