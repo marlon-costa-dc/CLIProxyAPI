@@ -108,20 +108,25 @@ jobs:
             return 1
           }
 
+          # The fork publishes on the `-dc` line (v7.2.145-dc1), so the tag
+          # search has to see those. Globbing "${UPSTREAM_TAG}-[0-9]*" matched
+          # only bare numeric suffixes, missed every -dc tag, and restarted the
+          # counter at 0 -- emitting a tag OLDER than what production runs.
           latest_fork_tag() {
-            git tag --merged HEAD --list "${UPSTREAM_TAG}-[0-9]*" --sort=-v:refname | head -1
+            git tag --merged HEAD --list "${UPSTREAM_TAG}-dc[0-9]*" --sort=-v:refname | head -1
           }
 
           next_fork_tag() {
             local latest="$1"
-            local suffix="0"
+            local suffix="1"
 
             if [ -n "${latest}" ]; then
-              suffix="${latest##*-}"
+              # v7.2.145-dc1 -> dc1 -> 1
+              suffix="${latest##*-dc}"
               suffix="$((suffix + 1))"
             fi
 
-            printf '%s-%s' "${UPSTREAM_TAG}" "${suffix}"
+            printf '%s-dc%s' "${UPSTREAM_TAG}" "${suffix}"
           }
 
           has_release_relevant_changes() {
