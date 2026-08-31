@@ -348,21 +348,9 @@ func TestBootstrapInventorySkipsRoutesThatCannotDeclareCatalogFacts(t *testing.T
 		},
 	}
 
-	t.Run("route without catalog facts is skipped, not fatal", func(t *testing.T) {
+	t.Run("route without catalog facts surfaces under channel identity", func(t *testing.T) {
 		models, err := bootstrapInventoryModels(
 			[]registry.RegisteredRouteSnapshot{claudeRoute}, auths, time.Now(),
-		)
-		if err != nil {
-			t.Fatalf("bootstrapInventoryModels() error = %v, want nil", err)
-		}
-		if len(models) != 0 {
-			t.Fatalf("bootstrapInventoryModels() built %d models, want 0", len(models))
-		}
-	})
-
-	t.Run("catalog-declared route still builds alongside a skipped one", func(t *testing.T) {
-		models, err := bootstrapInventoryModels(
-			[]registry.RegisteredRouteSnapshot{claudeRoute, catalogRoute}, auths, time.Now(),
 		)
 		if err != nil {
 			t.Fatalf("bootstrapInventoryModels() error = %v, want nil", err)
@@ -370,8 +358,23 @@ func TestBootstrapInventorySkipsRoutesThatCannotDeclareCatalogFacts(t *testing.T
 		if len(models) != 1 {
 			t.Fatalf("bootstrapInventoryModels() built %d models, want 1", len(models))
 		}
-		if got := models[0].ModelKey.CatalogProviderID; got != "openai" {
-			t.Fatalf("catalog provider = %q, want %q", got, "openai")
+		if got := models[0].ModelKey.CatalogProviderID; got != "claude" {
+			t.Fatalf("catalog provider = %q, want %q", got, "claude")
+		}
+		if got := models[0].ModelKey.CanonicalModelID; got != "glm-5.3" {
+			t.Fatalf("canonical model = %q, want %q", got, "glm-5.3")
+		}
+	})
+
+	t.Run("catalog-declared route still builds alongside a channel route", func(t *testing.T) {
+		models, err := bootstrapInventoryModels(
+			[]registry.RegisteredRouteSnapshot{claudeRoute, catalogRoute}, auths, time.Now(),
+		)
+		if err != nil {
+			t.Fatalf("bootstrapInventoryModels() error = %v, want nil", err)
+		}
+		if len(models) != 2 {
+			t.Fatalf("bootstrapInventoryModels() built %d models, want 2", len(models))
 		}
 	})
 
