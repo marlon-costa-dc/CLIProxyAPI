@@ -199,9 +199,70 @@ func bootstrapInventoryModels(registered []registry.RegisteredRouteSnapshot, aut
 			return nil, fmt.Errorf("registered route %d contains a managed alias before projection", routeIndex)
 		}
 		// Routes whose type has no config keys for catalog facts (claude-api-key,
-		// xai, gemini, codex) are not catalog-declared. Skip them instead of
-		// failing the whole inventory, which would strand generation one.
+		// xai, gemini, codex) are not catalog-declared, but the route is real:
+		// its credential is live and the pipeline's models.dev source owns the
+		// canonical identity for it. Surface it under channel identity instead
+		// of hiding it, which would strand generation one.
 		if registeredRoute.Model != nil && registeredRoute.CatalogDeclarationOf() == registry.CatalogDeclarationNone {
+			channel := registeredRoute.RouteChannel
+			modelKey := modelrouting.ModelKeyJSON{
+				CatalogProviderID: channel,
+				CanonicalModelID:  registeredRoute.RuntimeModelID,
+			}
+			modelID := channel + "\x00" + registeredRoute.RuntimeModelID
+			built := models[modelID]
+			if built == nil {
+				display := strings.TrimSpace(registeredRoute.Model.DisplayName)
+				if display == "" {
+					display = registeredRoute.RuntimeModelID
+				}
+				built = &bootstrapModel{model: modelrouting.InventoryModel{
+					ModelKey: modelKey, DisplayName: display,
+					Variants: []modelrouting.InventoryVariant{}, Routes: []modelrouting.InventoryRoute{},
+				}, routes: make(map[string]*modelrouting.InventoryRoute)}
+				models[modelID] = built
+			}
+			routeChannel := registeredRoute.RouteChannel
+			routeID := routeChannel + "\x00" + registeredRoute.RuntimeModelID
+			if built.routes[routeID] != nil {
+				continue
+			}
+			auth := auths[registeredRoute.ClientID]
+			if auth == nil {
+				return nil, fmt.Errorf("registered route %d has no matching credential", routeIndex)
+			}
+			if auth.QuotaDomain == "" || strings.TrimSpace(auth.QuotaDomain) != auth.QuotaDomain || auth.QuotaDomain == "unknown" {
+				return nil, fmt.Errorf("registered route %d has no canonical quota domain", routeIndex)
+			}
+			if kind := inventoryAuthKind(auth.AuthKind()); kind != "api_key" && kind != "oauth" {
+				return nil, fmt.Errorf("registered route %d has no supported credential kind", routeIndex)
+			}
+			route := &modelrouting.InventoryRoute{
+				RouteKey: modelrouting.RouteKeyJSON{
+					ModelKey: modelKey, RouteChannel: routeChannel,
+				},
+				CatalogRouteProviderID: channel,
+				CatalogRouteModelID:    registeredRoute.RuntimeModelID,
+				RuntimeModelID:         registeredRoute.RuntimeModelID,
+				RouteSelector: modelrouting.SelectorForRoute(
+					modelrouting.RouteKey{
+						ModelKey: modelrouting.ModelKey{
+							CatalogProviderID: channel, CanonicalModelID: registeredRoute.RuntimeModelID,
+						},
+						RouteChannel: routeChannel,
+					},
+					registeredRoute.RuntimeModelID,
+				),
+				Protocols:       []string{},
+				Restrictions:    []modelrouting.InventoryRestriction{},
+				Credentials:     []modelrouting.InventoryCredential{},
+				SelectionReason: "route surfaced from its channel without catalog declaration",
+			}
+			built.model.Routes = append(built.model.Routes, *route)
+			built.routes[routeID] = &built.model.Routes[len(built.model.Routes)-1]
+			credential := inventoryCredential(registeredRoute, auth, now)
+			built.model.Routes[len(built.model.Routes)-1].Credentials = append(
+				built.model.Routes[len(built.model.Routes)-1].Credentials, credential)
 			continue
 		}
 		routeKey, errRoute := registeredRoute.ModelRoutingKey(routeIndex)
