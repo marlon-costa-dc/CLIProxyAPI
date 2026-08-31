@@ -126,10 +126,18 @@ jobs:
 
           has_release_relevant_changes() {
             local base_commit="$1"
+            local changed
 
-            git diff --name-only "${base_commit}..HEAD" \
-              | grep -Ev '^(\.github/|docs/|plans/|.*\.md$)' \
-              | grep -q .
+            # No `grep -q` terminating this pipe. Under `set -o pipefail`, a
+            # short-circuiting reader closes the pipe, the upstream grep dies
+            # with SIGPIPE, and its non-zero status becomes the pipeline's --
+            # so a large changeset was reported as "no changes" and the release
+            # was silently skipped. The trailing `|| true` keeps the legitimate
+            # empty case (grep exits 1) from tripping `set -e`.
+            changed="$(git diff --name-only "${base_commit}..HEAD" \
+              | grep -Ev '^(\.github/|docs/|plans/|.*\.md$)' || true)"
+
+            [ -n "${changed}" ]
           }
 
           LATEST_FORK_TAG="$(latest_fork_tag)"
