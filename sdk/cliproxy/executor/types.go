@@ -63,11 +63,18 @@ const (
 	LCPMinPrefixLengthMetadataKey = "lcp_min_prefix_length"
 	// CallerScopeMetadataKey isolates inferred session identities between downstream callers.
 	CallerScopeMetadataKey = "caller_scope"
+	// ExcludedAuthIDsMetadataKey carries the set of auth IDs that already failed
+	// (429/5xx/empty) within the current request and must never be re-selected
+	// for the remainder of that request. Value is map[string]struct{} or []string.
+	ExcludedAuthIDsMetadataKey = "request_excluded_auth_ids"
 	// SessionAffinityProviderMetadataKey carries the affinity selection namespace
 	// (provider string, e.g. the literal "mixed" pool key) used by SessionAffinitySelector.Pick,
 	// so OnResult keys the session cache identically to how selection read it.
 	SessionAffinityProviderMetadataKey = "session_affinity_provider"
-	// SessionAffinityModelMetadataKey carries the model used during session affinity selection.
+	// SessionAffinityModelMetadataKey carries the normalized model argument used by
+	// SessionAffinitySelector.Pick to build the session cache key, before any
+	// executor/model-pool/home upstream rewrite, so OnResult keys the session cache
+	// identically to how selection read it.
 	SessionAffinityModelMetadataKey = "session_affinity_model"
 )
 
@@ -129,6 +136,9 @@ type RequestTerminatedError struct {
 	HTTPStatus int
 	Header     http.Header
 	Body       []byte
+	// Trusted reports that the termination originated locally (plugin/interceptor)
+	// rather than from an untrusted upstream. Zero value false is the safe default.
+	Trusted bool
 }
 
 func (e *RequestTerminatedError) Error() string {
@@ -229,6 +239,10 @@ type Response struct {
 	Metadata map[string]any
 	// Headers carries upstream HTTP response headers for passthrough to clients.
 	Headers http.Header
+	// DownstreamHeaders carries trusted headers created inside CLIProxy. They are
+	// distinct from upstream headers so disabled passthrough cannot erase local
+	// routing evidence and an upstream cannot forge that evidence.
+	DownstreamHeaders http.Header
 }
 
 // StreamChunk represents a single streaming payload unit emitted by provider executors.
@@ -244,8 +258,13 @@ type StreamChunk struct {
 type StreamResult struct {
 	// Headers carries upstream HTTP response headers from the initial connection.
 	Headers http.Header
+	// DownstreamHeaders carries trusted headers created inside CLIProxy.
+	DownstreamHeaders http.Header
 	// Chunks is the channel of streaming payload units.
 	Chunks <-chan StreamChunk
+	// Complete is a trusted local lifecycle callback. Handlers call it exactly
+	// once after terminal SSE validation, passing nil only for a valid terminal.
+	Complete func(error)
 }
 
 // StatusError represents an error that carries an HTTP-like status code.

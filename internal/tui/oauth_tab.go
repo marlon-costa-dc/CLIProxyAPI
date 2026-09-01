@@ -25,6 +25,15 @@ var oauthProviders = []oauthProvider{
 	{"Antigravity", "antigravity-auth-url", "🟪", false},
 	{"Kimi", "kimi-auth-url", "🟫", true},
 	{"xAI", "xai-auth-url", "⬛", true},
+	{"Z.AI", "zai-auth-url", "🟦", false},
+	{"BigModel (Z.AI CN)", "bigmodel-auth-url", "🟦", false},
+	{"GitLab", "gitlab-auth-url", "🟧", false},
+	{"Kilo", "kilo-auth-url", "🟨", false},
+	{"iFlow", "iflow-auth-url", "🟩", false},
+	{"Kiro", "kiro-auth-url", "🟪", false},
+	{"Cursor", "cursor-auth-url", "🟦", false},
+	{"GitHub", "github-auth-url", "⬛", false},
+	{"Qoder", "qoder-auth-url", "🟩", false},
 }
 
 // oauthTabModel handles OAuth login flows.
@@ -358,6 +367,24 @@ func (m oauthTabModel) submitCallback(callbackURL string) tea.Cmd {
 					providerKey = "kimi"
 				case "xai-auth-url":
 					providerKey = "xai"
+				case "zai-auth-url":
+					providerKey = "zai"
+				case "bigmodel-auth-url":
+					providerKey = "bigmodel"
+				case "gitlab-auth-url":
+					providerKey = "gitlab"
+				case "kilo-auth-url":
+					providerKey = "kilo"
+				case "iflow-auth-url":
+					providerKey = "iflow"
+				case "kiro-auth-url":
+					providerKey = "kiro"
+				case "cursor-auth-url":
+					providerKey = "cursor"
+				case "github-auth-url":
+					providerKey = "github"
+				case "qoder-auth-url":
+					providerKey = "qoder"
 				}
 				break
 			}

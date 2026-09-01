@@ -11,6 +11,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/managementasset"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
+	internalusage "github.com/router-for-me/CLIProxyAPI/v7/internal/usage"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
@@ -85,7 +86,13 @@ func (s *Server) UpdateClientsContext(ctx context.Context, cfg *config.Config) b
 	}
 
 	if oldCfg == nil || oldCfg.UsageStatisticsEnabled != cfg.UsageStatisticsEnabled {
+		internalusage.SetStatisticsEnabled(cfg.UsageStatisticsEnabled)
 		redisqueue.SetUsageStatisticsEnabled(cfg.UsageStatisticsEnabled)
+	}
+	if s.ampModule != nil {
+		if errAmp := s.ampModule.OnConfigUpdated(cfg); errAmp != nil {
+			log.WithError(errAmp).Error("failed to update Amp module configuration")
+		}
 	}
 
 	if oldCfg == nil || oldCfg.RedisUsageQueueRetentionSeconds != cfg.RedisUsageQueueRetentionSeconds {
@@ -208,6 +215,9 @@ func (s *Server) UpdateClientsContext(ctx context.Context, cfg *config.Config) b
 	interactionsAPIKeyCount := len(cfg.InteractionsKey)
 	claudeAPIKeyCount := len(cfg.ClaudeKey)
 	codexAPIKeyCount := len(cfg.CodexKey)
+	openCodeAPIKeyCount := len(cfg.OpenCodeKey)
+	openCodeGoAPIKeyCount := len(cfg.OpenCodeGoKey)
+	poolsideAPIKeyCount := len(cfg.PoolsideKey)
 	xaiAPIKeyCount := len(cfg.XAIKey)
 	vertexAICompatCount := len(cfg.VertexCompatAPIKey)
 	openAICompatCount := 0
@@ -219,14 +229,17 @@ func (s *Server) UpdateClientsContext(ctx context.Context, cfg *config.Config) b
 		openAICompatCount += len(entry.APIKeyEntries)
 	}
 
-	total := authEntries + geminiAPIKeyCount + interactionsAPIKeyCount + claudeAPIKeyCount + codexAPIKeyCount + xaiAPIKeyCount + vertexAICompatCount + openAICompatCount
-	fmt.Printf("server clients and configuration updated: %d clients (%d auth entries + %d Gemini API keys + %d Interactions API keys + %d Claude API keys + %d Codex keys + %d xAI keys + %d Vertex-compat + %d OpenAI-compat)\n",
+	total := authEntries + geminiAPIKeyCount + interactionsAPIKeyCount + claudeAPIKeyCount + codexAPIKeyCount + openCodeAPIKeyCount + openCodeGoAPIKeyCount + poolsideAPIKeyCount + xaiAPIKeyCount + vertexAICompatCount + openAICompatCount
+	fmt.Printf("server clients and configuration updated: %d clients (%d auth entries + %d Gemini API keys + %d Interactions API keys + %d Claude API keys + %d Codex keys + %d OpenCode API keys + %d OpenCode Go API keys + %d Poolside API keys + %d xAI keys + %d Vertex-compat + %d OpenAI-compat)\n",
 		total,
 		authEntries,
 		geminiAPIKeyCount,
 		interactionsAPIKeyCount,
 		claudeAPIKeyCount,
 		codexAPIKeyCount,
+		openCodeAPIKeyCount,
+		openCodeGoAPIKeyCount,
+		poolsideAPIKeyCount,
 		xaiAPIKeyCount,
 		vertexAICompatCount,
 		openAICompatCount,

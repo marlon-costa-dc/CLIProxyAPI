@@ -46,7 +46,7 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	if errValidate := cfg.CredentialInFlight.Validate(); errValidate != nil {
 		return nil, errValidate
 	}
-	if errValidate := cfg.ValidateCredentialWeights(); errValidate != nil {
+	if errValidate := cfg.ValidateRuntimeConfig(); errValidate != nil {
 		return nil, errValidate
 	}
 
@@ -98,6 +98,9 @@ func ParseConfigBytes(data []byte) (*Config, error) {
 	cfg.SanitizeInteractionsKeys()
 	cfg.SanitizeVertexCompatKeys()
 	cfg.SanitizeCodexKeys()
+	cfg.SanitizeOpenCodeKeys()
+	cfg.SanitizeOpenCodeGoKeys()
+	cfg.SanitizePoolsideKeys()
 	cfg.SanitizeXAIKeys()
 	cfg.SanitizeCodexHeaderDefaults()
 	cfg.SanitizeClaudeHeaderDefaults()

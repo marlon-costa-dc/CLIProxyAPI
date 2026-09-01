@@ -30,7 +30,8 @@ remote-management:
   # disable-auto-update-panel: false
 
   # GitHub repository for the management control panel. Accepts a repository URL or releases API URL.
-  panel-github-repository: "https://github.com/router-for-me/Cli-Proxy-API-Management-Center"
+  # dc fork ships ordered-pool support in the admin UI (v1.22.2-dc1+).
+  panel-github-repository: "https://github.com/marlon-costa-dc/Cli-Proxy-API-Management-Center"
 
 # Authentication directory (supports ~ for home directory)
 auth-dir: "~/.cli-proxy-api"
@@ -49,34 +50,6 @@ pprof:
   enable: false
   addr: "127.0.0.1:8316"
 
-# Credential concurrency is configured by Home in Home mode. The synthesized Home config is
-# authoritative and local values, including the values below, are ignored. Do not use local
-# configuration to override a Home concurrency policy.
-# credential-concurrency:
-#   lifecycle-config-revision: 1
-#   observation-barrier-revision: 0
-#   cpa-heartbeat-timeout: "3s"
-#   cpa-cancel-bound: "5s"
-#   reclaim-grace: "5s"
-#   cleanup-interval: "5s"
-#   release-flush-interval: 250ms
-#   release-max-backoff: 2s
-#   busy-retry-min: 250ms
-#   busy-retry-max: 1s
-#   max-limit: 1000000
-
-# Credential in-flight observation snapshot contract.
-# credential-in-flight:
-#   snapshot-interval: 2s
-#   stale-after: 10s
-#   max-part-bytes: 262144
-#   max-part-count: 64
-#   max-revision-bytes: 16777216
-#   max-aggregate-groups: 100000
-#   max-details: 10000
-#   max-string-bytes: 256
-#   staging-retention: 1m
-
 # Standard dynamic library plugins are trusted in-process code. They are disabled by default.
 # Build Go examples with go build -buildmode=c-shared for the target GOOS/GOARCH.
 # Other languages can implement the same C ABI and JSON method protocol.
@@ -92,13 +65,6 @@ plugins:
   # Additional plugin store registries. The built-in official registry is always included.
   # store-sources:
   #   - "https://example.com/cliproxy-plugins/registry.json"
-  # Optional plugin store auth rules. Values are read from environment variables;
-  # tokens are not written into plugin manifests or node status.
-  # store-auth:
-  #   - match: "https://example.com/cliproxy-plugins/"
-  #     apply-to: ["registry", "artifact"]
-  #     type: bearer
-  #     token-env: "CLIPROXY_PLUGIN_STORE_TOKEN"
   configs:
     example:
       enabled: true
@@ -165,7 +131,6 @@ max-retry-credentials: 0
 max-retry-interval: 30
 
 # When true, disable auth/model cooldown scheduling globally (prevents blackout windows after failure states).
-# A credential/provider disable-cooling value, when present, overrides this global value.
 disable-cooling: false
 
 # When true, persist per-auth cooldown status as .cds files next to auth files.
@@ -182,11 +147,6 @@ transient-error-cooldown-seconds: 0
 # or a Claude OAuth/token file via a "cloak_mode" value. Default false keeps the per-client
 # "auto" behavior (cloak only non-Claude-Code clients).
 disable-claude-cloak-mode: false
-
-# Claude Code compatibility settings.
-claude-code:
-  # When true, return original model IDs in Anthropic model list responses instead of cloaked IDs.
-  disable-cloaking-model-list: false
 
 # disable-image-generation supports: false (default), true, "chat", or "passthrough".
 # - true: disable image_generation everywhere (also returns 404 for /v1/images/generations and /v1/images/edits).
@@ -214,18 +174,12 @@ quota-exceeded:
 
 # Routing strategy for selecting credentials when multiple match.
 routing:
-  strategy: "round-robin" # round-robin (default), weighted-round-robin, fill-first
-  # weighted-round-robin uses each credential's integer weight (default 1, maximum 1,000,000).
-  # Non-positive weights exclude the credential while this strategy is active.
-  # For OAuth/file credentials, add a top-level numeric "weight" field to the auth JSON.
+  strategy: "round-robin" # round-robin (default), fill-first
   # Enable universal session-sticky routing for all clients.
-  # Explicit Claude Code, Codex, OpenCode, and pi session headers are preferred,
-  # followed by prompt_cache_key, Responses conversation IDs, legacy body IDs,
-  # execution or derived session identity, and the existing first-message hash fallback.
+  # Session IDs are extracted from: metadata.user_id (Claude Code session format),
+  # X-Session-ID, Session_id (Codex), X-Client-Request-Id (PI), conversation_id,
+  # or first few messages hash.
   # Automatic failover is always enabled when bound auth becomes unavailable.
-  # An established binding outranks credential priority: once a session is bound, that
-  # credential is kept even if a higher-priority credential recovers. Credential priority
-  # still decides cold bindings, requests without a session, and post-failover rebinding.
   session-affinity: false # default: false
   # How long session-to-auth bindings are retained. Default: 1h
   session-affinity-ttl: "1h"
@@ -303,6 +257,7 @@ nonstream-keepalive-interval: 0
 # streaming:
 #   keepalive-seconds: 15   # Default: 0 (disabled). <= 0 disables keep-alives.
 #   bootstrap-retries: 1    # Default: 0 (disabled). Retries before first byte is sent.
+#   stream-connect-timeout-seconds: 20 # Default: 0 (disabled). Optional maximum wait for connection/stream establishment before failover. (Deprecated alias: stream-first-chunk-timeout-seconds).
 
 # Signature cache validation for thinking blocks (Antigravity/Claude).
 # When true (default), cached signatures are preferred and validated.
@@ -317,7 +272,6 @@ nonstream-keepalive-interval: 0
 # Gemini API keys
 # gemini-api-key:
 #   - api-key: "AIzaSy...01"
-#     weight: 5 # optional: weighted-round-robin share; omitted defaults to 1; maximum 1,000,000
 #     prefix: "test" # optional: require calls like "test/gemini-3-pro-preview" to target this credential
 #     disable-cooling: false # optional override: true disables cooling, false enables it; omit to inherit global
 #     request-retry: 3 # optional per-auth override; 0 disables additional rounds; omit or set < 0 to inherit global
@@ -334,19 +288,11 @@ nonstream-keepalive-interval: 0
 #     base-url: "https://generativelanguage.googleapis.com"
 #     headers:
 #       X-Custom-Header: "custom-value"
-#       # Values starting with "$" dynamically copy the header value from downstream client requests.
-#       # If the client did not send the specified header, the header is omitted.
-#       # X-Claude-Code-Session-Id: "$ABC" # copies client's "ABC" header
 #     proxy-url: "socks5://proxy.example.com:1080"
 #     # proxy-url: "direct" # optional: explicit direct connect for this credential
 #     models:
 #       - name: "gemini-2.5-flash" # upstream model name
 #         alias: "gemini-flash"    # client alias mapped to the upstream model
-#         display-name: "Gemini Flash" # optional catalog display name
-#         max-context-length: 1048576 # optional: override Codex client context window metadata
-#         is-compat: false             # optional: preserve thinking blocks with empty signatures for compatible upstreams
-#         thinking:                    # optional: exact thinking capability for this configured model
-#           levels: ["high", "medium", "low", "none", "auto"]
 #     excluded-models:
 #       - "gemini-2.5-pro"     # exclude specific models from this provider (exact match)
 #       - "gemini-2.5-*"       # wildcard matching prefix (e.g. gemini-2.5-flash, gemini-2.5-pro)
@@ -389,7 +335,6 @@ nonstream-keepalive-interval: 0
 # Codex API keys
 # codex-api-key:
 #   - api-key: "sk-atSM..."
-#     weight: 5 # optional: weighted-round-robin share; omitted defaults to 1; maximum 1,000,000
 #     prefix: "test" # optional: require calls like "test/gpt-5-codex" to target this credential
 #     disable-cooling: false # optional override: true disables cooling, false enables it; omit to inherit global
 #     request-retry: 3 # optional per-auth override; 0 disables additional rounds; omit or set < 0 to inherit global
@@ -399,28 +344,13 @@ nonstream-keepalive-interval: 0
 #           - "context_window_exceeded"
 #         action: "stop-and-cooldown"
 #     base-url: "https://www.example.com" # use the custom codex API endpoint
-#     alpha-search: false # optional: allow this key to serve /v1/alpha/search via base-url + /alpha/search
 #     headers:
 #       X-Custom-Header: "custom-value"
-#       # Values starting with "$" dynamically copy the header value from downstream client requests.
-#       # If the client did not send the specified header, the header is omitted.
-#       # X-Claude-Code-Session-Id: "$ABC" # copies client's "ABC" header
 #     proxy-url: "socks5://proxy.example.com:1080" # optional: per-key proxy override
 #     # proxy-url: "direct" # optional: explicit direct connect for this credential
 #     models:
 #       - name: "gpt-5-codex"   # upstream model name
 #         alias: "codex-latest" # client alias mapped to the upstream model
-#         display-name: "Codex Latest" # optional catalog display name
-#         max-context-length: 1048576 # optional: override Codex client context window metadata
-#         force-mapping: true    # optional: rewrite response model fields back to the alias
-#         # When true and codex.optimize-multi-agent-v2 is also true, convert Codex
-#         # MultiAgentV2 agent_message items into portable Responses message/user input
-#         # for third-party Responses-compatible endpoints that reject agent_message.
-#         # Default false keeps agent_message unchanged for native OpenAI/Codex endpoints.
-#         # It also preserves thinking blocks with empty signatures for compatible upstreams.
-#         is-compat: false
-#         thinking:              # optional: exact thinking capability for this configured model
-#           levels: ["xhigh", "high", "medium", "low"]
 #     excluded-models:
 #       - "gpt-5.1"         # exclude specific models (exact match)
 #       - "gpt-5-*"         # wildcard matching prefix (e.g. gpt-5-medium, gpt-5-codex)
@@ -466,7 +396,6 @@ nonstream-keepalive-interval: 0
 # claude-api-key:
 #   - api-key: "sk-atSM..." # use the official claude API key, no need to set the base url
 #   - api-key: "sk-atSM..."
-#     weight: 5 # optional: weighted-round-robin share; omitted defaults to 1; maximum 1,000,000
 #     prefix: "test" # optional: require calls like "test/claude-sonnet-latest" to target this credential
 #     disable-cooling: false # optional override: true disables cooling, false enables it; omit to inherit global
 #     request-retry: 3 # optional per-auth override; 0 disables additional rounds; omit or set < 0 to inherit global
@@ -478,37 +407,26 @@ nonstream-keepalive-interval: 0
 #     base-url: "https://www.example.com" # use the custom claude API endpoint
 #     headers:
 #       X-Custom-Header: "custom-value"
-#       # Values starting with "$" dynamically copy the header value from downstream client requests.
-#       # If the client did not send the specified header, the header is omitted.
-#       # X-Claude-Code-Session-Id: "$ABC" # copies client's "ABC" header
 #     proxy-url: "socks5://proxy.example.com:1080" # optional: per-key proxy override
 #     # proxy-url: "direct" # optional: explicit direct connect for this credential
 #     models:
 #       - name: "claude-3-5-sonnet-20241022" # upstream model name
 #         alias: "claude-sonnet-latest"      # client alias mapped to the upstream model
-#         display-name: "Claude Sonnet"      # optional catalog display name
-#         max-context-length: 1048576         # optional: override Codex client context window metadata
-#         force-mapping: true                 # optional: rewrite response model fields back to the alias
-#         is-compat: false                    # optional: preserve thinking blocks with empty signatures for compatible upstreams
-#         thinking:                           # optional: exact thinking capability for this configured model
-#           levels: ["max", "xhigh", "high", "medium", "low", "minimal", "none", "auto"]
 #     excluded-models:
 #       - "claude-opus-4-5-20251101" # exclude specific models (exact match)
 #       - "claude-3-*"               # wildcard matching prefix (e.g. claude-3-7-sonnet-20250219)
 #       - "*-thinking"               # wildcard matching suffix (e.g. claude-opus-4-5-thinking)
 #       - "*haiku*"                  # wildcard matching substring (e.g. claude-3-5-haiku-20241022)
-#     rebuild-mid-system-message: false # optional: default is false; when true, move messages with role "system" into the top-level Claude system field
-#     cloak:                         # optional: explicitly enable request cloaking for non-Claude-Code clients
-#       mode: "auto"                 # "auto" (default inside this block): cloak only when client is not Claude Code
-#                                    # "always": cloak every unconfirmed client; confirmed native Claude Code still passes through
+#     cloak:                         # optional: request cloaking for non-Claude-Code clients
+#       mode: "auto"                 # "auto" (default): cloak only when client is not Claude Code
+#                                    # "always": always apply cloaking
 #                                    # "never": never apply cloaking
 #       # This "cloak" block applies to this claude-api-key entry only. For Claude OAuth
 #       # credentials, set the same options in the auth/token JSON file via "cloak_mode" /
 #       # "cloak_strict_mode" / "cloak_sensitive_words" / "cloak_cache_user_id". The top-level
 #       # "disable-claude-cloak-mode: true" disables cloaking for all Claude credentials at once.
-#       strict-mode: false           # false (default): legacy-model whitelist uses a user system-reminder;
-#                                    # all other and future models use messages[].role=system
-#                                    # true: strip caller prompts and keep only Claude Code billing and identity blocks
+#       strict-mode: false           # false (default): prepend Claude Code prompt to user system messages
+#                                    # true: strip all user system messages, keep only Claude Code prompt
 #       sensitive-words:             # optional: words to obfuscate with zero-width characters
 #         - "API"
 #         - "proxy"
@@ -572,31 +490,19 @@ nonstream-keepalive-interval: 0
 #                                     # for real Claude OAuth on any upstream, and for claude-code-cli profiles
 #                                     # only on api.anthropic.com; Vertex keeps provider-native signing
 
-# Anthropic-Beta is assembled per request rather than sent as a fixed list, matching
-# Claude Code 2.1.220: context-1m sits right after claude-code, mid-conversation-system
-# is added only for models that accept a role=system turn, advanced-tool-use only when
-# the request declares tools, and server-side-fallback / fallback-credit /
-# structured-outputs trail effort. On direct api.anthropic.com a caller may only ask for
-# betas real Claude Code also sends, and they are placed at their observed positions;
-# anything else is dropped so the outgoing set stays one a real client could produce.
-# Other Anthropic-compatible upstreams still forward caller betas verbatim.
-#
-# Default headers for Claude API requests. Update only after measuring a new Claude Code release.
-# Unconfirmed clients use this CLI baseline. Verified native Claude Code CLI, sdk-cli,
-# and VSCode requests preserve their measured entrypoint and software shape only when the
-# Claude Code version, package version, and runtime version exactly match this configured
-# baseline; unmeasured versions fall back to it. In legacy mode, timeout is a fallback and
-# verified native OS/arch values remain client-supplied. When stabilize-device-profile is
-# enabled, OS/arch are pinned to the values below and cached profiles remain constrained to
-# the same exact software baseline rather than learning newer client versions.
+# Default headers for Claude API requests. Update when Claude Code releases new versions.
+# In legacy mode, user-agent/package-version/runtime-version/timeout are used as fallbacks
+# when the client omits them, while OS/arch remain runtime-derived. When
+# stabilize-device-profile is enabled, OS/arch stay pinned to the baseline values below,
+# while user-agent/package-version/runtime-version seed a software fingerprint that can
+# still upgrade to newer official Claude client versions.
 # claude-header-defaults:
-#   user-agent: "claude-cli/2.1.220 (external, cli)"
-#   package-version: "0.94.0"
-#   runtime-version: "v26.3.0"
+#   user-agent: "claude-cli/2.1.44 (external, sdk-cli)"
+#   package-version: "0.74.0"
+#   runtime-version: "v24.3.0"
 #   os: "MacOS"
 #   arch: "arm64"
 #   timeout: "600"
-#   timezone: "Asia/Singapore"  # fallback IANA timezone for cloaked currentDate; a credential JSON "timezone" takes priority
 #   stabilize-device-profile: false  # optional, default false; set true to enable per-auth/API-key fingerprint pinning
 
 # Default headers for Codex OAuth model requests.
@@ -627,24 +533,15 @@ nonstream-keepalive-interval: 0
 #         action: "stop" # "stop", "stop-and-cooldown", "continue", "continue-and-cooldown"
 #     headers:
 #       X-Custom-Header: "custom-value"
-#       # Values starting with "$" dynamically copy the header value from downstream client requests.
-#       # If the client did not send the specified header, the header is omitted.
-#       # X-Claude-Code-Session-Id: "$ABC" # copies client's "ABC" header
 #     api-key-entries:
 #       - api-key: "sk-or-v1-...b780"
-#         weight: 5 # optional: weighted-round-robin share; omitted defaults to 1; maximum 1,000,000
 #         proxy-url: "socks5://proxy.example.com:1080" # optional: per-key proxy override
 #         # proxy-url: "direct" # optional: explicit direct connect for this credential
 #       - api-key: "sk-or-v1-...b781" # without proxy-url
 #     models: # The models supported by the provider.
 #       - name: "moonshotai/kimi-k2:free" # The actual model name.
 #         alias: "kimi-k2"               # The alias used in the API.
-#         display-name: "Kimi K2"         # optional catalog display name
-#         max-context-length: 1048576    # optional: override Codex client context window metadata
-#         image: false                   # optional: set true to allow this model on /v1/images/generations and /v1/images/edits (not chat/responses image input)
-#         input-modalities: [text, image] # optional: declare /v1/chat/completions and /v1/responses multimodal input for Codex clients. Use [text] for upstreams that reject multimodal tool result content.
-#         output-modalities: [text]       # optional: declare output modalities when known
-#         is-compat: false                # optional: preserve Claude thinking blocks for compatible upstreams
+#         image: false                   # optional: set true to allow this model on /v1/images/generations and /v1/images/edits
 #         thinking:                      # optional: omit to default to levels ["low","medium","high"]
 #           levels: ["low", "medium", "high"]
 #       # You may repeat the same alias to build an internal model pool.
@@ -662,7 +559,6 @@ nonstream-keepalive-interval: 0
 # Vertex API keys (Vertex-compatible endpoints, base-url is optional)
 # vertex-api-key:
 #   - api-key: "vk-123..."                        # x-goog-api-key header
-#     weight: 5                                    # optional: weighted-round-robin share; omitted defaults to 1; maximum 1,000,000
 #     prefix: "test"                              # optional: require calls like "test/vertex-pro" to target this credential
 #     disable-cooling: false                       # optional override: true disables cooling, false enables it; omit to inherit global
 #     request-retry: 3                             # optional per-auth override; 0 disables additional rounds; omit or set < 0 to inherit global
@@ -671,15 +567,9 @@ nonstream-keepalive-interval: 0
 #     # proxy-url: "direct" # optional: explicit direct connect for this credential
 #     headers:
 #       X-Custom-Header: "custom-value"
-#       # Values starting with "$" dynamically copy the header value from downstream client requests.
-#       # If the client did not send the specified header, the header is omitted.
-#       # X-Claude-Code-Session-Id: "$ABC" # copies client's "ABC" header
 #     models:                                     # optional: map aliases to upstream model names
 #       - name: "gemini-2.5-flash"                # upstream model name
 #         alias: "vertex-flash"                   # client-visible alias
-#         display-name: "Vertex Flash"            # optional catalog display name
-#         thinking:                                # optional: exact thinking capability for this configured model
-#           levels: ["high", "medium", "low", "none", "auto"]
 #       - name: "gemini-2.5-pro"
 #         alias: "vertex-pro"
 #     excluded-models:                            # optional: models to exclude from listing
@@ -688,8 +578,8 @@ nonstream-keepalive-interval: 0
 
 # Global OAuth model name aliases (per channel)
 # These aliases rename model IDs for both model listing and request routing.
-# Supported channels: vertex, aistudio, antigravity, claude, codex, kimi, xai.
-# NOTE: Aliases do not apply to gemini-api-key, interactions-api-key, codex-api-key, xai-api-key, claude-api-key, openai-compatibility, or vertex-api-key.
+# Supported channels: vertex, aistudio, antigravity, claude, codex, kimi, xai, zai.
+# NOTE: Aliases do not apply to gemini-api-key, codex-api-key, claude-api-key, openai-compatibility, or vertex-api-key.
 # NOTE: Because aliases affect the merged /v1 model list and merged request routing, overlapping
 # client-visible names can become ambiguous across providers. For strict backend pinning, use
 # unique aliases/prefixes or avoid overlapping names.
@@ -711,6 +601,14 @@ nonstream-keepalive-interval: 0
 #   ]
 # }
 # oauth-model-alias:
+#   # Sequential failover: repeat the same alias with different upstream names.
+#   # Config order is the candidate order (first entry is tried first).
+#   # Example: client asks for "g5"; try gpt-5, then gpt-5-mini on retryable errors.
+#   #   codex:
+#   #     - name: "gpt-5"
+#   #       alias: "g5"
+#   #     - name: "gpt-5-mini"
+#   #       alias: "g5"
 #   vertex:
 #     - name: "gemini-2.5-pro"
 #       alias: "g2.5p"
@@ -718,11 +616,8 @@ nonstream-keepalive-interval: 0
 #     - name: "gemini-2.5-pro"
 #       alias: "g2.5p"
 #   antigravity:
-#     - name: "gemini-pro-agent"                   # upstream Antigravity model id
-#       alias: "gemini-3.1-pro-preview"            # client-visible id (Gemini 3.1 Pro Preview)
-#       display-name: "Antigravity Gemini 3.1 Pro" # optional catalog display name
-#       fork: true
-#       force-mapping: true
+#     - name: "gemini-3-pro-high"
+#       alias: "gemini-3-pro-preview"
 #   claude:
 #     - name: "claude-sonnet-4-5-20250929"
 #       alias: "cs4.5"
@@ -735,6 +630,9 @@ nonstream-keepalive-interval: 0
 #   xai:
 #     - name: "grok-4.3"
 #       alias: "grok-latest"
+#   zai:
+#     - name: "glm-4.6"
+#       alias: "glm-latest"
 #   sample-provider:                  # plugin provider keys are supported for OAuth plugins
 #     - name: "sample-model-latest"
 #       alias: "sample-latest"
@@ -755,6 +653,8 @@ nonstream-keepalive-interval: 0
 #     - "kimi-k2-thinking"
 #   xai:
 #     - "grok-3-mini"
+#   zai:
+#     - "glm-4.5-air"
 
 # OAuth provider request-scoped error rules (custom error classification for OAuth credentials)
 # oauth-request-scoped-errors:
@@ -824,13 +724,6 @@ nonstream-keepalive-interval: 0
 #       params: # JSON path (gjson/sjson syntax) -> raw JSON value (strings are used as-is, must be valid JSON)
 #         "generationConfig.responseJsonSchema": "{\"type\":\"object\",\"properties\":{\"answer\":{\"type\":\"string\"}}}"
 #   override: # Override rules always set parameters, overwriting any existing values.
-#     - models:
-#         - name: "gpt-5.4-fast"
-#           protocol: "codex"
-#         - name: "gpt-5.5-fast"
-#           protocol: "codex"
-#       params:
-#         service_tier: priority
 #     - models:
 #         - name: "gpt-*" # Supports wildcards (e.g., "gpt-*")
 #           protocol: "codex" # restricts the rule to a specific protocol, options: openai, gemini, claude, codex, antigravity

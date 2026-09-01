@@ -13,10 +13,13 @@ func TestOpenAICompatibilityRegistrationCacheUsesConfigIndex(t *testing.T) {
 		{Name: "shared", Models: []config.OpenAICompatibilityModel{{Name: "second"}}},
 	}}}
 	cache := service.newOpenAICompatibilityRegistrationCache()
-	auth := &coreauth.Auth{Attributes: map[string]string{
-		coreauth.AttributeSource:      "config:shared[token-1]",
-		coreauth.AttributeConfigIndex: "1",
-	}}
+	configIndex := 1
+	auth := &coreauth.Auth{
+		OpenAICompatibilityIndex: &configIndex,
+		Attributes: map[string]string{
+			coreauth.AttributeSource: "config:shared[token-1]",
+		},
+	}
 	entry, ok := cache.lookup(auth, "shared")
 	if !ok || entry == nil || len(entry.models) != 1 || entry.models[0].ID != "second" {
 		t.Fatalf("cached config entry = %+v, want second model", entry)

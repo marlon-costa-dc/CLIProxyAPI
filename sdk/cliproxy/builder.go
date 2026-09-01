@@ -9,6 +9,7 @@ import (
 
 	configaccess "github.com/router-for-me/CLIProxyAPI/v7/internal/access/config_access"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api"
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
@@ -194,8 +195,12 @@ func (b *Builder) Build() (*Service, error) {
 	if b.configPath == "" {
 		return nil, fmt.Errorf("cliproxy: configuration path is required")
 	}
-	if errValidate := b.cfg.ValidateCredentialWeights(); errValidate != nil {
-		return nil, fmt.Errorf("cliproxy: validate credential weights: %w", errValidate)
+	if errValidate := b.cfg.ValidateRuntimeConfig(); errValidate != nil {
+		return nil, fmt.Errorf(
+			"cliproxy: validate %s: %w",
+			internalconfig.RuntimeConfigValidationDomain(errValidate),
+			errValidate,
+		)
 	}
 	b.cfg.NormalizePluginsConfig()
 	if errResolvePluginsDir := b.cfg.ResolvePluginsDir(); errResolvePluginsDir != nil && b.cfg.Plugins.Enabled {
@@ -258,7 +263,9 @@ func (b *Builder) Build() (*Service, error) {
 	}
 	// Attach a default RoundTripper provider so providers can opt-in per-auth transports.
 	coreManager.SetRoundTripperProvider(newDefaultRoundTripperProvider())
-	coreManager.SetConfig(b.cfg)
+	if errConfig := coreManager.SetConfig(b.cfg); errConfig != nil {
+		return nil, fmt.Errorf("apply auth manager config: %w", errConfig)
+	}
 	coreManager.SetOAuthModelAlias(b.cfg.OAuthModelAlias)
 	if pluginHost != nil {
 		coreManager.SetPluginScheduler(pluginHost)
@@ -285,9 +292,11 @@ func (b *Builder) Build() (*Service, error) {
 	service.serverOptions = append(service.serverOptions,
 		api.WithPostAuthPersistHook(service.runtimeAuthSyncHook()),
 		api.WithPluginHost(pluginHost),
-		api.WithConfigReloadHook(func(_ context.Context, _ *config.Config) {
-			service.reloadConfigFromWatcher()
+		api.WithConfigReloadHook(func(ctx context.Context, cfg *config.Config) error {
+			return service.applyConfigUpdateWithAuthSynthesis(ctx, cfg, true)
 		}),
+		api.WithConfigPublishHook(service.publishModelRoutingConfig),
+		api.WithModelRoutingStateHook(service.modelRoutingState),
 	)
 	return service, nil
 }
@@ -311,7 +320,6 @@ func (s *Service) runtimeAuthSyncHook() coreauth.PostAuthHook {
 		if s.watcher != nil && s.watcher.DispatchPersistedAuthUpdate(update) {
 			return nil
 		}
-		s.handleAuthUpdate(coreauth.WithSkipPersist(ctx), update)
-		return nil
+		return s.handleAuthUpdate(coreauth.WithSkipPersist(ctx), update)
 	}
 }

@@ -162,7 +162,10 @@ func (h *Handler) DeleteAuthFile(c *gin.Context) {
 					return
 				}
 				deleted++
-				h.removeAuth(ctx, full)
+				if errRemoveAuth := h.removeAuth(ctx, full); errRemoveAuth != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"error": errRemoveAuth.Error()})
+					return
+				}
 			}
 		}
 		c.JSON(200, gin.H{"status": "ok", "deleted": deleted})
@@ -269,7 +272,17 @@ func (h *Handler) writeAuthFile(ctx context.Context, name string, data []byte) e
 	if err != nil {
 		return err
 	}
-	if errWrite := os.WriteFile(dst, data, 0o600); errWrite != nil {
+	persistData := data
+	if metadata := metadataFromAuthFileBytes(data); metadata != nil {
+		if normalized, ok := normalizeKiroIDETokenMetadata(metadata); ok {
+			normalizedData, errMarshal := json.MarshalIndent(normalized, "", "  ")
+			if errMarshal != nil {
+				return fmt.Errorf("failed to encode normalized auth file: %w", errMarshal)
+			}
+			persistData = append(normalizedData, '\n')
+		}
+	}
+	if errWrite := os.WriteFile(dst, persistData, 0o600); errWrite != nil {
 		return fmt.Errorf("failed to write file: %w", errWrite)
 	}
 	if err := h.upsertAuthRecord(ctx, auth); err != nil {
@@ -370,7 +383,9 @@ func (h *Handler) deleteAuthFileByName(ctx context.Context, name string) (string
 	if errDeleteRecord := h.deleteTokenRecord(ctx, targetPath); errDeleteRecord != nil {
 		return filepath.Base(name), http.StatusInternalServerError, errDeleteRecord
 	}
-	h.removeAuthsForPath(ctx, targetPath, targetID)
+	if errRemoveAuth := h.removeAuthsForPath(ctx, targetPath, targetID); errRemoveAuth != nil {
+		return filepath.Base(name), http.StatusInternalServerError, errRemoveAuth
+	}
 	return filepath.Base(name), http.StatusOK, nil
 }
 
@@ -475,6 +490,9 @@ func (h *Handler) buildAuthFromFileData(path string, data []byte) (*coreauth.Aut
 	metadata := make(map[string]any)
 	if err := json.Unmarshal(data, &metadata); err != nil {
 		return nil, fmt.Errorf("invalid auth file: %w", err)
+	}
+	if normalized, ok := normalizeKiroIDETokenMetadata(metadata); ok {
+		metadata = normalized
 	}
 	coreauth.NormalizeCredentialMetadata(metadata)
 	provider, _ := metadata["type"].(string)

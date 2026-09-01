@@ -62,16 +62,37 @@ func (cfg *Config) SanitizeClaudeHeaderDefaults() {
 // It trims whitespace, normalizes channel keys to lower-case, drops empty entries,
 // allows multiple aliases per upstream name, and ensures aliases are unique within each channel.
 func (cfg *Config) SanitizeOAuthModelAlias() {
-	if cfg == nil || len(cfg.OAuthModelAlias) == 0 {
+	if cfg == nil {
 		return
+	}
+	if cfg.OAuthModelAlias == nil {
+		cfg.OAuthModelAlias = make(map[string][]OAuthModelAlias)
+	}
+	hasChannel := func(channel string) bool {
+		for key := range cfg.OAuthModelAlias {
+			if strings.EqualFold(strings.TrimSpace(key), channel) {
+				return true
+			}
+		}
+		return false
+	}
+	if !hasChannel("kiro") {
+		cfg.OAuthModelAlias["kiro"] = defaultKiroAliases()
+	}
+	if !hasChannel("github-copilot") {
+		cfg.OAuthModelAlias["github-copilot"] = defaultGitHubCopilotAliases()
 	}
 	out := make(map[string][]OAuthModelAlias, len(cfg.OAuthModelAlias))
 	for rawChannel, aliases := range cfg.OAuthModelAlias {
 		channel := strings.ToLower(strings.TrimSpace(rawChannel))
-		if channel == "" || len(aliases) == 0 {
+		if channel == "" {
 			continue
 		}
-		seenAlias := make(map[string]struct{}, len(aliases))
+		if len(aliases) == 0 {
+			out[channel] = nil
+			continue
+		}
+		seenEntry := make(map[string]struct{}, len(aliases))
 		clean := make([]OAuthModelAlias, 0, len(aliases))
 		for _, entry := range aliases {
 			name := strings.TrimSpace(entry.Name)
@@ -82,11 +103,14 @@ func (cfg *Config) SanitizeOAuthModelAlias() {
 			if strings.EqualFold(name, alias) {
 				continue
 			}
-			aliasKey := strings.ToLower(alias)
-			if _, ok := seenAlias[aliasKey]; ok {
+			// Ordered pools allow the same alias to map to multiple upstream
+			// models for sequential failover; only fully identical entries
+			// (same name+alias pair) are duplicates.
+			entryKey := strings.ToLower(name) + "\x00" + strings.ToLower(alias)
+			if _, ok := seenEntry[entryKey]; ok {
 				continue
 			}
-			seenAlias[aliasKey] = struct{}{}
+			seenEntry[entryKey] = struct{}{}
 			clean = append(clean, OAuthModelAlias{
 				Name:         name,
 				Alias:        alias,
@@ -150,27 +174,21 @@ func (cfg *Config) SanitizeOAuthRequestScopedErrors() {
 	cfg.OAuthRequestScopedErrors = out
 }
 
-// SanitizeOpenAICompatibility removes OpenAI-compatibility provider entries that are
-// not actionable, specifically those missing a BaseURL. It trims whitespace before
-// evaluation and preserves the relative order of remaining entries.
+// SanitizeOpenAICompatibility normalizes OpenAI-compatibility provider entries.
+// Runtime validation rejects incomplete enabled entries before normalization;
+// this function must never erase invalid configuration silently.
 func (cfg *Config) SanitizeOpenAICompatibility() {
 	if cfg == nil || len(cfg.OpenAICompatibility) == 0 {
 		return
 	}
-	out := make([]OpenAICompatibility, 0, len(cfg.OpenAICompatibility))
 	for i := range cfg.OpenAICompatibility {
-		e := cfg.OpenAICompatibility[i]
-		e.Name = strings.TrimSpace(e.Name)
-		e.Prefix = normalizeModelPrefix(e.Prefix)
-		e.BaseURL = strings.TrimSpace(e.BaseURL)
-		e.Headers = NormalizeHeaders(e.Headers)
-		if e.BaseURL == "" {
-			// Skip providers with no base-url; treated as removed
-			continue
-		}
-		out = append(out, e)
+		entry := &cfg.OpenAICompatibility[i]
+		entry.Name = strings.TrimSpace(entry.Name)
+		entry.Prefix = normalizeModelPrefix(entry.Prefix)
+		entry.BaseURL = strings.TrimSpace(entry.BaseURL)
+		entry.RouteChannel = strings.TrimSpace(entry.RouteChannel)
+		entry.Headers = NormalizeHeaders(entry.Headers)
 	}
-	cfg.OpenAICompatibility = out
 }
 
 // SanitizeCodexKeys removes Codex API key entries missing a BaseURL.
@@ -180,6 +198,41 @@ func (cfg *Config) SanitizeCodexKeys() {
 		return
 	}
 	cfg.CodexKey = sanitizeCodexKeyEntries(cfg.CodexKey)
+}
+
+// SanitizeOpenCodeKeys normalizes OpenCode (Zen) key entries. Unlike Codex,
+// OpenCode entries are NOT removed when BaseURL is empty: the OpenCode executor
+// applies a gateway default base-url (https://opencode.ai/zen), so an empty
+// BaseURL is valid and must survive config load. Dropping it here was the root
+// cause of OpenCode models being absent from /v1/models.
+func (cfg *Config) SanitizeOpenCodeKeys() {
+	if cfg == nil {
+		return
+	}
+	cfg.OpenCodeKey = normalizeCodexKeyEntries(cfg.OpenCodeKey, false)
+}
+
+// SanitizeOpenCodeGoKeys normalizes OpenCode Go key entries. It does not drop
+// entries without a BaseURL because the OpenCode Go executor defaults the
+// base-url to https://opencode.ai/zen/go. See SanitizeOpenCodeKeys.
+func (cfg *Config) SanitizeOpenCodeGoKeys() {
+	if cfg == nil {
+		return
+	}
+	cfg.OpenCodeGoKey = normalizeCodexKeyEntries(cfg.OpenCodeGoKey, false)
+}
+
+// SanitizePoolsideKeys normalizes Poolside key entries. Entries are NOT removed
+// when BaseURL is empty: the Poolside executor supplies a gateway default
+// base-url (https://inference.poolside.ai, the bare host — ClaudeExecutor
+// appends /v1/messages), so an empty BaseURL is valid and must survive config
+// load — same rule as OpenCode. Dropping it here was the root cause of Poolside
+// keys silently disappearing from the proxy.
+func (cfg *Config) SanitizePoolsideKeys() {
+	if cfg == nil {
+		return
+	}
+	cfg.PoolsideKey = normalizeCodexKeyEntries(cfg.PoolsideKey, false)
 }
 
 // SanitizeXAIKeys removes xAI API key entries missing a BaseURL.
@@ -194,7 +247,7 @@ func (cfg *Config) SanitizeXAIKeys() {
 	}
 }
 
-func sanitizeCodexKeyEntries(entries []CodexKey) []CodexKey {
+func normalizeCodexKeyEntries(entries []CodexKey, dropEmptyBaseURL bool) []CodexKey {
 	if len(entries) == 0 {
 		return entries
 	}
@@ -205,12 +258,21 @@ func sanitizeCodexKeyEntries(entries []CodexKey) []CodexKey {
 		e.BaseURL = strings.TrimSpace(e.BaseURL)
 		e.Headers = NormalizeHeaders(e.Headers)
 		e.ExcludedModels = NormalizeExcludedModels(e.ExcludedModels)
-		if e.BaseURL == "" {
+		if dropEmptyBaseURL && e.BaseURL == "" {
+			// Skip providers with no base-url; treated as removed
 			continue
 		}
 		out = append(out, e)
 	}
 	return out
+}
+
+// sanitizeCodexKeyEntries drops Codex-compatible entries missing a BaseURL
+// (Codex, Poolside, XAI). Providers whose executor supplies a default BaseURL
+// (e.g. OpenCode/OpenCodeGo) must call normalizeCodexKeyEntries with
+// dropEmptyBaseURL=false instead.
+func sanitizeCodexKeyEntries(entries []CodexKey) []CodexKey {
+	return normalizeCodexKeyEntries(entries, true)
 }
 
 // SanitizeClaudeKeys normalizes headers for Claude credentials.
@@ -299,6 +361,25 @@ func (cfg *Config) SanitizeGeminiKeys() {
 		return
 	}
 	cfg.GeminiKey = sanitizeGeminiKeyEntries(cfg.GeminiKey)
+}
+
+// SanitizeKiroKeys normalizes Kiro credential fields.
+func (cfg *Config) SanitizeKiroKeys() {
+	if cfg == nil {
+		return
+	}
+	for i := range cfg.KiroKey {
+		entry := &cfg.KiroKey[i]
+		entry.TokenFile = strings.TrimSpace(entry.TokenFile)
+		entry.AccessToken = strings.TrimSpace(entry.AccessToken)
+		entry.RefreshToken = strings.TrimSpace(entry.RefreshToken)
+		entry.ProfileArn = strings.TrimSpace(entry.ProfileArn)
+		entry.Region = strings.TrimSpace(entry.Region)
+		entry.StartURL = strings.TrimSpace(entry.StartURL)
+		entry.ProxyURL = strings.TrimSpace(entry.ProxyURL)
+		entry.AgentTaskType = strings.TrimSpace(entry.AgentTaskType)
+		entry.PreferredEndpoint = strings.TrimSpace(entry.PreferredEndpoint)
+	}
 }
 
 // SanitizeInteractionsKeys deduplicates and normalizes native Interactions credentials.

@@ -2,13 +2,12 @@ package cliproxy
 
 import (
 	"context"
-	"strconv"
+	"fmt"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
 )
@@ -50,12 +49,8 @@ func (s *Service) newOpenAICompatibilityRegistrationCache() *openAICompatibility
 		}
 		compatName := strings.TrimSpace(compat.Name)
 		key := strings.ToLower(compatName)
-		providerName := strings.ToLower(compatName)
-		if providerName == "" {
-			providerName = "openai-compatibility"
-		}
 		entry := &openAICompatibilityRegistrationEntry{
-			providerKey: util.OpenAICompatibleProviderKey(providerName),
+			providerKey: strings.TrimSpace(compat.RouteChannel),
 			models:      buildOpenAICompatibilityConfigModels(compat),
 		}
 		cache.byIndex[i] = entry
@@ -73,11 +68,12 @@ func (c *openAICompatibilityRegistrationCache) lookup(auth *coreauth.Auth, compa
 	if c == nil {
 		return nil, false
 	}
-	if auth != nil && auth.AuthSourceKind() == coreauth.AuthSourceConfig && auth.Attributes != nil {
-		if index, errIndex := strconv.Atoi(strings.TrimSpace(auth.Attributes[coreauth.AttributeConfigIndex])); errIndex == nil {
-			entry, ok := c.byIndex[index]
-			return entry, ok
+	if auth != nil && auth.AuthSourceKind() == coreauth.AuthSourceConfig {
+		if auth.OpenAICompatibilityIndex == nil {
+			return nil, false
 		}
+		entry, ok := c.byIndex[*auth.OpenAICompatibilityIndex]
+		return entry, ok
 	}
 	entry, ok := c.byName[strings.ToLower(strings.TrimSpace(compatName))]
 	return entry, ok
@@ -207,8 +203,13 @@ func baselineExecutorAuths() []*coreauth.Auth {
 		"vertex",
 		"aistudio",
 		"antigravity",
+		"devin",
 		"kimi",
 		"xai",
+		"zai",
+		"opencode",
+		constant.OpenCodeGo,
+		constant.Poolside,
 		"openai-compatibility",
 	}
 	auths := make([]*coreauth.Auth, 0, len(providers))
@@ -277,6 +278,8 @@ func (s *Service) registerExecutorForAuth(a *coreauth.Auth, forceReplace bool) {
 	switch strings.ToLower(a.Provider) {
 	case constant.Gemini:
 		s.coreManager.RegisterExecutor(executor.NewGeminiExecutor(cfg))
+	case constant.GeminiCLI:
+		s.coreManager.RegisterExecutor(executor.NewGeminiCLIExecutor(cfg))
 	case constant.GeminiInteractions:
 		s.coreManager.RegisterExecutor(executor.NewGeminiInteractionsExecutor(cfg))
 	case "vertex":
@@ -290,8 +293,24 @@ func (s *Service) registerExecutorForAuth(a *coreauth.Auth, forceReplace bool) {
 		s.coreManager.RegisterExecutor(executor.NewAntigravityExecutor(cfg))
 	case "claude":
 		s.coreManager.RegisterExecutor(executor.NewClaudeExecutor(cfg))
+	case "devin":
+		s.coreManager.RegisterExecutor(executor.NewDevinExecutor(cfg))
 	case "kimi":
 		s.coreManager.RegisterExecutor(executor.NewKimiExecutor(cfg))
+	case "kiro":
+		s.coreManager.RegisterExecutor(executor.NewKiroExecutor(cfg))
+	case "kilo":
+		s.coreManager.RegisterExecutor(executor.NewKiloExecutor(cfg))
+	case "cursor":
+		s.coreManager.RegisterExecutor(executor.NewCursorExecutor(cfg))
+	case "github-copilot":
+		s.coreManager.RegisterExecutor(executor.NewGitHubCopilotExecutor(cfg))
+	case "codebuddy":
+		s.coreManager.RegisterExecutor(executor.NewCodeBuddyExecutor(cfg))
+	case "gitlab":
+		s.coreManager.RegisterExecutor(executor.NewGitLabExecutor(cfg))
+	case "qoder":
+		s.coreManager.RegisterExecutor(executor.NewQoderExecutor(cfg))
 	case "xai":
 		if !forceReplace {
 			existingExecutor, hasExecutor := s.coreManager.Executor("xai")
@@ -303,6 +322,14 @@ func (s *Service) registerExecutorForAuth(a *coreauth.Auth, forceReplace bool) {
 			}
 		}
 		s.coreManager.RegisterExecutor(executor.NewXAIAutoExecutor(cfg))
+	case "zai":
+		s.coreManager.RegisterExecutor(executor.NewZAIExecutor(cfg))
+	case "opencode":
+		s.coreManager.RegisterExecutor(executor.NewOpenCodeExecutor(constant.OpenCode))
+	case constant.OpenCodeGo:
+		s.coreManager.RegisterExecutor(executor.NewOpenCodeExecutor(constant.OpenCodeGo))
+	case constant.Poolside:
+		s.coreManager.RegisterExecutor(executor.NewPoolsideExecutor(cfg))
 	default:
 		providerKey := strings.ToLower(strings.TrimSpace(a.Provider))
 		if providerKey == "" {
@@ -487,22 +514,22 @@ func (s *Service) appendPluginModels(providerKey string, models []*ModelInfo) []
 	return out
 }
 
-func (s *Service) tryRegisterPluginModelsForAuth(ctx context.Context, a *coreauth.Auth, provider, authKind string, excluded []string) bool {
+func (s *Service) tryRegisterPluginModelsForAuth(ctx context.Context, a *coreauth.Auth, provider, authKind string, excluded []string) (bool, error) {
 	if s == nil || s.pluginHost == nil || a == nil {
-		return false
+		return false, nil
 	}
 	if ctx != nil && ctx.Err() != nil {
-		return true
+		return true, ctx.Err()
 	}
 	result := s.pluginHost.ModelsForAuth(ctx, a)
 	if ctx != nil && ctx.Err() != nil {
-		return true
+		return true, ctx.Err()
 	}
 	if !result.Handled {
-		return false
+		return false, nil
 	}
 	if result.Err != nil {
-		return true
+		return true, fmt.Errorf("load plugin models for auth %s: %w", a.ID, result.Err)
 	}
 	activeAuth := a
 	providerKey := strings.ToLower(strings.TrimSpace(result.Provider))
@@ -525,7 +552,11 @@ func (s *Service) tryRegisterPluginModelsForAuth(ctx context.Context, a *coreaut
 				result.Auth.Attributes[key] = value
 			}
 		}
-		if updated, errUpdate := s.coreManager.Update(ctx, result.Auth); errUpdate == nil && updated != nil {
+		updated, errUpdate := s.coreManager.Update(ctx, result.Auth)
+		if errUpdate != nil {
+			return true, fmt.Errorf("persist plugin auth %s: %w", a.ID, errUpdate)
+		}
+		if updated != nil {
 			activeAuth = updated.Clone()
 		}
 	}
@@ -549,14 +580,14 @@ func (s *Service) tryRegisterPluginModelsForAuth(ctx context.Context, a *coreaut
 		}
 	}
 	if ctx != nil && ctx.Err() != nil {
-		return true
+		return true, ctx.Err()
 	}
 	models := applyExcludedModels(result.Models, activeExcluded)
 	models = applyOAuthModelAliasForAuth(s.cfg, providerKey, activeAuthKind, activeAuth.Attributes, models)
 	if len(models) > 0 {
 		s.registerResolvedModelsForAuth(activeAuth, providerKey, applyModelPrefixes(models, activeAuth.Prefix, s.cfg != nil && s.cfg.ForceModelPrefix))
-		return true
+		return true, nil
 	}
 	GlobalModelRegistry().UnregisterClient(activeAuth.ID)
-	return true
+	return true, nil
 }

@@ -23,8 +23,8 @@ func TestManagerMarkResultRecordsRecentRequests(t *testing.T) {
 		t.Fatalf("Register returned error: %v", err)
 	}
 
-	mgr.MarkResult(context.Background(), Result{AuthID: "auth-1", Provider: "antigravity", Model: "gpt-5", Success: true})
-	mgr.MarkResult(context.Background(), Result{AuthID: "auth-1", Provider: "antigravity", Model: "gpt-5", Success: false})
+	mustMarkResult(t, mgr, context.Background(), Result{AuthID: "auth-1", Provider: "antigravity", Model: "gpt-5", Success: true})
+	mustMarkResult(t, mgr, context.Background(), Result{AuthID: "auth-1", Provider: "antigravity", Model: "gpt-5", Success: false})
 
 	gotAuth, ok := mgr.GetByID("auth-1")
 	if !ok || gotAuth == nil {
@@ -60,7 +60,7 @@ func TestManagerUpdatePreservesRecentRequestsAndTotals(t *testing.T) {
 		t.Fatalf("Register returned error: %v", err)
 	}
 
-	mgr.MarkResult(context.Background(), Result{AuthID: "auth-1", Provider: "antigravity", Model: "gpt-5", Success: true})
+	mustMarkResult(t, mgr, context.Background(), Result{AuthID: "auth-1", Provider: "antigravity", Model: "gpt-5", Success: true})
 
 	updated := &Auth{
 		ID:       "auth-1",

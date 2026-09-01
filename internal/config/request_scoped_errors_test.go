@@ -55,8 +55,18 @@ claude-api-key:
 openai-compatibility:
   - name: test-openai-compat
     base-url: https://api.openai.compat/v1
+    route-channel: test-openai-compat
     api-key-entries:
       - api-key: compat-key-1
+        quota-domain: test-openai-compat
+    models:
+      - name: compat-model
+        alias: compat-model
+        catalog-provider-id: test-openai-compat
+        catalog-model-id: compat-model
+        catalog-route-provider-id: test-openai-compat
+        catalog-route-model-id: compat-model
+        protocols: [openai_chat]
     request-scoped-errors:
       - status: 400
         match:

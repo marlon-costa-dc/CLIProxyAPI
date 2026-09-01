@@ -11,10 +11,11 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/safemode"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
+	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 )
 
-var corsExposedResponseHeaders = []string{
+var corsExposedResponseHeaders = append([]string{
 	logging.CPATraceIDHeader,
 	"X-CPA-VERSION",
 	"X-CPA-COMMIT",
@@ -28,7 +29,7 @@ var corsExposedResponseHeaders = []string{
 	"Retry-After",
 	"X-Request-Id",
 	"OpenAI-Request-Id",
-}
+}, coreauth.ModelRoutingResponseHeaderNames()...)
 
 var corsExposedResponseHeadersJoined = strings.Join(corsExposedResponseHeaders, ", ")
 
@@ -131,6 +132,11 @@ func isExampleAPIKeySafeModeProxyPath(path string) bool {
 //   - gin.HandlerFunc: The CORS middleware handler
 func corsMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if strings.HasPrefix(c.Request.URL.Path, "/v0/management") {
+			c.Header("Access-Control-Expose-Headers", corsExposedResponseHeadersJoined)
+			c.Next()
+			return
+		}
 		c.Header("Access-Control-Allow-Origin", "*")
 		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 		c.Header("Access-Control-Allow-Headers", "*")

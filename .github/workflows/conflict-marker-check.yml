@@ -1,0 +1,35 @@
+name: Conflict Marker Check
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  check-conflict-markers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check for conflict markers
+        shell: bash
+        run: |
+          # Anchored, and over tracked files only. The previous form searched
+          # for the literal '<<<<<<< HEAD' with --include='*.yml', so it matched
+          # the two lines of this very workflow and failed every run. Anchoring
+          # to the line start makes the pattern unmatchable inside its own
+          # `-e '^...'` argument, and a search error is distinguished from a
+          # real find instead of being reported as one.
+          status=0
+          markers=$(git grep -l -e '^<<<<<<< ' -e '^>>>>>>> ' -- . \
+            ':(exclude)vendor' ':(exclude)node_modules' ':(exclude)dist' \
+            ':(exclude)build' ':(exclude).cache') || status=$?
+          if [ "$status" -gt 1 ]; then
+            echo "::error::conflict-marker search failed with status $status"
+            exit "$status"
+          fi
+          if [ -n "$markers" ]; then
+            echo "::error::Conflict markers found in tracked files:"
+            echo "$markers"
+            exit 1
+          fi
+          echo "No conflict markers found."

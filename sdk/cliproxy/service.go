@@ -11,6 +11,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/homeplugins"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/modelrouting"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/watcher"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/wsrelay"
@@ -36,10 +37,14 @@ type Service struct {
 	configUpdateMu sync.Mutex
 
 	// configRuntimeMu orders side-effecting runtime application after config commits.
-	configRuntimeMu        sync.Mutex
-	executorRegistrationMu sync.Mutex
-	configSequence         uint64
-	appliedRoutingState    *routingRuntimeState
+	configRuntimeMu          sync.Mutex
+	executorRegistrationMu   sync.Mutex
+	configSequence           uint64
+	appliedRoutingState      *routingRuntimeState
+	modelRoutingStateMu      sync.RWMutex
+	activeModelRouting       *modelrouting.ActiveIdentityV2
+	modelRoutingLoadedAt     time.Time
+	activeModelRoutingConfig *modelrouting.Config
 
 	// configPath is the path to the configuration file.
 	configPath string
@@ -67,6 +72,10 @@ type Service struct {
 
 	// serverErr channel for server startup/shutdown errors.
 	serverErr chan error
+
+	// runtimeErr delivers the first asynchronous runtime mutation failure to Run.
+	runtimeErr   chan error
+	runtimeErrMu sync.RWMutex
 
 	// watcher handles file system monitoring.
 	watcher *WatcherWrapper
@@ -124,4 +133,14 @@ type Service struct {
 	homePluginSyncKey            string
 	homePluginSyncFetch          func(context.Context, sdkpluginstore.PluginSyncRequest) (sdkpluginstore.PluginSyncResponse, error)
 	homePluginDeleteTask         func(context.Context, *config.Config, home.PluginTask) homeplugins.SyncReport
+	kiroModelsCache              kiroModelsCache
+}
+
+// GetWatcher returns the active watcher for integrations that need to trigger
+// or observe runtime authentication refreshes.
+func (s *Service) GetWatcher() *WatcherWrapper {
+	if s == nil {
+		return nil
+	}
+	return s.watcher
 }

@@ -132,8 +132,8 @@ func (s *Service) applyHomeOverlayWithClient(ctx context.Context, remoteCfg *con
 		}
 	}
 	if work.config != nil {
-		if !s.applyConfigUpdateWithAuthSynthesis(ctx, work.config, true) {
-			return context.Canceled
+		if errApply := s.applyConfigUpdateWithAuthSynthesis(ctx, work.config, true); errApply != nil {
+			return fmt.Errorf("apply home config runtime: %w", errApply)
 		}
 		work.committed = true
 	}
@@ -204,30 +204,30 @@ func (s *Service) stageHomeOverlayWithClient(ctx context.Context, remoteCfg *con
 	return work, nil
 }
 
-func (s *Service) commitHomeConfig(lifetimeCtx, homeCtx context.Context, generation uint64, work *homePluginFinalization) bool {
+func (s *Service) commitHomeConfig(lifetimeCtx, homeCtx context.Context, generation uint64, work *homePluginFinalization) error {
 	if s == nil || work == nil || work.config == nil {
-		return false
+		return fmt.Errorf("commit home config: service, work, or config is nil")
 	}
 
 	s.homeConfigCommitMu.Lock()
 	defer s.homeConfigCommitMu.Unlock()
 	if !s.homeLifetimeActive(homeCtx, lifetimeCtx, generation) {
-		return false
+		return context.Canceled
 	}
 	if s.homeConfigCommitHook != nil {
 		s.homeConfigCommitHook()
 	}
 	if !s.homeLifetimeActive(homeCtx, lifetimeCtx, generation) {
-		return false
+		return context.Canceled
 	}
-	commit := s.commitConfigUpdate(work.config)
-	if commit.cfg == nil {
-		return false
+	commit, errCommit := s.commitConfigUpdate(work.config)
+	if errCommit != nil {
+		return errCommit
 	}
 	work.config = commit.cfg
 	work.configCommit = commit
 	work.committed = true
-	return true
+	return nil
 }
 
 func (s *Service) homeLifetimeActive(homeCtx, lifetimeCtx context.Context, generation uint64) bool {
@@ -710,13 +710,22 @@ func (s *Service) runHomeConfigWorkerWithSupervisor(lifetimeCtx, homeCtx context
 		if s.homeConfigStageHook != nil {
 			s.homeConfigStageHook()
 		}
-		if !s.commitHomeConfig(lifetimeCtx, homeCtx, generation, work) {
+		if errCommit := s.commitHomeConfig(lifetimeCtx, homeCtx, generation, work); errCommit != nil {
+			if !errors.Is(errCommit, context.Canceled) {
+				log.WithError(errCommit).Error("home config commit failed")
+				s.cancelServiceRun()
+			}
 			return
 		}
 		if s.homeConfigRuntimeHook != nil {
 			s.homeConfigRuntimeHook()
 		}
-		if !s.homeLifetimeActive(homeCtx, lifetimeCtx, generation) || !s.applyConfigRuntime(lifetimeCtx, work.configCommit, true) {
+		if !s.homeLifetimeActive(homeCtx, lifetimeCtx, generation) {
+			return
+		}
+		if errApply := s.applyConfigRuntime(lifetimeCtx, work.configCommit, true); errApply != nil {
+			log.WithError(errApply).Error("home config runtime application failed")
+			s.cancelServiceRun()
 			return
 		}
 		if errFinalize := s.finalizeHomePluginWorkUntilDone(lifetimeCtx, homeCtx, generation, client, work, publish); errFinalize != nil {

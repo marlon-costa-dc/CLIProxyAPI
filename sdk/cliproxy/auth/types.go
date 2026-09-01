@@ -55,6 +55,14 @@ type Auth struct {
 	Index string `json:"-"`
 	// Provider is the upstream provider key (e.g. "gemini", "claude").
 	Provider string `json:"provider"`
+	// RouteChannel is the exact routing identity declared by configuration.
+	// It is distinct from display/provider-family names and is never inferred.
+	RouteChannel string `json:"-"`
+	// QuotaDomain is the explicit quota pool for this exact credential.
+	QuotaDomain string `json:"-"`
+	// OpenAICompatibilityIndex is the typed reference to the provider config
+	// entry that produced this auth. It replaces map/string index lookups.
+	OpenAICompatibilityIndex *int `json:"-"`
 	// Prefix optionally namespaces models for routing (e.g., "teamA/gemini-3-pro-preview").
 	Prefix string `json:"prefix,omitempty"`
 	// FileName stores the relative or absolute path of the backing auth file.
@@ -289,6 +297,10 @@ func (a *Auth) Clone() *Auth {
 		return nil
 	}
 	copyAuth := *a
+	if a.OpenAICompatibilityIndex != nil {
+		index := *a.OpenAICompatibilityIndex
+		copyAuth.OpenAICompatibilityIndex = &index
+	}
 	copyAuth.Quota = a.Quota.Clone()
 	if len(a.Attributes) > 0 {
 		copyAuth.Attributes = make(map[string]string, len(a.Attributes))
@@ -589,6 +601,11 @@ func (a *Auth) AccountInfo() (string, string) {
 			if v, ok := a.Metadata["email"].(string); ok {
 				email := strings.TrimSpace(v)
 				if email != "" {
+					if strings.EqualFold(a.Provider, "gemini-cli") {
+						if projectID, ok := a.Metadata["project_id"].(string); ok && strings.TrimSpace(projectID) != "" {
+							return "oauth", email + " (" + strings.TrimSpace(projectID) + ")"
+						}
+					}
 					return "oauth", email
 				}
 			}
@@ -600,6 +617,37 @@ func (a *Auth) AccountInfo() (string, string) {
 		}
 		return "api_key", ""
 	default:
+		if a.Metadata == nil {
+			return "", ""
+		}
+		if method, ok := a.Metadata["auth_method"].(string); ok {
+			switch strings.ToLower(strings.TrimSpace(method)) {
+			case "oauth":
+				for _, key := range []string{"email", "username", "name"} {
+					if value, okValue := a.Metadata[key].(string); okValue {
+						if trimmed := strings.TrimSpace(value); trimmed != "" {
+							return "oauth", trimmed
+						}
+					}
+				}
+			case "pat", "personal_access_token":
+				for _, key := range []string{"username", "email", "name", "token_preview"} {
+					if value, okValue := a.Metadata[key].(string); okValue {
+						if trimmed := strings.TrimSpace(value); trimmed != "" {
+							return "personal_access_token", trimmed
+						}
+					}
+				}
+				return "personal_access_token", ""
+			}
+		}
+		if strings.HasPrefix(strings.ToLower(a.Provider), "github") {
+			if username, ok := a.Metadata["username"].(string); ok {
+				if trimmed := strings.TrimSpace(username); trimmed != "" {
+					return "oauth", trimmed
+				}
+			}
+		}
 		return "", ""
 	}
 }

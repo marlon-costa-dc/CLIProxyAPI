@@ -8,9 +8,11 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api"
+	kiroauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/kiro"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/home"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/redisqueue"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
+	internalusage "github.com/router-for-me/CLIProxyAPI/v7/internal/usage"
 	sdkaccess "github.com/router-for-me/CLIProxyAPI/v7/sdk/access"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
@@ -37,11 +39,20 @@ func (s *Service) Run(ctx context.Context) error {
 		ctx = context.Background()
 	}
 	ctx, runCancel := context.WithCancel(ctx)
+	runtimeErr := make(chan error, 1)
+	s.runtimeErrMu.Lock()
+	s.runtimeErr = runtimeErr
+	s.runtimeErrMu.Unlock()
 	s.homeMu.Lock()
 	s.runCancel = runCancel
 	s.homeMu.Unlock()
 	defer func() {
 		runCancel()
+		s.runtimeErrMu.Lock()
+		if s.runtimeErr == runtimeErr {
+			s.runtimeErr = nil
+		}
+		s.runtimeErrMu.Unlock()
 		s.homeMu.Lock()
 		if s.runCancel != nil {
 			s.runCancel = nil
@@ -49,6 +60,7 @@ func (s *Service) Run(ctx context.Context) error {
 		s.homeMu.Unlock()
 	}()
 
+	s.applyUsageStatisticsConfig(s.cfg)
 	usage.StartDefault(ctx)
 	homeEnabled := s.cfg != nil && s.cfg.Home.Enabled
 	if homeEnabled {
@@ -71,17 +83,22 @@ func (s *Service) Run(ctx context.Context) error {
 	}
 
 	s.applyRetryConfig(s.cfg)
-	s.configureCooldownStateStore(s.cfg)
+	applyKiroRuntimeConfig(s.cfg)
+	if errCooldownStore := s.configureCooldownStateStore(s.cfg); errCooldownStore != nil {
+		return fmt.Errorf("configure cooldown state store: %w", errCooldownStore)
+	}
 
 	s.registerPluginAuthParser()
 	if s.coreManager != nil && !homeEnabled {
 		if errLoad := s.coreManager.Load(ctx); errLoad != nil {
-			log.Warnf("failed to load auth store: %v", errLoad)
+			return fmt.Errorf("load auth store: %w", errLoad)
 		}
-		s.registerConfigAPIKeyAuths(coreauth.WithSkipPersist(ctx), s.cfg)
+		if errRegister := s.registerConfigAPIKeyAuths(coreauth.WithSkipPersist(ctx), s.cfg); errRegister != nil {
+			return fmt.Errorf("register config API key auths: %w", errRegister)
+		}
 		if s.cfg.SaveCooldownStatus {
 			if errRestoreCooldown := s.coreManager.RestoreCooldownStates(ctx); errRestoreCooldown != nil {
-				log.Warnf("failed to restore cooldown state: %v", errRestoreCooldown)
+				return fmt.Errorf("restore cooldown state: %w", errRestoreCooldown)
 			}
 		}
 	}
@@ -115,12 +132,18 @@ func (s *Service) Run(ctx context.Context) error {
 		redisqueue.SetEnabled(true)
 	}
 
+	if _, errPluginConfig := s.syncPluginRuntimeConfig(ctx); errPluginConfig != nil {
+		return fmt.Errorf("sync plugin runtime config: %w", errPluginConfig)
+	}
+	if errPluginModels := s.syncPluginModelRuntime(ctx); errPluginModels != nil {
+		return fmt.Errorf("sync plugin model runtime: %w", errPluginModels)
+	}
+	if errRouting := s.initializeModelRouting(); errRouting != nil {
+		return fmt.Errorf("initialize model-routing runtime: %w", errRouting)
+	}
+
 	// handlers no longer depend on legacy clients; pass nil slice initially
 	s.server = api.NewServer(s.cfg, s.coreManager, s.accessManager, s.configPath, s.serverOptions...)
-	s.syncPluginRuntimeConfig(ctx)
-	if homeEnabled {
-		s.syncPluginModelRuntime(ctx)
-	}
 
 	if s.authManager == nil {
 		s.authManager = newDefaultAuthManager()
@@ -194,7 +217,9 @@ func (s *Service) Run(ctx context.Context) error {
 			return fmt.Errorf("cliproxy: failed to start watcher: %w", errStart)
 		}
 		log.Info("file watcher started for config and auth directory changes")
-		s.syncPluginModelRuntime(ctx)
+		if errPluginModels := s.syncPluginModelRuntime(ctx); errPluginModels != nil {
+			return fmt.Errorf("sync plugin model runtime: %w", errPluginModels)
+		}
 	}
 
 	s.registerModelRefreshCallback()
@@ -207,12 +232,31 @@ func (s *Service) Run(ctx context.Context) error {
 	}
 
 	select {
+	case errRuntime := <-runtimeErr:
+		return fmt.Errorf("cliproxy runtime mutation: %w", errRuntime)
 	case <-ctx.Done():
 		log.Debug("service context cancelled, shutting down...")
 		return ctx.Err()
 	case errServer := <-s.serverErr:
 		return errServer
 	}
+}
+
+func applyKiroRuntimeConfig(cfg *config.Config) {
+	kiroauth.InitRateLimiterConfig(cfg)
+	kiroauth.InitSystemPromptInjectConfig(cfg)
+	kiroauth.InitTruncationDetectorConfig(cfg)
+	kiroauth.InitExtractThinkingTagConfig(cfg)
+}
+
+func (s *Service) applyUsageStatisticsConfig(cfg *config.Config) {
+	if cfg == nil {
+		internalusage.SetStatisticsEnabled(false)
+		redisqueue.SetUsageStatisticsEnabled(false)
+		return
+	}
+	internalusage.SetStatisticsEnabled(cfg.UsageStatisticsEnabled)
+	redisqueue.SetUsageStatisticsEnabled(cfg.UsageStatisticsEnabled)
 }
 
 // Shutdown gracefully stops background workers and the HTTP server.

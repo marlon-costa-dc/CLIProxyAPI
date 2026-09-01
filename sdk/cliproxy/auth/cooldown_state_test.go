@@ -234,28 +234,30 @@ func TestManager_MarkResult_PersistsCooldownOnlyWhenStateChanges(t *testing.T) {
 		t.Fatalf("Register() returned error: %v", errRegister)
 	}
 
-	manager.MarkResult(context.Background(), Result{AuthID: auth.ID, Provider: "xai", Model: "grok-4", Success: true})
+	mustMarkResult(t, manager, context.Background(), Result{AuthID: auth.ID, Provider: "xai", Model: "grok-4", Success: true})
 	if got := store.saveCount.Load(); got != 0 {
 		t.Fatalf("healthy success saved cooldown state %d times, want 0", got)
 	}
 
-	manager.MarkResult(context.Background(), Result{
+	if errMark := manager.MarkResult(context.Background(), Result{
 		AuthID:   auth.ID,
 		Provider: "xai",
 		Model:    "grok-4",
 		Success:  false,
 		Error:    &Error{Message: "upstream unavailable", HTTPStatus: 500},
-	})
+	}); errMark != nil {
+		t.Fatalf("MarkResult() error = %v", errMark)
+	}
 	if got := store.saveCount.Load(); got != 1 {
 		t.Fatalf("cooldown failure saved cooldown state %d times, want 1", got)
 	}
 
-	manager.MarkResult(context.Background(), Result{AuthID: auth.ID, Provider: "xai", Model: "grok-4", Success: true})
+	mustMarkResult(t, manager, context.Background(), Result{AuthID: auth.ID, Provider: "xai", Model: "grok-4", Success: true})
 	if got := store.saveCount.Load(); got != 2 {
 		t.Fatalf("cooldown clear saved cooldown state %d times, want 2", got)
 	}
 
-	manager.MarkResult(context.Background(), Result{AuthID: auth.ID, Provider: "xai", Model: "grok-4", Success: true})
+	mustMarkResult(t, manager, context.Background(), Result{AuthID: auth.ID, Provider: "xai", Model: "grok-4", Success: true})
 	if got := store.saveCount.Load(); got != 2 {
 		t.Fatalf("clean success saved cooldown state %d times, want 2", got)
 	}
@@ -269,7 +271,7 @@ func TestManagerSetConfigSnapshotDefersCooldownPersistence(t *testing.T) {
 	if _, errRegister := manager.Register(WithSkipPersist(context.Background()), auth); errRegister != nil {
 		t.Fatalf("Register() returned error: %v", errRegister)
 	}
-	manager.MarkResult(context.Background(), Result{
+	mustMarkResult(t, manager, context.Background(), Result{
 		AuthID:   auth.ID,
 		Provider: auth.Provider,
 		Model:    "grok-4",
@@ -284,7 +286,9 @@ func TestManagerSetConfigSnapshotDefersCooldownPersistence(t *testing.T) {
 	if got := store.saveCount.Load(); got != 0 {
 		t.Fatalf("SetConfigSnapshot() persisted cooldown state %d times, want 0", got)
 	}
-	manager.PersistCooldownStates(context.Background())
+	if errPersist := manager.PersistCooldownStates(context.Background()); errPersist != nil {
+		t.Fatalf("PersistCooldownStates() error = %v", errPersist)
+	}
 	if got := store.saveCount.Load(); got != 1 {
 		t.Fatalf("PersistCooldownStates() saved cooldown state %d times, want 1", got)
 	}
@@ -322,17 +326,19 @@ func TestManagerSwapCooldownStateStorePersistsOldStoreBeforeSwap(t *testing.T) {
 	if _, errRegister := manager.Register(WithSkipPersist(context.Background()), auth); errRegister != nil {
 		t.Fatalf("Register() returned error: %v", errRegister)
 	}
-	manager.MarkResult(context.Background(), Result{
+	if errMark := manager.MarkResult(context.Background(), Result{
 		AuthID: auth.ID, Provider: auth.Provider, Model: "grok-4", Success: false,
 		Error: &Error{Message: "rate limited", HTTPStatus: 429},
-	})
+	}); errMark != nil {
+		t.Fatalf("MarkResult() error = %v", errMark)
+	}
 	oldStore.saveCount.Store(0)
 	if changed := manager.SetConfigSnapshot(&internalconfig.Config{DisableCooling: true}); !changed {
 		t.Fatal("SetConfigSnapshot() = false, want cleared cooldown state")
 	}
 
-	if swapped := manager.SwapCooldownStateStore(context.Background(), newStore, true); !swapped {
-		t.Fatal("SwapCooldownStateStore() = false, want true")
+	if errSwap := manager.SwapCooldownStateStore(context.Background(), newStore, true); errSwap != nil {
+		t.Fatalf("SwapCooldownStateStore() error = %v", errSwap)
 	}
 	if got := oldStore.saveCount.Load(); got != 1 {
 		t.Fatalf("old store save count = %d, want 1", got)
@@ -357,13 +363,15 @@ func TestManagerApplyConfigWithCooldownStoreSerializesTransitions(t *testing.T) 
 	if _, errRegister := manager.Register(WithSkipPersist(context.Background()), auth); errRegister != nil {
 		t.Fatalf("Register() returned error: %v", errRegister)
 	}
-	manager.MarkResult(context.Background(), Result{
+	if errMark := manager.MarkResult(context.Background(), Result{
 		AuthID: auth.ID, Provider: auth.Provider, Model: "grok-4", Success: false,
 		Error: &Error{Message: "rate limited", HTTPStatus: 429},
-	})
+	}); errMark != nil {
+		t.Fatalf("MarkResult() error = %v", errMark)
+	}
 	manager.SetCooldownStateStore(oldStore)
 
-	firstDone := make(chan bool, 1)
+	firstDone := make(chan error, 1)
 	go func() {
 		firstDone <- manager.ApplyConfigWithCooldownStateStore(context.Background(), &internalconfig.Config{DisableCooling: true}, firstStore)
 	}()
@@ -373,7 +381,7 @@ func TestManagerApplyConfigWithCooldownStoreSerializesTransitions(t *testing.T) 
 		t.Fatal("first old-store persistence did not start")
 	}
 
-	secondDone := make(chan bool, 1)
+	secondDone := make(chan error, 1)
 	go func() {
 		secondDone <- manager.ApplyConfigWithCooldownStateStore(context.Background(), &internalconfig.Config{}, secondStore)
 	}()
@@ -384,11 +392,11 @@ func TestManagerApplyConfigWithCooldownStoreSerializesTransitions(t *testing.T) 
 	}
 
 	close(oldStore.release)
-	if applied := waitForCooldownTransition(t, firstDone, "first config transition"); !applied {
-		t.Fatal("first config transition returned false")
+	if errApply := waitForCooldownTransition(t, firstDone, "first config transition"); errApply != nil {
+		t.Fatalf("first config transition error = %v", errApply)
 	}
-	if applied := waitForCooldownTransition(t, secondDone, "second config transition"); !applied {
-		t.Fatal("second config transition returned false")
+	if errApply := waitForCooldownTransition(t, secondDone, "second config transition"); errApply != nil {
+		t.Fatalf("second config transition error = %v", errApply)
 	}
 	manager.mu.RLock()
 	currentStore := manager.cooldownStore
@@ -398,14 +406,14 @@ func TestManagerApplyConfigWithCooldownStoreSerializesTransitions(t *testing.T) 
 	}
 }
 
-func waitForCooldownTransition(t *testing.T, done <-chan bool, name string) bool {
+func waitForCooldownTransition(t *testing.T, done <-chan error, name string) error {
 	t.Helper()
 	select {
-	case applied := <-done:
-		return applied
+	case err := <-done:
+		return err
 	case <-time.After(time.Second):
 		t.Fatalf("timed out waiting for %s", name)
-		return false
+		return context.DeadlineExceeded
 	}
 }
 
@@ -416,7 +424,7 @@ func TestManagerSwapCooldownStateStoreKeepsOldStoreWhenCanceled(t *testing.T) {
 	manager.SetCooldownStateStore(oldStore)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	done := make(chan bool, 1)
+	done := make(chan error, 1)
 	go func() { done <- manager.SwapCooldownStateStore(ctx, newStore, true) }()
 	select {
 	case <-oldStore.started:
@@ -431,17 +439,17 @@ func TestManagerSwapCooldownStateStoreKeepsOldStoreWhenCanceled(t *testing.T) {
 	}
 	cancel()
 	select {
-	case swapped := <-done:
-		if swapped {
-			t.Fatal("SwapCooldownStateStore() = true after cancellation")
+	case errSwap := <-done:
+		if !errors.Is(errSwap, context.Canceled) {
+			t.Fatalf("SwapCooldownStateStore() error = %v, want context.Canceled", errSwap)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("SwapCooldownStateStore() did not honor cancellation")
 	}
 
 	close(oldStore.release)
-	if swapped := manager.SwapCooldownStateStore(context.Background(), newStore, false); !swapped {
-		t.Fatal("SwapCooldownStateStore() = false, want retry to persist the old store before swapping")
+	if errSwap := manager.SwapCooldownStateStore(context.Background(), newStore, false); errSwap != nil {
+		t.Fatalf("SwapCooldownStateStore() retry error = %v", errSwap)
 	}
 	manager.mu.RLock()
 	currentStore = manager.cooldownStore
@@ -578,7 +586,7 @@ func TestManagerResultSaveWaitsForCooldownStoreTransition(t *testing.T) {
 	}
 	manager.SetCooldownStateStore(oldStore)
 
-	transitionDone := make(chan bool, 1)
+	transitionDone := make(chan error, 1)
 	go func() {
 		transitionDone <- manager.SwapCooldownStateStore(context.Background(), newStore, true)
 	}()
@@ -588,26 +596,31 @@ func TestManagerResultSaveWaitsForCooldownStoreTransition(t *testing.T) {
 		t.Fatal("old-store transition save did not start")
 	}
 
-	resultDone := make(chan struct{})
+	resultDone := make(chan error, 1)
 	go func() {
-		manager.MarkResult(context.Background(), Result{
+		resultDone <- manager.MarkResult(context.Background(), Result{
 			AuthID: auth.ID, Provider: auth.Provider, Model: "grok-4", Success: false,
 			Error: &Error{Message: "rate limited", HTTPStatus: 429},
 		})
-		close(resultDone)
 	}()
 	select {
-	case <-resultDone:
+	case errResult := <-resultDone:
+		if errResult != nil {
+			t.Fatalf("MarkResult() error = %v", errResult)
+		}
 		t.Fatal("result save completed while the store transition was blocked")
 	case <-time.After(100 * time.Millisecond):
 	}
 
 	close(oldStore.release)
-	if swapped := waitForCooldownTransition(t, transitionDone, "cooldown store transition"); !swapped {
-		t.Fatal("SwapCooldownStateStore() = false")
+	if errSwap := waitForCooldownTransition(t, transitionDone, "cooldown store transition"); errSwap != nil {
+		t.Fatalf("SwapCooldownStateStore() error = %v", errSwap)
 	}
 	select {
-	case <-resultDone:
+	case errResult := <-resultDone:
+		if errResult != nil {
+			t.Fatalf("MarkResult() error = %v", errResult)
+		}
 	case <-time.After(time.Second):
 		t.Fatal("result save did not complete after store transition")
 	}

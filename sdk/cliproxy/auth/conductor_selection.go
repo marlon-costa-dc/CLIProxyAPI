@@ -58,6 +58,9 @@ type authSelectionEligibility struct {
 	requiredKind     string
 	credentialPolicy string
 	disallowFreeAuth bool
+	excludedAuthIDs  map[string]struct{}
+	allowedAuthIDs   map[string]struct{}
+	hasAllowlist     bool
 }
 
 func withRequiredAuthKind(ctx context.Context, requiredKind string) context.Context {
@@ -77,7 +80,11 @@ func credentialPolicyFromContext(ctx context.Context) string {
 }
 
 func authSelectionEligibilityForRequest(ctx context.Context, opts cliproxyexecutor.Options) authSelectionEligibility {
-	eligibility := authSelectionEligibility{disallowFreeAuth: disallowFreeAuthFromMetadata(opts.Metadata)}
+	eligibility := authSelectionEligibility{
+		disallowFreeAuth: disallowFreeAuthFromMetadata(opts.Metadata),
+		excludedAuthIDs:  extractExcludedAuthIDs(opts.Metadata),
+	}
+	eligibility.allowedAuthIDs, eligibility.hasAllowlist = allowedAuthIDsFromMetadata(opts.Metadata)
 	if ctx != nil {
 		eligibility.requiredKind, _ = ctx.Value(requiredAuthKindContextKey{}).(string)
 		eligibility.credentialPolicy, _ = ctx.Value(credentialPolicyContextKey{}).(string)
@@ -88,6 +95,14 @@ func authSelectionEligibilityForRequest(ctx context.Context, opts cliproxyexecut
 func (e authSelectionEligibility) allows(auth *Auth) bool {
 	if auth == nil {
 		return false
+	}
+	if _, excluded := e.excludedAuthIDs[auth.ID]; excluded {
+		return false
+	}
+	if e.hasAllowlist {
+		if _, allowed := e.allowedAuthIDs[auth.ID]; !allowed {
+			return false
+		}
 	}
 	if e.requiredKind != "" && auth.AuthKind() != e.requiredKind {
 		return false
@@ -1145,7 +1160,7 @@ func (m *Manager) shouldRetryAfterErrorWithHomeRetryLimit(ctx context.Context, o
 	if isRequestInvalidError(err) || isRequestStopError(err) {
 		return 0, false
 	}
-	if m.HomeEnabled() {
+	if m.HomeEnabled() && !isModelRoutingOptions(opts) {
 		var cooldownErr *homeDispatchRetryAfterError
 		if errors.As(err, &cooldownErr) && cooldownErr != nil {
 			observeHomeCooldownRetryLimit(cooldownErr, &homeRetryLimit, pinnedAuthIDFromMetadata(opts.Metadata) == "")
@@ -1432,6 +1447,9 @@ func (m *Manager) routeAwareSelectionRequired(auth *Auth, routeModel string) boo
 }
 
 func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, error) {
+	if opts.Metadata == nil {
+		opts.Metadata = make(map[string]any)
+	}
 	if m.HomeEnabled() {
 		auth, exec, _, err := m.pickNextViaHome(ctx, model, opts, tried)
 		return auth, exec, err
@@ -1725,7 +1743,7 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 		return nil, nil, &Error{Code: "executor_not_found", Message: "executor not registered"}
 	}
 	selected, errPick := m.scheduler.pickSingle(ctx, provider, model, opts, tried)
-	if errPick != nil && model != "" && shouldRetrySchedulerPick(errPick) {
+	if errPick != nil && model != "" && !isModelRoutingOptions(opts) && shouldRetrySchedulerPick(errPick) {
 		m.syncScheduler()
 		selected, errPick = m.scheduler.pickSingle(ctx, provider, model, opts, tried)
 	}
@@ -1749,6 +1767,9 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
 }
 
 func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, model string, opts cliproxyexecutor.Options, tried map[string]struct{}) (*Auth, ProviderExecutor, string, error) {
+	if opts.Metadata == nil {
+		opts.Metadata = make(map[string]any)
+	}
 	if m.HomeEnabled() {
 		return m.pickNextViaHome(ctx, model, opts, tried)
 	}

@@ -1,17 +1,22 @@
 # Binaries
 cli-proxy-api
+/cliproxy
+/server
 *.exe
+
 
 # Configuration
 config.yaml
 .env
-
+.mcp.json
 # Generated content
 bin/*
 /logs
+.runtime/
 conv/*
 temp/*
 refs/*
+tmp/*
 plugins/*
 examples/plugin/bin/*
 
@@ -22,6 +27,7 @@ objectstore/*
 
 # Static assets
 static/*
+dist/*
 
 # Authentication data
 auths/*
@@ -53,6 +59,7 @@ AGENTS.override.md
 .bmad/*
 _bmad/*
 _bmad-output/*
+.mcp/cache/
 .gocache/
 .gitnexus/
 
@@ -66,3 +73,11 @@ docker-compose.override.yml
 
 # Local LLM Wiki vault
 .llm-wiki
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/
+*.gate.lock*
+.runtime/

@@ -32,7 +32,7 @@ func TestServiceRejectsInvalidCredentialWeightConfigCommit(t *testing.T) {
 		}},
 	}
 
-	if service.applyConfigUpdateWithAuthSynthesis(nil, newCfg, true) {
+	if errApply := service.applyConfigUpdateWithAuthSynthesis(nil, newCfg, true); errApply == nil {
 		t.Fatal("hot config application accepted an invalid credential weight")
 	}
 	if service.cfg != originalCfg {
@@ -67,8 +67,8 @@ func TestApplyManagerConfigStopsReplacedServiceAffinitySelector(t *testing.T) {
 		},
 	}
 	commit := configCommit{cfg: newCfg, sequence: 1}
-	if !service.applyManagerConfig(context.Background(), commit) {
-		t.Fatal("applyManagerConfig failed")
+	if errApply := service.applyManagerConfig(context.Background(), commit); errApply != nil {
+		t.Fatalf("applyManagerConfig() error = %v", errApply)
 	}
 
 	if !tracking.stopped {

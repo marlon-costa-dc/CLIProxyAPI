@@ -16,8 +16,10 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/buildinfo"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/modelrouting"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginstore"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/usage"
 	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
@@ -47,6 +49,7 @@ type Handler struct {
 	attemptsMu              sync.Mutex
 	failedAttempts          map[string]*attemptInfo // keyed by client IP
 	authManager             *coreauth.Manager
+	usageStats              *usage.RequestStatistics
 	tokenStore              coreauth.Store
 	localPassword           string
 	allowRemoteOverride     bool
@@ -55,7 +58,9 @@ type Handler struct {
 	postAuthHook            coreauth.PostAuthHook
 	postAuthPersistHook     coreauth.PostAuthHook
 	pluginHost              *pluginhost.Host
-	configReloadHook        func(context.Context, *config.Config)
+	configReloadHook        func(context.Context, *config.Config) error
+	configPublishHook       func(context.Context, []byte, *modelrouting.ActiveIdentityV2, bool) (*config.Config, *modelrouting.ActivationReceiptV2, error)
+	modelRoutingStateHook   func() modelrouting.ActiveStateV2
 	pluginStoreRegistryURL  string
 	pluginStoreHTTPClient   pluginstore.HTTPDoer
 	pluginReleaseCacheMu    sync.Mutex
@@ -77,6 +82,7 @@ func NewHandler(cfg *config.Config, configFilePath string, manager *coreauth.Man
 		configFilePath:      configFilePath,
 		failedAttempts:      make(map[string]*attemptInfo),
 		authManager:         manager,
+		usageStats:          usage.GetRequestStatistics(),
 		tokenStore:          sdkAuth.GetTokenStore(),
 		allowRemoteOverride: envSecret != "",
 		envSecret:           envSecret,
@@ -140,6 +146,9 @@ func (h *Handler) SetAuthManager(manager *coreauth.Manager) {
 	h.mu.Unlock()
 }
 
+// SetUsageStatistics allows replacing the usage statistics reference.
+func (h *Handler) SetUsageStatistics(stats *usage.RequestStatistics) { h.usageStats = stats }
+
 // SetPluginHost updates the plugin host used by plugin-backed management endpoints.
 func (h *Handler) SetPluginHost(host *pluginhost.Host) {
 	if h == nil {
@@ -151,12 +160,32 @@ func (h *Handler) SetPluginHost(host *pluginhost.Host) {
 }
 
 // SetConfigReloadHook updates the callback used after management saves config changes.
-func (h *Handler) SetConfigReloadHook(hook func(context.Context, *config.Config)) {
+func (h *Handler) SetConfigReloadHook(hook func(context.Context, *config.Config) error) {
 	if h == nil {
 		return
 	}
 	h.mu.Lock()
 	h.configReloadHook = hook
+	h.mu.Unlock()
+}
+
+// SetConfigPublishHook installs the Service-owned atomic config publisher.
+func (h *Handler) SetConfigPublishHook(hook func(context.Context, []byte, *modelrouting.ActiveIdentityV2, bool) (*config.Config, *modelrouting.ActivationReceiptV2, error)) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	h.configPublishHook = hook
+	h.mu.Unlock()
+}
+
+// SetModelRoutingStateHook installs the Service-owned active identity reader.
+func (h *Handler) SetModelRoutingStateHook(hook func() modelrouting.ActiveStateV2) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	h.modelRoutingStateHook = hook
 	h.mu.Unlock()
 }
 
@@ -185,9 +214,12 @@ func (h *Handler) saveConfigAndSnapshotLocked(c *gin.Context) (configReloadSnaps
 
 // reloadConfigAfterManagementSave reloads from an independent config snapshot.
 // Callers must pass a full Config clone captured immediately after a successful save.
-func (h *Handler) reloadConfigAfterManagementSave(ctx context.Context, snapshot configReloadSnapshot) {
-	if h == nil || snapshot.cfg == nil || snapshot.generation == 0 {
-		return
+func (h *Handler) reloadConfigAfterManagementSave(ctx context.Context, snapshot configReloadSnapshot) error {
+	if h == nil {
+		return fmt.Errorf("management handler is nil")
+	}
+	if snapshot.cfg == nil || snapshot.generation == 0 {
+		return fmt.Errorf("management reload snapshot is incomplete")
 	}
 	h.reloadMu.Lock()
 	defer h.reloadMu.Unlock()
@@ -195,13 +227,15 @@ func (h *Handler) reloadConfigAfterManagementSave(ctx context.Context, snapshot 
 	h.mu.Lock()
 	if snapshot.generation < h.appliedReloadGeneration {
 		h.mu.Unlock()
-		return
+		return nil
 	}
 	hook := h.configReloadHook
 	host := h.pluginHost
 	h.mu.Unlock()
 	if hook != nil {
-		hook(ctx, snapshot.cfg)
+		if err := hook(ctx, snapshot.cfg); err != nil {
+			return err
+		}
 	} else if host != nil {
 		host.ApplyConfig(ctx, snapshot.cfg)
 	}
@@ -211,6 +245,7 @@ func (h *Handler) reloadConfigAfterManagementSave(ctx context.Context, snapshot 
 		h.appliedReloadGeneration = snapshot.generation
 	}
 	h.mu.Unlock()
+	return nil
 }
 
 // reloadConfigAfterManagementSaveAsync reloads from an independent config snapshot.
@@ -229,7 +264,9 @@ func (h *Handler) reloadConfigAfterManagementSaveAsync(ctx context.Context, snap
 				log.WithField("panic", recovered).Error("management: async config reload panicked")
 			}
 		}()
-		h.reloadConfigAfterManagementSave(reloadCtx, snapshot)
+		if err := h.reloadConfigAfterManagementSave(reloadCtx, snapshot); err != nil {
+			log.WithError(err).Error("management: async config reload failed")
+		}
 	}()
 }
 

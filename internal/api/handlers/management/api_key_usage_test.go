@@ -47,9 +47,15 @@ func TestGetAPIKeyUsage_GroupsByProviderAndAPIKey(t *testing.T) {
 		t.Fatalf("register claude auth: %v", err)
 	}
 
-	manager.MarkResult(context.Background(), coreauth.Result{AuthID: "codex-auth", Provider: "codex", Model: "gpt-5", Success: true})
-	manager.MarkResult(context.Background(), coreauth.Result{AuthID: "codex-auth", Provider: "codex", Model: "gpt-5", Success: false})
-	manager.MarkResult(context.Background(), coreauth.Result{AuthID: "claude-auth", Provider: "claude", Model: "claude-4", Success: true})
+	if errMark := manager.MarkResult(context.Background(), coreauth.Result{AuthID: "codex-auth", Provider: "codex", Model: "gpt-5", Success: true}); errMark != nil {
+		t.Fatalf("mark codex success: %v", errMark)
+	}
+	if errMark := manager.MarkResult(context.Background(), coreauth.Result{AuthID: "codex-auth", Provider: "codex", Model: "gpt-5", Success: false}); errMark != nil {
+		t.Fatalf("mark codex failure: %v", errMark)
+	}
+	if errMark := manager.MarkResult(context.Background(), coreauth.Result{AuthID: "claude-auth", Provider: "claude", Model: "claude-4", Success: true}); errMark != nil {
+		t.Fatalf("mark claude success: %v", errMark)
+	}
 
 	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, manager)
 
@@ -109,7 +115,9 @@ func TestGetAPIKeyUsage_GroupsOpenAICompatibleByCompatName(t *testing.T) {
 		t.Fatalf("register vast auth: %v", err)
 	}
 
-	manager.MarkResult(context.Background(), coreauth.Result{AuthID: "vast-auth", Provider: "openai-compatible-vast", Model: "gpt-5", Success: true})
+	if errMark := manager.MarkResult(context.Background(), coreauth.Result{AuthID: "vast-auth", Provider: "openai-compatible-vast", Model: "gpt-5", Success: true}); errMark != nil {
+		t.Fatalf("mark VAST success: %v", errMark)
+	}
 
 	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, manager)
 

@@ -150,6 +150,7 @@ func TestAPIKeyModelRoutingKeepsOneExecutionSnapshotAcrossReload(t *testing.T) {
 
 func TestAttachResolvedAPIKeyModelInfoSupportsKeylessOpenAICompatibility(t *testing.T) {
 	manager := NewManager(nil, nil, nil)
+	configIndex := 0
 	manager.SetConfig(&internalconfig.Config{OpenAICompatibility: []internalconfig.OpenAICompatibility{{
 		Name:    "keyless",
 		Prefix:  "tenant",
@@ -166,9 +167,10 @@ func TestAttachResolvedAPIKeyModelInfoSupportsKeylessOpenAICompatibility(t *test
 		},
 	}}})
 	auth := &Auth{
-		ID:       "auth-keyless",
-		Provider: "openai-compatibility:keyless",
-		Prefix:   "tenant",
+		ID:                       "auth-keyless",
+		Provider:                 "openai-compatibility:keyless",
+		Prefix:                   "tenant",
+		OpenAICompatibilityIndex: &configIndex,
 		Attributes: map[string]string{
 			AttributeSource: "config:keyless[0]",
 			"compat_name":   "keyless",
@@ -207,8 +209,13 @@ func TestAttachResolvedAPIKeyModelInfoBindsUnknownConfiguredCapability(t *testin
 
 	req := manager.attachResolvedAPIKeyModelInfo(cliproxyexecutor.Request{}, auth, "tenant/unknown-public", "unknown-upstream")
 	info, ok := ResolvedAPIKeyModelInfo(req)
-	if !ok || info == nil || info.UserDefined || info.Thinking != nil {
-		t.Fatalf("ResolvedAPIKeyModelInfo() = (%+v, %t), want authoritative empty capability", info, ok)
+	// The capability snapshot is still bound (the model is configured), but a model
+	// absent from the bundled catalog and configured without an explicit thinking
+	// block carries unknown reasoning capability: Thinking stays nil while
+	// UserDefined marks the absence as unproven, so thinking application forwards
+	// the caller's configuration instead of stripping it.
+	if !ok || info == nil || !info.UserDefined || info.Thinking != nil {
+		t.Fatalf("ResolvedAPIKeyModelInfo() = (%+v, %t), want unknown-capability snapshot", info, ok)
 	}
 	fallbackReq := manager.attachResolvedAPIKeyModelInfo(cliproxyexecutor.Request{}, auth, "tenant/not-configured", "not-configured")
 	if fallbackInfo, fallbackOK := ResolvedAPIKeyModelInfo(fallbackReq); fallbackOK || fallbackInfo != nil {

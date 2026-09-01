@@ -107,8 +107,13 @@ func (h *Handler) PatchAuthFileStatus(c *gin.Context) {
 	}
 
 	applyAuthDisabledState(targetAuth, *req.Disabled)
-	if _, err := h.authManager.Update(ctx, targetAuth); err != nil {
+	_, err := h.authManager.Update(ctx, targetAuth)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to update auth: %v", err)})
+		return
+	}
+	if errHook := h.notifyAuthFilePersisted(ctx, targetAuth); errHook != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to refresh auth: %v", errHook)})
 		return
 	}
 
@@ -343,8 +348,13 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 
 	targetAuth.UpdatedAt = time.Now()
 
-	if _, err := h.authManager.Update(ctx, targetAuth); err != nil {
+	updatedAuth, err := h.authManager.Update(ctx, targetAuth)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to update auth: %v", err)})
+		return
+	}
+	if errHook := h.notifyAuthFilePersisted(ctx, updatedAuth); errHook != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to refresh auth: %v", errHook)})
 		return
 	}
 
@@ -568,6 +578,11 @@ func syncAuthFileMetadataFields(auth *coreauth.Auth, touchedRoots map[string]str
 	if _, ok := touchedRoots["disabled"]; ok {
 		syncAuthFileDisabledState(auth)
 	}
+	if _, ok := touchedRoots["excluded_models"]; ok {
+		syncAuthFileExcludedModelsAttribute(auth, touchedRoots)
+	} else if _, ok := touchedRoots["excluded-models"]; ok {
+		syncAuthFileExcludedModelsAttribute(auth, touchedRoots)
+	}
 }
 
 func syncAuthFileHeaderAttributes(auth *coreauth.Auth) {
@@ -709,47 +724,48 @@ func syncAuthFileDisabledState(auth *coreauth.Auth) {
 	auth.StatusMessage = ""
 }
 
-func (h *Handler) removeAuth(ctx context.Context, id string) {
+func (h *Handler) removeAuth(ctx context.Context, id string) error {
 	if h == nil || h.authManager == nil {
-		return
+		return fmt.Errorf("remove auth: handler or auth manager is nil")
 	}
 	id = strings.TrimSpace(id)
 	if id == "" {
-		return
+		return fmt.Errorf("remove auth: ID is empty")
 	}
 	if _, ok := h.authManager.GetByID(id); ok {
-		h.authManager.Remove(ctx, id)
-		return
+		return h.authManager.Remove(ctx, id)
 	}
 	authID := h.authIDForPath(id)
 	if authID == "" {
-		return
+		return nil
 	}
-	h.authManager.Remove(ctx, authID)
+	return h.authManager.Remove(ctx, authID)
 }
 
-func (h *Handler) removeAuthsForPath(ctx context.Context, path string, fallbackID string) {
+func (h *Handler) removeAuthsForPath(ctx context.Context, path string, fallbackID string) error {
 	if h == nil || h.authManager == nil {
-		return
+		return fmt.Errorf("remove auths for path: handler or auth manager is nil")
 	}
 	removed := false
+	var removeErr error
 	for _, auth := range h.authManager.List() {
 		if auth == nil {
 			continue
 		}
 		if sameAuthFilePath(authAttribute(auth, "path"), path) || sameAuthFilePath(authAttribute(auth, coreauth.AttributeVirtualSource), path) {
-			h.removeAuth(ctx, auth.ID)
+			if errRemove := h.removeAuth(ctx, auth.ID); errRemove != nil {
+				removeErr = errors.Join(removeErr, fmt.Errorf("remove auth %s: %w", auth.ID, errRemove))
+			}
 			removed = true
 		}
 	}
 	if removed {
-		return
+		return removeErr
 	}
 	if strings.TrimSpace(fallbackID) != "" {
-		h.removeAuth(ctx, fallbackID)
-		return
+		return h.removeAuth(ctx, fallbackID)
 	}
-	h.removeAuth(ctx, path)
+	return h.removeAuth(ctx, path)
 }
 
 func sameAuthFilePath(left, right string) bool {
@@ -883,4 +899,11 @@ func (h *Handler) saveTokenRecord(ctx context.Context, record *coreauth.Auth) (s
 		}
 	}
 	return savedPath, nil
+}
+
+func (h *Handler) saveOAuthTokenRecord(ctx context.Context, state, provider string, record *coreauth.Auth) (string, error) {
+	if errBegin := beginOAuthSessionSave(state, provider); errBegin != nil {
+		return "", errBegin
+	}
+	return h.saveTokenRecord(ctx, record)
 }

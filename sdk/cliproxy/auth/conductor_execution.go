@@ -412,7 +412,7 @@ func mergeRequestHeaders(current, updates http.Header, clear []string) http.Head
 	return out
 }
 
-func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, maxRetryCredentials int, retryRound int, defaultRequestRetry int) (cliproxyexecutor.Response, error) {
+func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, maxRetryCredentials int, retryRound int, defaultRequestRetry int, states ...*routeExecutionState) (cliproxyexecutor.Response, error) {
 	if len(providers) == 0 {
 		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "no provider supplied"}
 	}
@@ -603,7 +603,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 	}
 }
 
-func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, maxRetryCredentials int, retryRound int, defaultRequestRetry int) (cliproxyexecutor.Response, error) {
+func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, maxRetryCredentials int, retryRound int, defaultRequestRetry int, states ...*routeExecutionState) (cliproxyexecutor.Response, error) {
 	if len(providers) == 0 {
 		return cliproxyexecutor.Response{}, &Error{Code: "provider_not_found", Message: "no provider supplied"}
 	}
@@ -798,7 +798,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 	}
 }
 
-func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, maxRetryCredentials int, homeRetryLimit *int, retryRound int, defaultRequestRetry int) (*cliproxyexecutor.StreamResult, error) {
+func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, maxRetryCredentials int, homeRetryLimit *int, retryRound int, defaultRequestRetry int, states ...*routeExecutionState) (*cliproxyexecutor.StreamResult, error) {
 	if len(providers) == 0 {
 		return nil, &Error{Code: "provider_not_found", Message: "no provider supplied"}
 	}
@@ -1881,4 +1881,64 @@ func (m *Manager) HttpRequest(ctx context.Context, auth *Auth, req *http.Request
 		return nil, &Error{Code: "provider_not_found", Message: "executor not registered for provider: " + providerKey}
 	}
 	return exec.HttpRequest(ctx, auth, req)
+}
+
+func extractExcludedAuthIDs(meta map[string]any) map[string]struct{} {
+	excluded := make(map[string]struct{})
+	if meta == nil {
+		return excluded
+	}
+	if existing, ok := meta[cliproxyexecutor.ExcludedAuthIDsMetadataKey]; ok {
+		switch v := existing.(type) {
+		case map[string]struct{}:
+			for id := range v {
+				excluded[id] = struct{}{}
+			}
+		case []string:
+			for _, id := range v {
+				excluded[id] = struct{}{}
+			}
+		}
+	}
+	return excluded
+}
+
+func withExcludedAuthIDs(opts cliproxyexecutor.Options, tried map[string]struct{}) cliproxyexecutor.Options {
+	if len(tried) == 0 {
+		return opts
+	}
+	meta := make(map[string]any, len(opts.Metadata)+1)
+	for k, v := range opts.Metadata {
+		meta[k] = v
+	}
+	excluded := make(map[string]struct{}, len(tried))
+	for id := range tried {
+		excluded[id] = struct{}{}
+	}
+	if existing, ok := meta[cliproxyexecutor.ExcludedAuthIDsMetadataKey]; ok {
+		switch v := existing.(type) {
+		case map[string]struct{}:
+			for id := range v {
+				excluded[id] = struct{}{}
+			}
+		case []string:
+			for _, id := range v {
+				excluded[id] = struct{}{}
+			}
+		}
+	}
+	meta[cliproxyexecutor.ExcludedAuthIDsMetadataKey] = excluded
+	opts.Metadata = meta
+	return opts
+}
+
+func isAuthNotFoundError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var authErr *Error
+	if errors.As(err, &authErr) && authErr != nil {
+		return authErr.Code == "auth_not_found" || authErr.Code == "auth_unavailable" || authErr.Code == "home_unavailable"
+	}
+	return false
 }

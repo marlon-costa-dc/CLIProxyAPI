@@ -29,6 +29,9 @@ type SDKConfig struct {
 	// default base model ("gpt-5.4-mini") is used.
 	GPTImage2BaseModel string `yaml:"gpt-image-2-base-model,omitempty" json:"gpt-image-2-base-model,omitempty"`
 
+	// EnableGeminiCLIEndpoint controls whether Gemini CLI internal endpoints are enabled.
+	EnableGeminiCLIEndpoint bool `yaml:"enable-gemini-cli-endpoint" json:"enable-gemini-cli-endpoint"`
+
 	// VideoResultAuthCacheTTL controls how long video IDs stay pinned to the credential
 	// that created them. Accepts duration strings like "30m" or "3h".
 	// Empty or invalid values use the default 3h.
@@ -79,4 +82,11 @@ type StreamingConfig struct {
 	// to allow auth rotation / transient recovery.
 	// <= 0 disables bootstrap retries. Default is 0.
 	BootstrapRetries int `yaml:"bootstrap-retries,omitempty" json:"bootstrap-retries,omitempty"`
+
+	// StreamConnectTimeoutSeconds controls the maximum time to wait for connection/stream establishment from an upstream stream before timing out and failing over.
+	// <= 0 disables stream connect timeout. Default is 0.
+	StreamConnectTimeoutSeconds int `yaml:"stream-connect-timeout-seconds,omitempty" json:"stream-connect-timeout-seconds,omitempty"`
+
+	// StreamFirstChunkTimeoutSeconds is a deprecated alias for StreamConnectTimeoutSeconds.
+	StreamFirstChunkTimeoutSeconds int `yaml:"stream-first-chunk-timeout-seconds,omitempty" json:"stream-first-chunk-timeout-seconds,omitempty"`
 }

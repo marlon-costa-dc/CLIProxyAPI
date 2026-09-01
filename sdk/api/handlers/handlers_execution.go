@@ -103,6 +103,7 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
 	rawResponseHeaders := cloneHeader(resp.Headers)
 	responseHeaders := downstreamHeadersFromExecutor(rawResponseHeaders, PassthroughHeadersEnabled(h.Cfg))
 	body, responseHeaders := h.applyResponseInterceptors(ctx, lifecycle.requestID(), responseProtocol, normalizedModel, originalRequestedModel, executedOpts, rawResponseHeaders, responseHeaders, executedOpts.OriginalRequest, executedReq.Payload, resp.Payload, http.StatusOK, execOptions.SkipInterceptorPluginID)
+	responseHeaders = mergeTrustedDownstreamHeaders(responseHeaders, resp.DownstreamHeaders)
 	lifecycle.complete(pluginapi.RequestCompletionSucceeded, http.StatusOK, nil)
 	return body, responseHeaders, nil
 }
@@ -168,6 +169,7 @@ func (h *BaseAPIHandler) executeCountWithAuthManager(ctx context.Context, handle
 	rawResponseHeaders := cloneHeader(resp.Headers)
 	responseHeaders := downstreamHeadersFromExecutor(rawResponseHeaders, PassthroughHeadersEnabled(h.Cfg))
 	body, responseHeaders := h.applyResponseInterceptors(ctx, lifecycle.requestID(), handlerType, normalizedModel, originalRequestedModel, executedOpts, rawResponseHeaders, responseHeaders, executedOpts.OriginalRequest, executedReq.Payload, resp.Payload, http.StatusOK, execOptions.SkipInterceptorPluginID)
+	responseHeaders = mergeTrustedDownstreamHeaders(responseHeaders, resp.DownstreamHeaders)
 	lifecycle.complete(pluginapi.RequestCompletionSucceeded, http.StatusOK, nil)
 	return body, responseHeaders, nil
 }
@@ -216,6 +218,7 @@ func (h *BaseAPIHandler) executeWithPluginExecutor(ctx context.Context, entryPro
 	rawResponseHeaders := cloneHeader(resp.Headers)
 	responseHeaders := downstreamHeadersFromExecutor(rawResponseHeaders, PassthroughHeadersEnabled(h.Cfg))
 	body, responseHeaders := h.applyResponseInterceptors(execCtx, lifecycle.requestID(), responseProtocol, modelName, originalRequestedModel, opts, rawResponseHeaders, responseHeaders, opts.OriginalRequest, req.Payload, resp.Payload, http.StatusOK, execOptions.SkipInterceptorPluginID)
+	responseHeaders = mergeTrustedDownstreamHeaders(responseHeaders, resp.DownstreamHeaders)
 	lifecycle.complete(pluginapi.RequestCompletionSucceeded, http.StatusOK, nil)
 	return body, responseHeaders, nil
 }
@@ -250,6 +253,7 @@ func (h *BaseAPIHandler) countWithPluginExecutor(ctx context.Context, handlerTyp
 	rawResponseHeaders := cloneHeader(resp.Headers)
 	responseHeaders := downstreamHeadersFromExecutor(rawResponseHeaders, PassthroughHeadersEnabled(h.Cfg))
 	body, responseHeaders := h.applyResponseInterceptors(ctx, lifecycle.requestID(), handlerType, modelName, originalRequestedModel, opts, rawResponseHeaders, responseHeaders, opts.OriginalRequest, req.Payload, resp.Payload, http.StatusOK, execOptions.SkipInterceptorPluginID)
+	responseHeaders = mergeTrustedDownstreamHeaders(responseHeaders, resp.DownstreamHeaders)
 	lifecycle.complete(pluginapi.RequestCompletionSucceeded, http.StatusOK, nil)
 	return body, responseHeaders, nil
 }
@@ -320,11 +324,12 @@ func executionErrorMessage(err error) *interfaces.ErrorMessage {
 	var terminated *coreexecutor.RequestTerminatedError
 	if errors.As(err, &terminated) && terminated != nil {
 		return &interfaces.ErrorMessage{
-			StatusCode:     normalizedTerminationStatus(terminated.StatusCode()),
-			Error:          err,
-			DirectResponse: true,
-			Body:           terminated.ResponseBody(),
-			Headers:        terminated.ResponseHeaders(),
+			StatusCode:            normalizedTerminationStatus(terminated.StatusCode()),
+			Error:                 err,
+			DirectResponse:        true,
+			TrustedDirectResponse: terminated.Trusted,
+			Body:                  terminated.ResponseBody(),
+			Headers:               terminated.ResponseHeaders(),
 		}
 	}
 	status := http.StatusInternalServerError

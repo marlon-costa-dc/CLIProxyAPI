@@ -119,6 +119,7 @@ type Manager struct {
 	selector                  Selector
 	hook                      Hook
 	mu                        sync.RWMutex
+	mutationMu                sync.Mutex
 	selectorMu                sync.Mutex
 	configCooldownMu          sync.Mutex
 	auths                     map[string]*Auth
@@ -146,6 +147,9 @@ type Manager struct {
 
 	// oauthModelAlias stores global OAuth model alias mappings (alias -> upstream name) keyed by channel.
 	oauthModelAlias atomic.Value
+
+	// modelRouting stores the immutable CCS projection used for tier aliases and probes.
+	modelRouting modelRoutingPointer
 
 	// apiKeyModelRouting atomically publishes per-auth aliases and configured capabilities.
 	apiKeyModelRouting atomic.Value
@@ -194,6 +198,7 @@ func NewManager(store Store, selector Selector, hook Hook) *Manager {
 	// atomic.Value requires non-nil initial value.
 	manager.runtimeConfig.Store(&internalconfig.Config{})
 	manager.apiKeyModelRouting.Store(&apiKeyModelRoutingSnapshot{config: &internalconfig.Config{}})
+	manager.modelRouting.Store(compileModelRouting(nil))
 	defaultInFlightConfig, errInFlightConfig := HomeInFlightPublisherConfigFromConfig(internalconfig.DefaultCredentialInFlightConfig())
 	if errInFlightConfig == nil {
 		manager.ApplyHomeInFlightPublisherConfig(defaultInFlightConfig)

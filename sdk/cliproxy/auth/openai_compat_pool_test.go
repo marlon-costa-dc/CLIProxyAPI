@@ -788,7 +788,7 @@ func TestManagerExecute_OpenAICompatAliasPoolBlockedAuthDoesNotConsumeRetryBudge
 		Message:    "invalid_request_error: The requested model is not supported.",
 	}
 	for _, upstreamModel := range []string{"deepseek-v3.1", "glm-5"} {
-		m.MarkResult(context.Background(), Result{
+		mustMarkResult(t, m, context.Background(), Result{
 			AuthID:   badAuth.ID,
 			Provider: openAICompatPoolProviderKey,
 			Model:    upstreamModel,

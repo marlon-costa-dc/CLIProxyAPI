@@ -26,6 +26,8 @@ type oauthModelAliasEntry struct {
 type oauthModelAliasTable struct {
 	// reverse maps channel -> alias (lower) -> entry with upstream model and flags.
 	reverse map[string]map[string]oauthModelAliasEntry
+	// ordered maps channel -> alias (lower) -> entries in config order for sequential failover.
+	ordered map[string]map[string][]oauthModelAliasEntry
 }
 
 // OAuthModelAliasResult contains the resolved upstream model and mapping metadata.
@@ -41,6 +43,7 @@ func compileOAuthModelAliasTable(aliases map[string][]internalconfig.OAuthModelA
 	}
 	out := &oauthModelAliasTable{
 		reverse: make(map[string]map[string]oauthModelAliasEntry, len(aliases)),
+		ordered: make(map[string]map[string][]oauthModelAliasEntry, len(aliases)),
 	}
 	for rawChannel, entries := range aliases {
 		channel := strings.ToLower(strings.TrimSpace(rawChannel))
@@ -48,6 +51,7 @@ func compileOAuthModelAliasTable(aliases map[string][]internalconfig.OAuthModelA
 			continue
 		}
 		rev := make(map[string]oauthModelAliasEntry, len(entries))
+		ord := make(map[string][]oauthModelAliasEntry, len(entries))
 		for _, entry := range entries {
 			name := strings.TrimSpace(entry.Name)
 			alias := strings.TrimSpace(entry.Alias)
@@ -58,21 +62,28 @@ func compileOAuthModelAliasTable(aliases map[string][]internalconfig.OAuthModelA
 				continue
 			}
 			aliasKey := strings.ToLower(alias)
-			if _, exists := rev[aliasKey]; exists {
-				continue
-			}
-			rev[aliasKey] = oauthModelAliasEntry{
+			e := oauthModelAliasEntry{
 				upstreamModel: name,
 				configAlias:   alias,
 				forceMapping:  entry.ForceMapping,
 			}
+			if _, exists := rev[aliasKey]; !exists {
+				rev[aliasKey] = e
+			}
+			ord[aliasKey] = append(ord[aliasKey], e)
 		}
 		if len(rev) > 0 {
 			out.reverse[channel] = rev
 		}
+		if len(ord) > 0 {
+			out.ordered[channel] = ord
+		}
 	}
 	if len(out.reverse) == 0 {
 		out.reverse = nil
+	}
+	if len(out.ordered) == 0 {
+		out.ordered = nil
 	}
 	return out
 }
@@ -471,7 +482,7 @@ func modelAliasChannel(auth *Auth) string {
 // and auth kind. Returns empty string if the provider/authKind combination doesn't support
 // OAuth model alias (e.g., API key authentication).
 //
-// Built-in channels: vertex, aistudio, antigravity, claude, codex, kimi.
+// Built-in channels: gemini-cli, vertex, aistudio, antigravity, claude, codex, iflow, kiro, github-copilot, kimi.
 // Plugin OAuth providers use their normalized provider key as the channel.
 func OAuthModelAliasChannel(provider, authKind string) string {
 	provider = strings.ToLower(strings.TrimSpace(provider))
@@ -488,7 +499,7 @@ func OAuthModelAliasChannel(provider, authKind string) string {
 		return "claude"
 	case "codex":
 		return "codex"
-	case "aistudio", "antigravity", "kimi":
+	case "gemini-cli", "aistudio", "antigravity", "iflow", "kiro", "github-copilot", "kimi":
 		return provider
 	default:
 		return provider
