@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -316,7 +317,7 @@ func TestBootstrapInventoryFailsLoudlyForIncompleteOrManagedRoutes(t *testing.T)
 	}
 }
 
-// TestBootstrapInventorySkipsRoutesThatCannotDeclareCatalogFacts pins the
+// TestBootstrapInventorySurfacesRoutesThatCannotDeclareCatalogFacts pins the
 // distinction the bootstrap has to make. Only openai-compatibility models carry
 // catalog facts: buildConfigModels (which serves claude-api-key, xai, gemini and
 // codex) never sets CatalogProviderID, CatalogModelID, CatalogRouteProviderID,
@@ -324,9 +325,9 @@ func TestBootstrapInventoryFailsLoudlyForIncompleteOrManagedRoutes(t *testing.T)
 // whose type has nowhere to put those facts strands generation one, because the
 // projection that would supply them can only be published once the inventory
 // answers. A route that declares none of them is simply not catalog-declared and
-// is skipped; a route that declares some of them is malformed and must still
-// fail loudly.
-func TestBootstrapInventorySkipsRoutesThatCannotDeclareCatalogFacts(t *testing.T) {
+// is surfaced under its channel identity; a route that declares some of them is
+// malformed and must still fail loudly.
+func TestBootstrapInventorySurfacesRoutesThatCannotDeclareCatalogFacts(t *testing.T) {
 	auth := &coreauth.Auth{
 		ID: "credential-a", Provider: "anthropic", RouteChannel: "claude", QuotaDomain: "quota-a", Status: coreauth.StatusActive,
 		Attributes: map[string]string{"auth_kind": "api_key"},
@@ -399,6 +400,68 @@ func TestBootstrapInventorySkipsRoutesThatCannotDeclareCatalogFacts(t *testing.T
 		const want = "registered route 0 contains a managed alias before projection"
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Fatalf("bootstrapInventoryModels() error = %v, want %q", err, want)
+		}
+	})
+
+	t.Run("every credential of a surfaced route is kept", func(t *testing.T) {
+		secondAuth := &coreauth.Auth{
+			ID: "credential-b", Provider: "anthropic", RouteChannel: "claude", QuotaDomain: "quota-b", Status: coreauth.StatusActive,
+			Attributes: map[string]string{"auth_kind": "api_key"},
+		}
+		duplicate := claudeRoute
+		duplicate.ClientID = secondAuth.ID
+		models, err := bootstrapInventoryModels(
+			[]registry.RegisteredRouteSnapshot{claudeRoute, duplicate},
+			map[string]*coreauth.Auth{claudeRoute.ClientID: auth, secondAuth.ID: secondAuth},
+			time.Now(),
+		)
+		if err != nil {
+			t.Fatalf("bootstrapInventoryModels() error = %v, want nil", err)
+		}
+		if len(models) != 1 || len(models[0].Routes) != 1 {
+			t.Fatalf("bootstrapInventoryModels() built %d models / %d routes, want 1/1", len(models), len(models[0].Routes))
+		}
+		if got := len(models[0].Routes[0].Credentials); got != 2 {
+			t.Fatalf("surfaced route carries %d credentials, want 2 (a duplicate channel+model pair must not drop credentials)", got)
+		}
+	})
+
+	t.Run("catalog route credentials survive slice growth across three routes of one model", func(t *testing.T) {
+		registryRoutes := make([]registry.RegisteredRouteSnapshot, 0, 6)
+		registryAuths := map[string]*coreauth.Auth{}
+		for channelIndex := 0; channelIndex < 3; channelIndex++ {
+			channel := fmt.Sprintf("compat-%d", channelIndex)
+			for credentialIndex := 0; credentialIndex < 2; credentialIndex++ {
+				credentialID := fmt.Sprintf("credential-%d-%d", channelIndex, credentialIndex)
+				registryAuths[credentialID] = &coreauth.Auth{
+					ID: credentialID, Provider: channel, RouteChannel: channel,
+					QuotaDomain: fmt.Sprintf("quota-%d-%d", channelIndex, credentialIndex), Status: coreauth.StatusActive,
+					Attributes: map[string]string{"auth_kind": "api_key"},
+				}
+				registryRoutes = append(registryRoutes, registry.RegisteredRouteSnapshot{
+					ClientID: credentialID, RouteChannel: channel, RuntimeModelID: "glm-5.3",
+					Model: &registry.ModelInfo{
+						ID: "glm-5.3", CatalogProviderID: "zhipuai", CatalogModelID: "glm-5.3",
+						CatalogRouteProviderID: "zhipuai", CatalogRouteModelID: "glm-5.3",
+						Protocols: []string{"openai_chat"},
+					},
+				})
+			}
+		}
+		models, err := bootstrapInventoryModels(registryRoutes, registryAuths, time.Now())
+		if err != nil {
+			t.Fatalf("bootstrapInventoryModels() error = %v, want nil", err)
+		}
+		if len(models) != 1 {
+			t.Fatalf("bootstrapInventoryModels() built %d models, want 1", len(models))
+		}
+		for _, route := range models[0].Routes {
+			if got := len(route.Credentials); got != 2 {
+				t.Fatalf("route %s carries %d credentials, want 2 (slice growth must not orphan route bookkeeping)", route.RouteKey.RouteChannel, got)
+			}
+		}
+		if got := len(models[0].Routes); got != 3 {
+			t.Fatalf("model carries %d routes, want 3", got)
 		}
 	})
 }
