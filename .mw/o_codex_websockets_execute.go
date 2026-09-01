@@ -298,7 +298,6 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		helps.AppendCodexAPIWebsocketResponse(ctx, e.cfg, payload)
 		helps.EmitWebSocketResponseEvent(ctx, opts, auth, e.Identifier(), req.Model, payload)
 		payload = helps.RestoreCodexMultiAgentV2Response(payload, restoreMultiAgentV2)
-		reporter.ObserveQuotaHeaders(helps.ParseCodexQuotaEventHeaders(payload))
 
 		if wsErr, ok := parseCodexWebsocketError(payload); ok {
 			if sess != nil {

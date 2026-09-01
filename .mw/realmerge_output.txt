@@ -1,0 +1,117 @@
+3b5d3f45461340d1ddc83a4a7d027725494ac189
+100644 f252f26ede1bf94c4d4e008624b95a9061341b0d 1	README.md
+100644 419ca870af076ead38f7f297e3fa1e9cf51e5bad 2	README.md
+100644 3bd837861edbba754ef13334bb5b6e826292055f 3	README.md
+100644 1a73a35be57b64a79f292aa3f1c338232a7138e3 1	README_CN.md
+100644 042301df77047ed3c34189678bb2ad210001ef4b 2	README_CN.md
+100644 ffa4aba00b2b696add9ae321f94897dfa1b90d44 3	README_CN.md
+100644 b78af973c58ce5b46f4b6fdcd0ceca3f6d889a6c 1	README_JA.md
+100644 8d07b314e2954aae1124c8fcabf9352e5b3be2cf 2	README_JA.md
+100644 3004681fc4d804e641bb3ee873626d21c048c412 3	README_JA.md
+100644 e4bdfa4c8d4d318c96843aaba852bae041f68a12 1	internal/home/client.go
+100644 0408050193d934260c0d0e81742192ecdc7da9ff 2	internal/home/client.go
+100644 1e597393eba35130e1c32ae3a8644567df7d05d9 3	internal/home/client.go
+100644 108eb914e7aec4e7011a1fe18b10cae19394bf52 1	internal/runtime/executor/antigravity_executor_auth.go
+100644 5b3bf9760fe223211ab91d98a90b501ed6462e66 2	internal/runtime/executor/antigravity_executor_auth.go
+100644 29afff225de0717a2bed5b19a3f309fb4b73cd1a 3	internal/runtime/executor/antigravity_executor_auth.go
+100644 548b5b2531a9e5f89d8a31e9ae4e2c0bad32ef24 1	internal/runtime/executor/codex_websockets_execute.go
+100644 38747638e0b785fb42755195849fb85fc374b639 2	internal/runtime/executor/codex_websockets_execute.go
+100644 a1f83ff24398625584bce113bc444951a1153961 3	internal/runtime/executor/codex_websockets_execute.go
+100644 7915e971a14d796ba6cb66a8848fbabe4e5c75de 1	internal/runtime/executor/codex_websockets_stream.go
+100644 217d6e6a03ad0fee6cac60704cd27ca0cdba5f08 2	internal/runtime/executor/codex_websockets_stream.go
+100644 a5aee00a3bd0f9cc1014d198b15a15e20d0c1e2c 3	internal/runtime/executor/codex_websockets_stream.go
+100644 7313fb3394ce36148db545f66afe3f5b2b81600a 1	internal/runtime/executor/helps/usage_helpers.go
+100644 bee80cc1b0cdd3c33f12ae9ecd5925d0912b3828 2	internal/runtime/executor/helps/usage_helpers.go
+100644 f02bf2179a9328225dda553bce162c8fc1dc5e3c 3	internal/runtime/executor/helps/usage_helpers.go
+100644 0263e08d0f49ac5b26769966345a480520053e2f 1	sdk/cliproxy/auth/conductor_cooldown.go
+100644 be4e90592bf471ab90ce19e33f57e5b9b7353fbc 2	sdk/cliproxy/auth/conductor_cooldown.go
+100644 a18627adcad1599f14f98c20f97fd0d4fc7fbf1a 3	sdk/cliproxy/auth/conductor_cooldown.go
+100644 c7dcebe245961c29a10496ff21d8e628cd9da1de 1	sdk/cliproxy/auth/conductor_execution.go
+100644 188fb054f3788f5aa1afa424d475c5b9fd31e706 2	sdk/cliproxy/auth/conductor_execution.go
+100644 79f84d9f28e95d1dba759ec12172e922300df196 3	sdk/cliproxy/auth/conductor_execution.go
+100644 9be8f52fe08e3c14f453e584848dda896e1cdc38 1	sdk/cliproxy/auth/conductor_home_execution.go
+100644 efd2e19d717e16d9a03ec18704dbb3e654dd020b 2	sdk/cliproxy/auth/conductor_home_execution.go
+100644 4f7747ea4fe89521cfc073394abea71457e0a571 3	sdk/cliproxy/auth/conductor_home_execution.go
+100644 f5944fad1bd94e2d531665fc53f42215e656dfd3 1	sdk/cliproxy/auth/conductor_lifecycle.go
+100644 dc8462d0fa34ee4069cb4946f1703cc23ec15e54 2	sdk/cliproxy/auth/conductor_lifecycle.go
+100644 c44ee8d72b2efe1893a75bbdb8e17e5c7d85bc05 3	sdk/cliproxy/auth/conductor_lifecycle.go
+100644 cca3c3da74ee136dc85cfecbdb199d1e41eb9884 1	sdk/cliproxy/auth/conductor_stream.go
+100644 d0d46e07eeb9270a3eecec29b0e2ebe44a95a706 2	sdk/cliproxy/auth/conductor_stream.go
+100644 3ffbc3c015b9929ce7e65f0344bcbab8c2463952 3	sdk/cliproxy/auth/conductor_stream.go
+100644 657be2379717200904fdb79eb80c5e4995c0e684 1	sdk/cliproxy/auth/selector.go
+100644 bd1952eb5e0ce17a858748dc9d41ffdb4330c0ee 2	sdk/cliproxy/auth/selector.go
+100644 acbc6a9699c0791b10c2e52b9232c5b2cad5509d 3	sdk/cliproxy/auth/selector.go
+100644 5dfd9594fb73144df6447cb0d1e4d4222f8db9eb 1	sdk/cliproxy/auth/session_cache.go
+100644 b136bced597372984159d73bc0aca8d3e770258c 2	sdk/cliproxy/auth/session_cache.go
+100644 b220990aba9d7c104418e9ebc6d03e11229588ca 3	sdk/cliproxy/auth/session_cache.go
+
+Auto-merging README.md
+CONFLICT (content): Merge conflict in README.md
+Auto-merging README_CN.md
+CONFLICT (content): Merge conflict in README_CN.md
+Auto-merging README_JA.md
+CONFLICT (content): Merge conflict in README_JA.md
+Auto-merging cmd/server/main.go
+Auto-merging cmd/server/main_test.go
+Auto-merging internal/api/server_routes.go
+Auto-merging internal/api/server_test.go
+Auto-merging internal/auth/antigravity/auth.go
+Auto-merging internal/home/client.go
+CONFLICT (content): Merge conflict in internal/home/client.go
+Auto-merging internal/registry/model_registry.go
+Auto-merging internal/registry/models/models.json
+Auto-merging internal/runtime/executor/antigravity_executor.go
+Auto-merging internal/runtime/executor/antigravity_executor_auth.go
+CONFLICT (content): Merge conflict in internal/runtime/executor/antigravity_executor_auth.go
+Auto-merging internal/runtime/executor/claude_executor_ratelimit_test.go
+Auto-merging internal/runtime/executor/claude_executor_request.go
+Auto-merging internal/runtime/executor/claude_executor_test.go
+Auto-merging internal/runtime/executor/codex_executor_stream.go
+Auto-merging internal/runtime/executor/codex_websockets_execute.go
+CONFLICT (content): Merge conflict in internal/runtime/executor/codex_websockets_execute.go
+Auto-merging internal/runtime/executor/codex_websockets_executor_test.go
+Auto-merging internal/runtime/executor/codex_websockets_stream.go
+CONFLICT (content): Merge conflict in internal/runtime/executor/codex_websockets_stream.go
+Auto-merging internal/runtime/executor/helps/usage_helpers.go
+CONFLICT (content): Merge conflict in internal/runtime/executor/helps/usage_helpers.go
+Auto-merging internal/runtime/executor/kimi_executor.go
+Auto-merging internal/runtime/executor/kimi_executor_test.go
+Auto-merging internal/translator/codex/claude/codex_claude_request.go
+Auto-merging internal/util/nocopy_invariant_test.go
+Auto-merging sdk/api/handlers/handlers_error_response_test.go
+Auto-merging sdk/api/handlers/handlers_errors.go
+Auto-merging sdk/api/handlers/handlers_execution.go
+Auto-merging sdk/api/handlers/handlers_stream.go
+Auto-merging sdk/api/handlers/handlers_stream_bootstrap_test.go
+Auto-merging sdk/auth/antigravity.go
+Auto-merging sdk/cliproxy/auth/conductor.go
+Auto-merging sdk/cliproxy/auth/conductor_cooldown.go
+CONFLICT (content): Merge conflict in sdk/cliproxy/auth/conductor_cooldown.go
+Auto-merging sdk/cliproxy/auth/conductor_execution.go
+CONFLICT (content): Merge conflict in sdk/cliproxy/auth/conductor_execution.go
+Auto-merging sdk/cliproxy/auth/conductor_home.go
+Auto-merging sdk/cliproxy/auth/conductor_home_execution.go
+CONFLICT (content): Merge conflict in sdk/cliproxy/auth/conductor_home_execution.go
+Auto-merging sdk/cliproxy/auth/conductor_lifecycle.go
+CONFLICT (content): Merge conflict in sdk/cliproxy/auth/conductor_lifecycle.go
+Auto-merging sdk/cliproxy/auth/conductor_models.go
+Auto-merging sdk/cliproxy/auth/conductor_overrides_test.go
+Auto-merging sdk/cliproxy/auth/conductor_refresh.go
+Auto-merging sdk/cliproxy/auth/conductor_selection.go
+Auto-merging sdk/cliproxy/auth/conductor_stream.go
+CONFLICT (content): Merge conflict in sdk/cliproxy/auth/conductor_stream.go
+Auto-merging sdk/cliproxy/auth/cooldown_state_test.go
+Auto-merging sdk/cliproxy/auth/home_concurrency.go
+Auto-merging sdk/cliproxy/auth/openai_compat_pool_test.go
+Auto-merging sdk/cliproxy/auth/request_auth_prepare_test.go
+Auto-merging sdk/cliproxy/auth/scheduler.go
+Auto-merging sdk/cliproxy/auth/selector.go
+CONFLICT (content): Merge conflict in sdk/cliproxy/auth/selector.go
+Auto-merging sdk/cliproxy/auth/selector_test.go
+Auto-merging sdk/cliproxy/auth/session_cache.go
+CONFLICT (content): Merge conflict in sdk/cliproxy/auth/session_cache.go
+Auto-merging sdk/cliproxy/auth/types.go
+Auto-merging sdk/cliproxy/executor/types.go
+Auto-merging sdk/cliproxy/service_config.go
+Auto-merging sdk/cliproxy/service_excluded_models_test.go
+Auto-merging sdk/cliproxy/usage/manager.go

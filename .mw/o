@@ -1711,7 +1711,6 @@ func newPluginSyncCancelableConn(ctx context.Context, conn net.Conn) net.Conn {
 	go func() {
 		select {
 		case <-ctx.Done():
-			_ = conn.SetDeadline(time.Now())
 			_ = closeUnderlyingTransport(conn)
 		case <-wrapped.done:
 		}
