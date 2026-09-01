@@ -186,8 +186,11 @@ func projectedInventoryAliases(projection *modelrouting.Config) []modelrouting.I
 }
 
 type bootstrapModel struct {
-	model  modelrouting.InventoryModel
-	routes map[string]*modelrouting.InventoryRoute
+	model modelrouting.InventoryModel
+	// routes indexes built.model.Routes by "channel\x00runtime-model" so route
+	// lookups stay valid across slice growth: storing pointers would orphan them
+	// on reallocation and silently drop later credential appends.
+	routes map[string]int
 }
 
 func bootstrapInventoryModels(registered []registry.RegisteredRouteSnapshot, auths map[string]*coreauth.Auth, now time.Time) ([]modelrouting.InventoryModel, error) {
@@ -219,14 +222,11 @@ func bootstrapInventoryModels(registered []registry.RegisteredRouteSnapshot, aut
 				built = &bootstrapModel{model: modelrouting.InventoryModel{
 					ModelKey: modelKey, DisplayName: display,
 					Variants: []modelrouting.InventoryVariant{}, Routes: []modelrouting.InventoryRoute{},
-				}, routes: make(map[string]*modelrouting.InventoryRoute)}
+				}, routes: make(map[string]int)}
 				models[modelID] = built
 			}
 			routeChannel := registeredRoute.RouteChannel
 			routeID := routeChannel + "\x00" + registeredRoute.RuntimeModelID
-			if built.routes[routeID] != nil {
-				continue
-			}
 			auth := auths[registeredRoute.ClientID]
 			if auth == nil {
 				return nil, fmt.Errorf("registered route %d has no matching credential", routeIndex)
@@ -237,32 +237,36 @@ func bootstrapInventoryModels(registered []registry.RegisteredRouteSnapshot, aut
 			if kind := inventoryAuthKind(auth.AuthKind()); kind != "api_key" && kind != "oauth" {
 				return nil, fmt.Errorf("registered route %d has no supported credential kind", routeIndex)
 			}
-			route := &modelrouting.InventoryRoute{
-				RouteKey: modelrouting.RouteKeyJSON{
-					ModelKey: modelKey, RouteChannel: routeChannel,
-				},
-				CatalogRouteProviderID: channel,
-				CatalogRouteModelID:    registeredRoute.RuntimeModelID,
-				RuntimeModelID:         registeredRoute.RuntimeModelID,
-				RouteSelector: modelrouting.SelectorForRoute(
-					modelrouting.RouteKey{
-						ModelKey: modelrouting.ModelKey{
-							CatalogProviderID: channel, CanonicalModelID: registeredRoute.RuntimeModelID,
-						},
-						RouteChannel: routeChannel,
+			routeIndexExisting, exists := built.routes[routeID]
+			if !exists {
+				route := modelrouting.InventoryRoute{
+					RouteKey: modelrouting.RouteKeyJSON{
+						ModelKey: modelKey, RouteChannel: routeChannel,
 					},
-					registeredRoute.RuntimeModelID,
-				),
-				Protocols:       []string{},
-				Restrictions:    []modelrouting.InventoryRestriction{},
-				Credentials:     []modelrouting.InventoryCredential{},
-				SelectionReason: "route surfaced from its channel without catalog declaration",
+					CatalogRouteProviderID: channel,
+					CatalogRouteModelID:    registeredRoute.RuntimeModelID,
+					RuntimeModelID:         registeredRoute.RuntimeModelID,
+					RouteSelector: modelrouting.SelectorForRoute(
+						modelrouting.RouteKey{
+							ModelKey: modelrouting.ModelKey{
+								CatalogProviderID: channel, CanonicalModelID: registeredRoute.RuntimeModelID,
+							},
+							RouteChannel: routeChannel,
+						},
+						registeredRoute.RuntimeModelID,
+					),
+					Protocols:       []string{},
+					Restrictions:    []modelrouting.InventoryRestriction{},
+					Credentials:     []modelrouting.InventoryCredential{},
+					SelectionReason: "route surfaced from its channel without catalog declaration",
+				}
+				built.model.Routes = append(built.model.Routes, route)
+				routeIndexExisting = len(built.model.Routes) - 1
+				built.routes[routeID] = routeIndexExisting
 			}
-			built.model.Routes = append(built.model.Routes, *route)
-			built.routes[routeID] = &built.model.Routes[len(built.model.Routes)-1]
 			credential := inventoryCredential(registeredRoute, auth, now)
-			built.model.Routes[len(built.model.Routes)-1].Credentials = append(
-				built.model.Routes[len(built.model.Routes)-1].Credentials, credential)
+			built.model.Routes[routeIndexExisting].Credentials = append(
+				built.model.Routes[routeIndexExisting].Credentials, credential)
 			continue
 		}
 		routeKey, errRoute := registeredRoute.ModelRoutingKey(routeIndex)
@@ -293,7 +297,7 @@ func bootstrapInventoryModels(registered []registry.RegisteredRouteSnapshot, aut
 			built = &bootstrapModel{model: modelrouting.InventoryModel{
 				ModelKey: modelKey, DisplayName: display,
 				Variants: []modelrouting.InventoryVariant{}, Routes: []modelrouting.InventoryRoute{},
-			}, routes: make(map[string]*modelrouting.InventoryRoute)}
+			}, routes: make(map[string]int)}
 			models[modelID] = built
 		}
 		if variantID := strings.TrimSpace(info.VariantID); variantID != "" {
@@ -301,10 +305,10 @@ func bootstrapInventoryModels(registered []registry.RegisteredRouteSnapshot, aut
 		}
 		routeChannel := registeredRoute.RouteChannel
 		routeID := routeChannel + "\x00" + registeredRoute.RuntimeModelID
-		route := built.routes[routeID]
-		if route == nil {
+		routeIndexExisting, exists := built.routes[routeID]
+		if !exists {
 			protocols := append([]string(nil), info.Protocols...)
-			route = &modelrouting.InventoryRoute{
+			route := modelrouting.InventoryRoute{
 				RouteKey: modelrouting.RouteKeyJSON{
 					ModelKey: modelKey, RouteChannel: routeChannel,
 				},
@@ -317,16 +321,19 @@ func bootstrapInventoryModels(registered []registry.RegisteredRouteSnapshot, aut
 				Credentials:            []modelrouting.InventoryCredential{},
 				SelectionReason:        "route facts were discovered from the runtime registry",
 			}
-			built.model.Routes = append(built.model.Routes, *route)
-			route = &built.model.Routes[len(built.model.Routes)-1]
-			built.routes[routeID] = route
-		} else if route.CatalogRouteProviderID != info.CatalogRouteProviderID ||
-			route.CatalogRouteModelID != info.CatalogRouteModelID ||
-			!equalStrings(route.Protocols, info.Protocols) {
-			return nil, fmt.Errorf("registered route %d conflicts with an existing catalog route", routeIndex)
+			built.model.Routes = append(built.model.Routes, route)
+			routeIndexExisting = len(built.model.Routes) - 1
+			built.routes[routeID] = routeIndexExisting
+		} else {
+			route := &built.model.Routes[routeIndexExisting]
+			if route.CatalogRouteProviderID != info.CatalogRouteProviderID ||
+				route.CatalogRouteModelID != info.CatalogRouteModelID ||
+				!equalStrings(route.Protocols, info.Protocols) {
+				return nil, fmt.Errorf("registered route %d conflicts with an existing catalog route", routeIndex)
+			}
 		}
 		credential := inventoryCredential(registeredRoute, auth, now)
-		route.Credentials = append(route.Credentials, credential)
+		built.model.Routes[routeIndexExisting].Credentials = append(built.model.Routes[routeIndexExisting].Credentials, credential)
 	}
 
 	result := make([]modelrouting.InventoryModel, 0, len(models))
