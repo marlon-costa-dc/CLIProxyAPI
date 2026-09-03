@@ -193,7 +193,7 @@ func TestValidateRejectsVariantSerializedAsModel(t *testing.T) {
 func TestUnmarshalRejectsUnknownProjectionField(t *testing.T) {
 	t.Parallel()
 	var cfg Config
-	err := yaml.Unmarshal([]byte("schema-version: 2\ngeneration: 1\nsnapshot-digest: "+testDigest+"\nprojection-digest: "+testDigest+"\naliases: []\ndirect-models: []\nfailure-policy:\n  mode: classified_candidate_failover\n  credential-acquisition-timeout-seconds: 30\n  automatic-retry: false\n  automatic-failover: true\n  max-candidate-attempts: 2\n  failover-rules: []\n  serve-stale-on-error: false\n  preserve-first-error: true\n  terminate-owned-request-on-cancel: true\nunknown: true\n"), &cfg)
+	err := yaml.Unmarshal([]byte("schema-version: 3\ngeneration: 1\nsnapshot-digest: "+testDigest+"\nprojection-digest: "+testDigest+"\naliases: []\ndirect-models: []\nfailure-policy:\n  mode: classified_candidate_failover\n  credential-acquisition-timeout-seconds: 30\n  automatic-retry: false\n  automatic-failover: true\n  max-candidate-attempts: 2\n  failover-rules: []\n  serve-stale-on-error: false\n  preserve-first-error: true\n  terminate-owned-request-on-cancel: true\nunknown: true\n"), &cfg)
 	if err == nil || !strings.Contains(err.Error(), "unknown field") {
 		t.Fatalf("Unmarshal() error = %v, want unknown-field failure", err)
 	}
@@ -202,7 +202,7 @@ func TestUnmarshalRejectsUnknownProjectionField(t *testing.T) {
 func TestUnmarshalRejectsRemovedRetryPolicy(t *testing.T) {
 	t.Parallel()
 	var cfg Config
-	err := yaml.Unmarshal([]byte("schema-version: 2\ngeneration: 1\nsnapshot-digest: "+testDigest+"\nprojection-digest: "+testDigest+"\naliases: []\ndirect-models: []\nfailure-policy:\n  mode: classified_candidate_failover\n  credential-acquisition-timeout-seconds: 30\n  automatic-retry: false\n  automatic-failover: true\n  max-candidate-attempts: 2\n  failover-rules: []\n  serve-stale-on-error: false\n  preserve-first-error: true\n  terminate-owned-request-on-cancel: true\nretry-policy: {}\n"), &cfg)
+	err := yaml.Unmarshal([]byte("schema-version: 3\ngeneration: 1\nsnapshot-digest: "+testDigest+"\nprojection-digest: "+testDigest+"\naliases: []\ndirect-models: []\nfailure-policy:\n  mode: classified_candidate_failover\n  credential-acquisition-timeout-seconds: 30\n  automatic-retry: false\n  automatic-failover: true\n  max-candidate-attempts: 2\n  failover-rules: []\n  serve-stale-on-error: false\n  preserve-first-error: true\n  terminate-owned-request-on-cancel: true\nretry-policy: {}\n"), &cfg)
 	if err == nil || !strings.Contains(err.Error(), "retry-policy: unknown field") {
 		t.Fatalf("Unmarshal() error = %v, want removed retry-policy rejection", err)
 	}
@@ -211,7 +211,7 @@ func TestUnmarshalRejectsRemovedRetryPolicy(t *testing.T) {
 func TestUnmarshalRejectsRemovedRequestTimeout(t *testing.T) {
 	t.Parallel()
 	var cfg Config
-	err := yaml.Unmarshal([]byte("schema-version: 2\ngeneration: 1\nsnapshot-digest: "+testDigest+"\nprojection-digest: "+testDigest+"\naliases: []\ndirect-models: []\nfailure-policy:\n  mode: classified_candidate_failover\n  request-timeout-seconds: 30\n  automatic-retry: false\n  automatic-failover: true\n  max-candidate-attempts: 2\n  failover-rules: []\n  serve-stale-on-error: false\n  preserve-first-error: true\n  terminate-owned-request-on-cancel: true\n"), &cfg)
+	err := yaml.Unmarshal([]byte("schema-version: 3\ngeneration: 1\nsnapshot-digest: "+testDigest+"\nprojection-digest: "+testDigest+"\naliases: []\ndirect-models: []\nfailure-policy:\n  mode: classified_candidate_failover\n  request-timeout-seconds: 30\n  automatic-retry: false\n  automatic-failover: true\n  max-candidate-attempts: 2\n  failover-rules: []\n  serve-stale-on-error: false\n  preserve-first-error: true\n  terminate-owned-request-on-cancel: true\n"), &cfg)
 	if err == nil || !strings.Contains(err.Error(), "request-timeout-seconds: unknown field") {
 		t.Fatalf("Unmarshal() error = %v, want removed request timeout rejection", err)
 	}
