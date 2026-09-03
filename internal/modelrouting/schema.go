@@ -6,9 +6,9 @@ import (
 	"encoding/hex"
 )
 
-const SchemaVersion = 2
+const SchemaVersion = 3
 
-//go:embed model-routing-v2.schema.json
+//go:embed model-routing-v3.schema.json
 var routingSchemaJSON []byte
 
 // SchemaJSON returns a defensive copy of the canonical CLIProxy-owned schema.

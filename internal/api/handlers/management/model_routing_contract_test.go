@@ -124,7 +124,7 @@ func TestPutConfigYAMLReturnsActiveDigestReceipt(t *testing.T) {
 			ConfigDigest:     modelrouting.ConfigDigest(body),
 		}
 		return parsed, &modelrouting.ActivationReceiptV2{
-			Active: active, RoutingSchema: modelrouting.RoutingSchemaInfo{Version: 2, Digest: modelrouting.SchemaDigest()}, LoadedAt: loadedAt,
+			Active: active, RoutingSchema: modelrouting.RoutingSchemaInfo{Version: 3, Digest: modelrouting.SchemaDigest()}, LoadedAt: loadedAt,
 		}, nil
 	})
 	recorder := httptest.NewRecorder()
