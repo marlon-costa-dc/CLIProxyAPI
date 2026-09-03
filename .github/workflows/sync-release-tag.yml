@@ -3,7 +3,7 @@ run-name: sync-fork-release ref=${{ github.ref_name }} commit=${{ github.sha }}
 
 on:
   push:
-    branches: [main]
+    branches: [main, dc-use]
   schedule:
     - cron: '47 * * * *'
   workflow_dispatch:
@@ -48,6 +48,15 @@ jobs:
           # shellcheck disable=SC1091
           . ./.ccs-fork-upstream.env
           HEAD_COMMIT="$(git rev-parse HEAD)"
+          RELEASE_REF="${GITHUB_REF_NAME}"
+
+          case "${RELEASE_REF}" in
+            main|dc-use) ;;
+            *)
+              echo "Release dispatch is allowed only from main or dc-use; got ${RELEASE_REF}." >&2
+              exit 1
+              ;;
+          esac
 
           if ! printf '%s' "${UPSTREAM_TAG}" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
             echo "Invalid UPSTREAM_TAG in .ccs-fork-upstream.env" >&2
@@ -68,9 +77,9 @@ jobs:
             local release_run
             local docker_run
 
-            gh workflow run release.yaml --repo "${GITHUB_REPOSITORY}" --ref main \
+            gh workflow run release.yaml --repo "${GITHUB_REPOSITORY}" --ref "${RELEASE_REF}" \
               -f tag="${tag}" -f commit="${commit}"
-            gh workflow run docker-image.yml --repo "${GITHUB_REPOSITORY}" --ref main \
+            gh workflow run docker-image.yml --repo "${GITHUB_REPOSITORY}" --ref "${RELEASE_REF}" \
               -f tag="${tag}" -f commit="${commit}"
 
             release_run="$(resolve_downstream_run release.yaml "goreleaser tag=${tag} commit=${commit}")"
