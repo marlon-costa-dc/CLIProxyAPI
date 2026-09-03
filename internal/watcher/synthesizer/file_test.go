@@ -108,6 +108,9 @@ func TestFileSynthesizer_Synthesize_ValidAuthFile(t *testing.T) {
 	if auths[0].Provider != "claude" {
 		t.Errorf("expected provider claude, got %s", auths[0].Provider)
 	}
+	if auths[0].QuotaDomain != "claude" {
+		t.Errorf("expected quota domain claude, got %q", auths[0].QuotaDomain)
+	}
 	if auths[0].Label != "test@example.com" {
 		t.Errorf("expected label test@example.com, got %s", auths[0].Label)
 	}
